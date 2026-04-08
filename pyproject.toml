@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sentinel-integrated-platform"
+version = "3.0.0"
+description = "Production Sentinel platform with control plane and multi-language SDKs"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn>=0.30",
+  "httpx>=0.27",
+  "PyJWT>=2.8",
+  "psycopg[binary]>=3.1"
+]
+
+[tool.setuptools]
+packages = ["sentinel"]
+
+
+[tool.setuptools.package-data]
+"sentinel" = ["web/**/*"]
+
+
+[project.scripts]
+sentinel = "sentinel.cli:main"

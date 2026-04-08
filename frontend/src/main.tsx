@@ -1,0 +1,1574 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import './styles.css';
+
+type EventRow = {
+  id: number;
+  timestamp: number;
+  tool?: string;
+  agent_name?: string;
+  status: string;
+  risk_score?: number;
+  route_target?: string;
+  reason?: string;
+  workflow_id?: string | null;
+  domain?: string | null;
+  classifiers?: Record<string, boolean>;
+  trace_id?: string | null;
+};
+
+type TraceSummary = {
+  trace_id: string;
+  events: any[];
+  graph: { nodes: any[]; edges: any[] };
+  summary: {
+    event_count: number;
+    statuses: Record<string, number>;
+    tools: Record<string, number>;
+    agents: Record<string, number>;
+    start_timestamp: number;
+    end_timestamp: number;
+  };
+};
+
+type TraceOption = { trace_id: string; label: string };
+
+type DashboardPayload = {
+  metrics: any;
+  coverage: any;
+  posture: string;
+  timeline: any[];
+  status_breakdown: Record<string, number>;
+  route_breakdown: Record<string, number>;
+  top_tools: Array<{ tool: string; count: number }>;
+  top_agents: Array<{ agent: string; count: number }>;
+  top_domains: Array<{ domain: string; count: number }>;
+  http_methods: Array<{ method: string; count: number }>;
+  risk_distribution: Record<string, number>;
+  classifier_hits: Array<{ classifier: string; count: number }>;
+  recent_events: EventRow[];
+  recent_alerts: any[];
+  latest_risk: any[];
+  decision_latency_points: any[];
+  scan_performance: any;
+  insights: any[];
+  recent_traces?: TraceSummary[];
+  trace_catalogue?: TraceSummary[];
+  alerts?: { items: any[] };
+  workflows?: any[];
+  jobs?: any[];
+  policy_versions?: any[];
+  config?: any;
+  generated_at?: number;
+};
+
+type EventDetail = {
+  event: any;
+  neighbors: { previous_event_id?: number | null; next_event_id?: number | null };
+  workflow_events: any[];
+  explainability: any;
+  trace?: TraceSummary | null;
+};
+
+type PolicyDoc = { block: any[]; warn: any[]; monitor: any[]; allow: any[] };
+
+function pageFromLocation(pathname: string) {
+  if (pathname.includes('/ui/rules')) return 'rules';
+  if (/\/ui\/decision\/\d+/.test(pathname)) return 'decision';
+  return 'overview';
+}
+
+function detailIdFromLocation(pathname: string) {
+  const match = pathname.match(/\/ui\/decision\/(\d+)/);
+  return match ? Number(match[1]) : null;
+}
+
+function classNames(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(' ');
+}
+
+async function api<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
+  const headers = new Headers(opts.headers || {});
+  if (token) {
+    if (token.includes('.')) headers.set('Authorization', `Bearer ${token}`);
+    else headers.set('x-api-key', token);
+  }
+  if (opts.body && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  const res = await fetch(path, { ...opts, headers });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) throw new Error((data && (data.detail?.detail || data.detail || data.message)) || res.statusText);
+  return data as T;
+}
+
+function usePersistentState<T>(key: string, fallback: T) {
+  const [value, setValue] = useState<T>(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  }, [key, value]);
+  return [value, setValue] as const;
+}
+
+function fmtTs(ts?: number) {
+  if (!ts) return '—';
+  return new Date(ts * 1000).toLocaleString();
+}
+
+function fmtNum(v?: number | null, digits = 0) {
+  if (v === undefined || v === null || Number.isNaN(v)) return '0';
+  return Number(v).toFixed(digits);
+}
+
+function toDatetimeLocalValue(ts?: number | null) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const offset = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - offset * 60000);
+  return local.toISOString().slice(0, 16);
+}
+
+function fromDatetimeLocalValue(value?: string) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return Math.floor(parsed.getTime() / 1000);
+}
+
+function compactJson(value: any) {
+  if (value === undefined || value === null || value === '') return '—';
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.length > 220 ? `${text.slice(0, 220)}…` : text;
+}
+
+function describeEventIntent(event: any) {
+  const action = event?.action || event || {};
+  const decision = event?.decision || {};
+  const tool = action.tool || action.type || 'unknown tool';
+  const target = action.domain || decision.route_target || action.route_target || 'default route';
+  const dataPreview = compactJson(event?.input_payload || action.args || action.input || action.payload);
+  return {
+    tool,
+    target,
+    dataPreview,
+    outcome: event?.status || decision?.effective_action || 'allowed',
+    reason: decision?.reason || 'No reason recorded',
+    matchedRule: deriveMatchedRuleLabel(event) || 'No matched rule recorded',
+  };
+}
+
+function isElementFullyVisible(el: Element | null) {
+  if (!el) return false;
+  const rect = el.getBoundingClientRect();
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  return rect.top >= 0 && rect.bottom <= viewportHeight;
+}
+
+function scrollIntoViewIfNeeded(el: Element | null, block: ScrollLogicalPosition = 'start') {
+  if (!el || isElementFullyVisible(el)) return;
+  el.scrollIntoView({ behavior: 'smooth', block });
+}
+
+function deriveMatchedRuleLabel(event: any): string | null {
+  const action = event?.action || event || {};
+  const decision = event?.decision || {};
+  const matchedRule = event?.matched_rule || decision?.matched_rule;
+  const explicitLabel = event?.matched_rule_label
+    || (typeof matchedRule === 'string' ? matchedRule : summarizeRule(matchedRule))
+    || decision?.rule_name
+    || decision?.triggered_rule
+    || null;
+  if (explicitLabel) return explicitLabel;
+  const status = event?.status || decision?.effective_action || decision?.action || action?.status || 'allowed';
+  if (status === 'blocked' || status === 'warned') {
+    return decision?.reason || `${status} policy`;
+  }
+  return null;
+}
+
+function normalizeEventRow(event: any): EventRow & { matched_rule_label?: string | null; parent_event_id?: number | null } {
+  const action = event?.action || event || {};
+  const decision = event?.decision || {};
+  const matchedRuleLabel = deriveMatchedRuleLabel(event);
+  return {
+    id: Number(event?.id || action?.id || 0),
+    timestamp: Number(event?.timestamp || action?.timestamp || 0),
+    tool: action?.tool,
+    agent_name: action?.agent_name,
+    status: event?.status || decision?.effective_action || decision?.action || action?.status || 'allowed',
+    risk_score: Number(action?.risk_score || 0),
+    route_target: decision?.route_target || action?.route_target,
+    reason: decision?.reason,
+    workflow_id: event?.workflow_id || null,
+    domain: action?.domain || null,
+    classifiers: action?.classifiers || {},
+    trace_id: event?.trace_id || action?.trace_id || null,
+    matched_rule_label: matchedRuleLabel,
+    parent_event_id: event?.parent_event_id || action?.parent_event_id || null,
+  };
+}
+
+function displayValue(value: any) {
+  if (value === undefined || value === null || value === '') return '—';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return JSON.stringify(value, null, 2);
+}
+
+function statusTone(status?: string) {
+  if (status === 'blocked') return 'danger';
+  if (status === 'warned') return 'warn';
+  return 'ok';
+}
+
+function ensurePolicyDoc(doc: any): PolicyDoc {
+  return {
+    block: Array.isArray(doc?.block) ? doc.block : [],
+    warn: Array.isArray(doc?.warn) ? doc.warn : [],
+    monitor: Array.isArray(doc?.monitor) ? doc.monitor : [],
+    allow: Array.isArray(doc?.allow) ? doc.allow : [],
+  };
+}
+
+
+const RULE_BUCKETS = ['block', 'warn', 'monitor', 'allow'] as const;
+const RULE_TYPES = ['', 'tool_call', 'http_request', 'llm_call'];
+const CLASSIFIER_KEYS = ['internal', 'secrets', 'pii', 'financial', 'credit_card', 'source_internal', 'unsafe_keywords'];
+const ADVANCED_FIELDS = [
+  { key: 'field:url', label: 'URL contains', operator: 'contains', placeholder: '169.254.169.254' },
+  { key: 'field:domain', label: 'Domain contains', operator: 'contains', placeholder: 'pastebin or openai.com' },
+  { key: 'field:args.args', label: 'Args contain', operator: 'contains', placeholder: 'rm -rf or terraform destroy' },
+  { key: 'field:metadata.behavior.suspicious_sequence', label: 'Suspicious sequence', operator: 'eq', valueType: 'boolean' },
+  { key: 'field:metadata.behavior.previous_blocked', label: 'Previous blocked step', operator: 'eq', valueType: 'boolean' },
+];
+const OPERATOR_OPTIONS = ['eq', 'contains', 'startswith', 'endswith', 'exists', 'gte', 'lte', 'in'];
+
+function safeParsePolicy(text: string, fallback: PolicyDoc) {
+  try {
+    return ensurePolicyDoc(JSON.parse(text));
+  } catch {
+    return fallback;
+  }
+}
+
+function setRuleSimpleValue(rule: any, key: string, value: any) {
+  const next = { ...rule };
+  if (value === '' || value === undefined || value === null) delete next[key];
+  else next[key] = value;
+  return next;
+}
+
+function setRuleOperatorValue(rule: any, key: string, operator: string, rawValue: any) {
+  const next = { ...rule };
+  const empty = rawValue === '' || rawValue === undefined || rawValue === null;
+  if (empty) {
+    delete next[key];
+    return next;
+  }
+  if (operator === 'eq' && typeof rawValue !== 'object') next[key] = rawValue;
+  else next[key] = { [operator]: rawValue };
+  return next;
+}
+
+function getRuleOperator(rule: any, key: string, fallback = 'eq') {
+  const value = rule?.[key];
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const first = Object.keys(value)[0];
+    return first || fallback;
+  }
+  return fallback;
+}
+
+function getRuleValue(rule: any, key: string) {
+  const value = rule?.[key];
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const first = Object.keys(value)[0];
+    return first ? value[first] : '';
+  }
+  return value ?? '';
+}
+
+function coerceRuleInput(value: string, mode: 'text' | 'number' | 'boolean' | 'list' = 'text') {
+  if (mode === 'number') return value === '' ? '' : Number(value);
+  if (mode === 'boolean') return value === 'true';
+  if (mode === 'list') return value.split(',').map((part) => part.trim()).filter(Boolean);
+  return value;
+}
+
+function summarizeRule(rule: any) {
+  if (!rule) return 'New rule';
+  return rule.title || rule.name || rule.description || rule.reason || [rule.type, rule.tool, Object.keys(rule).find((key) => String(key).startsWith('classifier:'))?.replace('classifier:', '')].filter(Boolean).join(' · ') || 'Untitled rule';
+}
+
+function customRuleEntries(rule: any) {
+  const dedicated = new Set([
+    'enabled', 'priority', 'description', 'reason', 'title', 'name', 'type', 'tool',
+    'field:url', 'field:domain', 'field:args.args', 'field:risk_score',
+    'field:metadata.behavior.suspicious_sequence', 'field:metadata.behavior.previous_blocked',
+  ]);
+  return Object.entries(rule || {}).filter(([key]) => !dedicated.has(key) && !String(key).startsWith('classifier:'));
+}
+
+function Shell() {
+  const [token, setToken] = usePersistentState<string>('sentinel.token', '');
+  const [page, setPage] = useState<string>(pageFromLocation(location.pathname));
+  const [detailId, setDetailId] = useState<number | null>(detailIdFromLocation(location.pathname));
+  const [overview, setOverview] = useState<DashboardPayload | null>(null);
+  const [detail, setDetail] = useState<EventDetail | null>(null);
+  const [policy, setPolicy] = useState<PolicyDoc>(ensurePolicyDoc({}));
+  const [policyText, setPolicyText] = useState<string>('');
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [selectedTraceId, setSelectedTraceId] = useState<string>('');
+  const [selectedTrace, setSelectedTrace] = useState<TraceSummary | null>(null);
+  const [traceOptions, setTraceOptions] = useState<TraceOption[]>([]);
+  const [filters, setFilters] = usePersistentState('sentinel.filters', { search: '', status: 'all' });
+  const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const handlePop = () => {
+      setPage(pageFromLocation(location.pathname));
+      setDetailId(detailIdFromLocation(location.pathname));
+    };
+    window.addEventListener('popstate', handlePop);
+    return () => window.removeEventListener('popstate', handlePop);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const payload = await api<any>('/ui/bootstrap');
+        if (cancelled) return;
+        if (payload?.auth?.token) setToken(payload.auth.token);
+        const dashboard = payload?.dashboard || null;
+        setOverview(dashboard);
+        const initialOptions = Array.from(new Set([
+          ...((dashboard?.trace_catalogue || []).map((trace: any) => trace?.trace_id).filter(Boolean)),
+          ...((dashboard?.recent_traces || []).map((trace: any) => trace?.trace_id).filter(Boolean)),
+          ...((dashboard?.recent_events || []).map((event: any) => event?.trace_id).filter(Boolean)),
+        ])).map((traceId: any) => ({ trace_id: String(traceId), label: String(traceId) }));
+        setTraceOptions(initialOptions as TraceOption[]);
+        const firstTrace = initialOptions[0]?.trace_id || '';
+        if (firstTrace) setSelectedTraceId((current) => current || firstTrace);
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || 'Failed to bootstrap UI');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  async function refreshTraceList() {
+    if (!token) return [];
+    const payload = await api<{ items: TraceSummary[] }>('/traces', {}, token);
+    const rows = Array.isArray(payload?.items) ? payload.items : [];
+    setTraceOptions(rows.filter((row) => row?.trace_id).map((row) => ({ trace_id: row.trace_id, label: row.trace_id })));
+    return rows;
+  }
+
+  async function refreshOverview() {
+    if (!token) return;
+    const [dashboard, traces] = await Promise.all([
+      api<DashboardPayload>('/dashboard/overview', {}, token),
+      refreshTraceList().catch(() => []),
+    ]);
+    setOverview(dashboard);
+    const firstTrace = selectedTraceId || dashboard?.trace_catalogue?.[0]?.trace_id || dashboard?.recent_traces?.[0]?.trace_id || traces?.[0]?.trace_id || '';
+    if (firstTrace) setSelectedTraceId((current) => current || firstTrace);
+  }
+
+  async function refreshPolicy() {
+    if (!token) return;
+    const [doc, tpl] = await Promise.all([
+      api<PolicyDoc>('/policy', {}, token),
+      api<any>('/policy/templates', {}, token),
+    ]);
+    const normalized = ensurePolicyDoc(doc);
+    setPolicy(normalized);
+    setPolicyText(JSON.stringify(normalized, null, 2));
+    setTemplates(Array.isArray(tpl) ? tpl : Object.entries(tpl || {}).map(([name, template]) => ({ name, template })));
+  }
+
+  async function refreshDetail(id: number) {
+    if (!token) return;
+    const payload = await api<EventDetail>(`/events/${id}`, {}, token);
+    setDetail(payload);
+    if (payload?.trace?.trace_id) {
+      setSelectedTraceId(payload.trace.trace_id);
+      setSelectedTrace(payload.trace);
+    }
+  }
+
+  useEffect(() => {
+    if (!token) return;
+    refreshOverview().catch((e: any) => setError(e?.message || 'Failed to refresh overview'));
+    if (page === 'rules') refreshPolicy().catch((e: any) => setError(e?.message || 'Failed to load policy'));
+    if (page === 'decision' && detailId) refreshDetail(detailId).catch((e: any) => setError(e?.message || 'Failed to load event'));
+  }, [token, page, detailId]);
+
+  useEffect(() => {
+    if (!token || !selectedTraceId) return;
+    let cancelled = false;
+    api<TraceSummary>(`/traces/${encodeURIComponent(selectedTraceId)}`, {}, token)
+      .then((payload) => { if (!cancelled) setSelectedTrace(payload); })
+      .catch(() => { if (!cancelled) setSelectedTrace(null); });
+    return () => { cancelled = true; };
+  }, [token, selectedTraceId]);
+
+  useEffect(() => {
+    if (!token) return;
+    const stream = new EventSource(`/stream/updates?token=${encodeURIComponent(token)}`);
+    stream.onmessage = (evt) => {
+      try {
+        const message = JSON.parse(evt.data || '{}');
+        if (message?.type === 'event') {
+          refreshOverview().catch(() => {});
+          if (page === 'decision' && detailId) refreshDetail(detailId).catch(() => {});
+        }
+        if (message?.type === 'config' && message?.key === 'scan_mode') {
+          setOverview((prev) => prev ? ({ ...prev, config: { ...(prev.config || {}), scan_mode: message.value } }) : prev);
+        }
+      } catch {}
+    };
+    return () => stream.close();
+  }, [token, page, detailId]);
+
+  function navigate(next: string, path: string) {
+    history.pushState({}, '', path);
+    setPage(next);
+    setDetailId(detailIdFromLocation(path));
+  }
+
+  async function savePolicy() {
+    if (!token) return;
+    setLoading(true);
+    setError('');
+    setNotice('');
+    try {
+      const parsed = ensurePolicyDoc(JSON.parse(policyText));
+      await api('/policy/validate', { method: 'POST', body: JSON.stringify(parsed) }, token);
+      await api('/policy', { method: 'PUT', body: JSON.stringify(parsed) }, token);
+      setPolicy(parsed);
+      setNotice('Policy saved');
+      await refreshPolicy();
+    } catch (e: any) {
+      setError(e?.message || 'Failed to save policy');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function setScanMode(mode: string) {
+    if (!token) return;
+    try {
+      await api('/runtime/config/scan-mode', { method: 'POST', body: JSON.stringify({ scan_mode: mode }) }, token);
+      setOverview((prev) => prev ? ({ ...prev, config: { ...(prev.config || {}), scan_mode: mode } }) : prev);
+      setNotice(`Scan mode switched to ${mode}`);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update scan mode');
+    }
+  }
+
+  const filteredEvents = useMemo(() => {
+    const rows = overview?.recent_events || [];
+    return rows.filter((row) => {
+      if (filters.status !== 'all' && row.status !== filters.status) return false;
+      if (filters.search) {
+        const blob = JSON.stringify(row).toLowerCase();
+        if (!blob.includes(filters.search.toLowerCase())) return false;
+      }
+      return true;
+    });
+  }, [overview, filters]);
+
+  const traceCandidates = useMemo(() => {
+    const ids = new Set<string>();
+    const out: TraceOption[] = [];
+    for (const trace of traceOptions) {
+      if (trace?.trace_id && !ids.has(trace.trace_id)) {
+        ids.add(trace.trace_id);
+        out.push(trace);
+      }
+    }
+    for (const trace of [
+      ...((overview as any)?.trace_catalogue || []),
+      ...(overview?.recent_traces || []),
+    ]) {
+      if (trace?.trace_id && !ids.has(trace.trace_id)) {
+        ids.add(trace.trace_id);
+        out.push({ trace_id: trace.trace_id, label: trace.trace_id });
+      }
+    }
+    for (const event of overview?.recent_events || []) {
+      const traceId = (event as any).trace_id || '';
+      if (traceId && !ids.has(traceId)) {
+        ids.add(traceId);
+        out.push({ trace_id: traceId, label: traceId });
+      }
+    }
+    if (selectedTrace?.trace_id && !ids.has(selectedTrace.trace_id)) {
+      out.unshift({ trace_id: selectedTrace.trace_id, label: selectedTrace.trace_id });
+    }
+    return out;
+  }, [overview, traceOptions, selectedTrace?.trace_id]);
+
+  const currentScanMode = overview?.config?.scan_mode || 'deep';
+
+  return (
+    <div className="shell">
+      <div className="shell__bg shell__bg--one" />
+      <div className="shell__bg shell__bg--two" />
+      <aside className="sidebar">
+        <div className="brand">
+          <div className="brand__markWrap">
+            <img src="/static/assets/sentinel-icon.png" alt="Sentinel shield" className="brand__icon" />
+            <span className="brand__pulse" aria-hidden="true" />
+          </div>
+          <div className="brand__copy">
+            <div className="brand__eyebrow">Agent governance</div>
+            <div className="brand__title">Sentinel</div>
+            <div className="brand__subtitle">Command Center</div>
+          </div>
+        </div>
+        <nav className="nav">
+          <button className={classNames('nav__item', page === 'overview' && 'is-active')} onClick={() => navigate('overview', '/ui')}>Overview</button>
+          <button className={classNames('nav__item', page === 'rules' && 'is-active')} onClick={() => navigate('rules', '/ui/rules')}>Rules Workspace</button>
+          {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
+        </nav>
+        <div className="sidebar__section">
+          <div className="sidebar__label">Inspection mode</div>
+          <div className="toggleRow">
+            {['deep', 'fast'].map((mode) => (
+              <button key={mode} className={classNames('segmented', currentScanMode === mode && 'is-active')} onClick={() => setScanMode(mode)}>{mode}</button>
+            ))}
+          </div>
+          <p className="muted">{overview?.config?.notes?.[currentScanMode] || 'Live policy inspection for agent actions.'}</p>
+        </div>
+        <div className="sidebar__section sidebar__section--grow">
+          <div className="sidebar__label">Trace focus</div>
+          <select className="input" value={selectedTraceId} onChange={(e) => setSelectedTraceId(e.target.value)} disabled={!traceCandidates.length}>
+            <option value="">{traceCandidates.length ? 'Select recent trace' : 'No traces yet'}</option>
+            {traceCandidates.map((trace) => <option key={trace.trace_id} value={trace.trace_id}>{trace.label}</option>)}
+          </select>
+          {!traceCandidates.length ? <div className="emptyState emptyState--compact"><strong>No traces recorded yet.</strong><span className="muted">Run the OSS demo to seed trace data for the flow explorer and trace catalogue.</span></div> : null}
+          {!traceCandidates.length ? <button className="button" onClick={() => { if (page !== 'overview') navigate('overview', '/ui'); setNotice('Generating OSS demo traces…'); (async () => { if (!token) return; try { const payload = await api<any>('/demo/run', { method: 'POST', body: '{}' }, token); setOverview(payload.dashboard); const firstTrace = payload.dashboard?.recent_traces?.[0]?.trace_id || payload.dashboard?.trace_catalogue?.[0]?.trace_id || ''; if (firstTrace) setSelectedTraceId(firstTrace); setNotice('OSS demo seeded with allow, warn, and block traces'); } catch (e: any) { setError(e?.message || 'Failed to run demo'); } })(); }}>Generate demo traces</button> : null}
+          <div className="chipGrid">
+            {(overview?.insights || []).slice(0, 3).map((insight, idx) => (
+              <div key={idx} className={classNames('chip', insight.severity === 'high' && 'chip--danger', insight.severity === 'medium' && 'chip--warn')}>
+                <strong>{insight.title}</strong>
+                <span>{insight.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="sidebar__footer">
+          <input className="input" value={token} onChange={(e) => setToken(e.target.value)} placeholder="API key or bearer token" />
+          <button className="button button--ghost" onClick={() => refreshOverview().catch((e:any)=>setError(e?.message||'Refresh failed'))}>Refresh snapshot</button>
+        </div>
+      </aside>
+
+      <main className="main">
+        <header className="topbar card">
+          <div>
+            <div className="eyebrow">Live operations</div>
+            <h1>{page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : 'Trace and flow mission control'}</h1>
+            <p className="muted">See what the agent attempted, why Sentinel scored it the way it did, and how policy changed the outcome.</p>
+          </div>
+          <div className="topbar__actions">
+            <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
+            <div className="statusPill">Events: <strong>{overview?.metrics?.total_events ?? 0}</strong></div>
+            <div className="statusPill">P95: <strong>{fmtNum(overview?.metrics?.p95_decision_latency_ms, 1)} ms</strong></div>
+          </div>
+        </header>
+
+        {error ? <div className="banner banner--error">{error}</div> : null}
+        {notice ? <div className="banner banner--ok">{notice}</div> : null}
+
+        {page === 'overview' && overview ? (
+          <OverviewPage
+            overview={overview}
+            filteredEvents={filteredEvents}
+            filters={filters}
+            setFilters={setFilters}
+            selectedTrace={selectedTrace}
+            setSelectedTraceId={setSelectedTraceId}
+            token={token}
+            traceCandidates={traceCandidates}
+            onRunDemo={async () => { if (!token) return; try { const payload = await api<any>('/demo/run', { method: 'POST', body: '{}' }, token); setOverview(payload.dashboard); const traces = await refreshTraceList().catch(() => []); const firstTrace = payload.dashboard?.trace_catalogue?.[0]?.trace_id || payload.dashboard?.recent_traces?.[0]?.trace_id || traces?.[0]?.trace_id || ''; if (firstTrace) setSelectedTraceId(firstTrace); setNotice('OSS demo seeded with allow, warn, and block traces'); } catch (e: any) { setError(e?.message || 'Failed to run demo'); } }}
+            onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
+          />
+        ) : null}
+
+        {page === 'rules' ? (
+          <RulesPage
+            policy={policy}
+            policyText={policyText}
+            setPolicyText={setPolicyText}
+            templates={templates}
+            onApplyTemplate={(template) => {
+              const merged = ensurePolicyDoc(template?.template || template || {});
+              setPolicyText(JSON.stringify(merged, null, 2));
+            }}
+            onSave={savePolicy}
+            loading={loading}
+          />
+        ) : null}
+
+        {page === 'decision' && detail ? (
+          <DecisionPage detail={detail} onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)} onOpenRule={(rule: any) => {
+            const ruleLabel = typeof rule === 'string' ? rule : summarizeRule(rule);
+            navigate('rules', '/ui/rules');
+            requestAnimationFrame(() => {
+              const cards = Array.from(document.querySelectorAll('.ruleCard')) as HTMLElement[];
+              const target = cards.find((card) => (card.textContent || '').toLowerCase().includes(String(ruleLabel).toLowerCase()));
+              target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              target?.click();
+            });
+          }} />
+        ) : null}
+      </main>
+    </div>
+  );
+}
+
+function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedTrace, setSelectedTraceId, onOpenDecision, token, onRunDemo, traceCandidates }: any) {
+  const [signalView, setSignalView] = useState<'timeline' | 'sankey'>('timeline');
+  const [selectedBucketTs, setSelectedBucketTs] = useState<number | null>(null);
+  const [selectedAlertMode, setSelectedAlertMode] = useState<'all' | 'open'>('all');
+  const [focusedEventIds, setFocusedEventIds] = useState<number[] | null>(null);
+  const [focusLabel, setFocusLabel] = useState<string>('');
+  const [replayIndex, setReplayIndex] = useState<number>(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [sankeyMode, setSankeyMode] = useState<'agent_tool_outcome' | 'agent_rule_outcome' | 'tool_rule_outcome'>('agent_tool_outcome');
+  const [simulationDraft, setSimulationDraft] = useState<string>(JSON.stringify({ warn: [{ "field:risk_score": { "gte": 50 } }], block: [], monitor: [], allow: [] }, null, 2));
+  const [simulationResult, setSimulationResult] = useState<any>(null);
+  const [simulating, setSimulating] = useState(false);
+  const activityRef = useRef<HTMLElement | null>(null);
+  const alertsRef = useRef<HTMLElement | null>(null);
+
+  const sourceEvents = useMemo(() => {
+    const traceEvents = (overview.recent_traces || []).flatMap((trace: TraceSummary) => trace.events || []).map(normalizeEventRow).filter((event: EventRow) => event.id);
+    return traceEvents.length ? traceEvents : (overview.recent_events || []).map(normalizeEventRow);
+  }, [overview.recent_traces, overview.recent_events]);
+
+  const dateFilteredEvents = useMemo(() => {
+    const fromTs = fromDatetimeLocalValue(filters.from);
+    const toTs = fromDatetimeLocalValue(filters.to);
+    return sourceEvents.filter((event: EventRow) => {
+      if (fromTs && (event.timestamp || 0) < fromTs) return false;
+      if (toTs && (event.timestamp || 0) > toTs) return false;
+      return true;
+    });
+  }, [sourceEvents, filters.from, filters.to]);
+
+  const replayEvents = useMemo(() => ((selectedTrace?.events || []).map(normalizeEventRow).sort((a: EventRow, b: EventRow) => (a.timestamp || 0) - (b.timestamp || 0))), [selectedTrace]);
+
+  useEffect(() => {
+    if (!isPlaying || !replayEvents.length) return;
+    const handle = window.setInterval(() => {
+      setReplayIndex((current) => {
+        if (current >= replayEvents.length - 1) {
+          setIsPlaying(false);
+          return current;
+        }
+        return current + 1;
+      });
+    }, 900);
+    return () => window.clearInterval(handle);
+  }, [isPlaying, replayEvents.length]);
+
+  useEffect(() => {
+    setReplayIndex(0);
+    setIsPlaying(false);
+  }, [selectedTrace?.trace_id]);
+
+  const visibleReplayEvents = useMemo(() => replayEvents.slice(0, Math.max(1, replayIndex + 1)), [replayEvents, replayIndex]);
+
+  const scopedEvents = useMemo(() => {
+    let rows = dateFilteredEvents;
+    if (selectedBucketTs) {
+      const bucketStart = Math.floor(selectedBucketTs / 60) * 60;
+      rows = rows.filter((event: EventRow) => Math.floor((event.timestamp || 0) / 60) * 60 === bucketStart);
+    }
+    if (focusedEventIds?.length) {
+      const idSet = new Set(focusedEventIds);
+      rows = rows.filter((event: EventRow) => idSet.has(event.id));
+    }
+    if (filters.status !== 'all') rows = rows.filter((row: EventRow) => row.status === filters.status);
+    if (filters.search) {
+      const term = filters.search.toLowerCase();
+      rows = rows.filter((row: EventRow) => JSON.stringify(row).toLowerCase().includes(term));
+    }
+    return rows.sort((a: EventRow, b: EventRow) => (b.timestamp || 0) - (a.timestamp || 0));
+  }, [dateFilteredEvents, selectedBucketTs, focusedEventIds, filters]);
+
+  const activityCounts = useMemo(() => ({
+    blocked: dateFilteredEvents.filter((event: EventRow) => event.status === 'blocked').length,
+    warned: dateFilteredEvents.filter((event: EventRow) => event.status === 'warned').length,
+    allowed: dateFilteredEvents.filter((event: EventRow) => event.status === 'allowed').length,
+  }), [dateFilteredEvents]);
+
+  const visibleAlerts = useMemo(() => {
+    const items = overview.alerts?.items || overview.recent_alerts || [];
+    if (selectedAlertMode === 'open') return items.filter((alert: any) => !alert.acknowledged);
+    return items;
+  }, [overview.alerts, overview.recent_alerts, selectedAlertMode]);
+
+  const selectedBucket = useMemo(() => (overview.timeline || []).find((point: any) => point.timestamp === selectedBucketTs) || null, [overview.timeline, selectedBucketTs]);
+
+  const riskStories = useMemo(() => {
+    const stories: Array<{title: string; message: string; severity: string; eventIds: number[]}> = [];
+    const byAgent = new Map<string, EventRow[]>();
+    const byRule = new Map<string, EventRow[]>();
+    for (const event of sourceEvents) {
+      const agent = event.agent_name || 'unknown';
+      byAgent.set(agent, [...(byAgent.get(agent) || []), event]);
+      if ((event as any).matched_rule_label) {
+        const label = (event as any).matched_rule_label as string;
+        byRule.set(label, [...(byRule.get(label) || []), event]);
+      }
+    }
+    for (const [agent, rows] of byAgent.entries()) {
+      const warned = rows.filter((row) => row.status === 'warned');
+      if (warned.length >= 2) stories.push({ title: `Repeated warn pattern · ${agent}`, message: `${warned.length} warned actions from the same agent in the current window.`, severity: warned.length >= 3 ? 'high' : 'medium', eventIds: warned.map((row) => row.id) });
+    }
+    for (const [rule, rows] of byRule.entries()) {
+      if (rows.length >= 2) stories.push({ title: `Rule firing repeatedly · ${rule}`, message: `${rows.length} actions triggered the same rule, which may justify a more explicit policy or route.`, severity: rows.some((row) => row.status === 'blocked') ? 'high' : 'medium', eventIds: rows.map((row) => row.id) });
+    }
+    const risky = sourceEvents.filter((row) => (row.risk_score || 0) >= 70);
+    if (risky.length) stories.push({ title: 'High-severity chain activity', message: `${risky.length} actions are currently above risk score 70.`, severity: 'high', eventIds: risky.map((row) => row.id) });
+    return stories.slice(0, 4);
+  }, [sourceEvents]);
+
+  const traceCatalogue = useMemo(() => {
+    const rows: TraceSummary[] = [];
+    const seen = new Set<string>();
+    for (const trace of ([...(overview.trace_catalogue || []), ...(overview.recent_traces || []), ...(selectedTrace ? [selectedTrace] : [])] as TraceSummary[])) {
+      if (trace?.trace_id && !seen.has(trace.trace_id)) {
+        seen.add(trace.trace_id);
+        rows.push(trace);
+      }
+    }
+    return rows;
+  }, [overview.trace_catalogue, overview.recent_traces, selectedTrace]);
+
+  const hasTraceData = !!(traceCandidates?.length || traceCatalogue.length || selectedTrace?.trace_id);
+
+  function focusActivity(nextStatus: string, nextSearch = '', eventIds: number[] | null = null, label = '', scrollToPanel = true) {
+    setFilters({ ...filters, status: nextStatus, search: nextSearch });
+    setSelectedBucketTs(null);
+    setFocusedEventIds(eventIds && eventIds.length ? Array.from(new Set(eventIds)) : null);
+    setFocusLabel(label);
+    if (scrollToPanel) requestAnimationFrame(() => scrollIntoViewIfNeeded(activityRef.current, 'start'));
+  }
+
+  function focusAlerts(mode: 'all' | 'open' = 'open', scrollToPanel = true) {
+    setSelectedAlertMode(mode);
+    if (scrollToPanel) requestAnimationFrame(() => scrollIntoViewIfNeeded(alertsRef.current, 'start'));
+  }
+
+  function clearFocus() {
+    setSelectedBucketTs(null);
+    setFocusedEventIds(null);
+    setFocusLabel('');
+    setFilters({ ...filters, search: '', status: 'all', from: '', to: '' });
+  }
+
+  async function runSimulation() {
+    if (!token || !selectedTrace?.trace_id) return;
+    setSimulating(true);
+    try {
+      const candidate = ensurePolicyDoc(JSON.parse(simulationDraft));
+      const result = await api<any>(`/policy/simulate?trace_id=${encodeURIComponent(selectedTrace.trace_id)}`, { method: 'POST', body: JSON.stringify(candidate) }, token);
+      setSimulationResult(result);
+    } finally {
+      setSimulating(false);
+    }
+  }
+
+  const replayTrace = selectedTrace ? {
+    ...selectedTrace,
+    events: (selectedTrace.events || []).filter((evt: any) => visibleReplayEvents.some((row: EventRow) => row.id === evt.id)),
+    graph: {
+      ...selectedTrace.graph,
+      nodes: (selectedTrace.graph?.nodes || []).filter((node: any) => visibleReplayEvents.some((row: EventRow) => row.id === node.id)),
+      edges: (selectedTrace.graph?.edges || []).filter((edge: any) => visibleReplayEvents.some((row: EventRow) => row.id === edge.source) && visibleReplayEvents.some((row: EventRow) => row.id === edge.target)),
+    },
+  } : selectedTrace;
+
+  return (
+    <div className="pageGrid">
+      <section className="metricsRow">
+        <MetricCard title="Blocked" value={activityCounts.blocked} subtitle={`${dateFilteredEvents.length} events in range`} tone="danger" onClick={() => focusActivity('blocked', '', dateFilteredEvents.filter((event: EventRow) => event.status === 'blocked').map((event: EventRow) => event.id), 'Blocked events')} />
+        <MetricCard title="Warned" value={activityCounts.warned} subtitle={`${dateFilteredEvents.length} events in range`} tone="warn" onClick={() => focusActivity('warned', '', dateFilteredEvents.filter((event: EventRow) => event.status === 'warned').map((event: EventRow) => event.id), 'Warned events')} />
+        <MetricCard title="Allowed" value={activityCounts.allowed} subtitle={`${dateFilteredEvents.length} events in range`} tone="ok" onClick={() => focusActivity('allowed', '', dateFilteredEvents.filter((event: EventRow) => event.status === 'allowed').map((event: EventRow) => event.id), 'Allowed events')} />
+        <MetricCard title="Open alerts" value={overview.metrics?.open_alerts || 0} subtitle="Needs analyst review" onClick={() => focusAlerts('open')} />
+      </section>
+
+      <section className="layout layout--topOverview">
+        <div className="card card--signalHero">
+          <div className="sectionHeader"><div><div className="eyebrow">Signal trends</div><h3>Risk and timeline</h3></div><div className="toggleRow"><button className={classNames('segmented', signalView === 'timeline' && 'is-active')} onClick={() => setSignalView('timeline')}>Timeline</button><button className={classNames('segmented', signalView === 'sankey' && 'is-active')} onClick={() => setSignalView('sankey')}>Sankey</button></div></div>
+          {signalView === 'timeline' ? <><MiniTimeline data={overview.timeline || []} selectedTimestamp={selectedBucketTs} sourceEvents={dateFilteredEvents} onSelectBucket={(ts: number | null, eventIds?: number[]) => { setSelectedBucketTs((current) => current === ts ? null : ts); setFocusedEventIds(eventIds && eventIds.length ? eventIds : null); setFocusLabel(ts ? `Timeline focus · ${eventIds?.length || 0} linked events` : ''); requestAnimationFrame(() => scrollIntoViewIfNeeded(activityRef.current, 'start')); }} /><div className="signalLegend"><span><i className="legendSwatch legendSwatch--danger" />Blocked</span><span><i className="legendSwatch legendSwatch--warn" />Warned</span><span><i className="legendSwatch legendSwatch--ok" />Allowed</span><span><i className="legendSwatch legendSwatch--severity" />Severity-weighted height</span></div>{selectedBucket ? <div className="focusSummary"><strong>{fmtTs(selectedBucket.timestamp)}</strong><span>{selectedBucket.blocked || 0} blocked · {selectedBucket.warned || 0} warned · {selectedBucket.allowed || 0} allowed · {scopedEvents.length} linked events</span></div> : null}</> : <><div className="toggleRow sankeyModes"><button className={classNames('segmented', sankeyMode === 'agent_tool_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_tool_outcome')}>Agent → Tool → Outcome</button><button className={classNames('segmented', sankeyMode === 'agent_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_rule_outcome')}>Agent → Rule → Outcome</button><button className={classNames('segmented', sankeyMode === 'tool_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('tool_rule_outcome')}>Tool → Rule → Outcome</button></div><SankeyPanel overview={overview} sourceEvents={dateFilteredEvents} mode={sankeyMode} onFocus={(opts: any) => focusActivity(opts.status || 'all', opts.search || '', opts.eventIds || null, opts.label || 'Sankey focus')} /></>}
+          <div className="twoColStats"><MiniBarList title="Top tools" items={(overview.top_tools || []).map((item: any) => ({ label: item.tool, value: item.count }))} /><MiniBarList title="Classifier hits" items={(overview.classifier_hits || []).map((item: any) => ({ label: item.classifier, value: item.count }))} /></div>
+        </div>
+
+        <div className="card card--riskPanel">
+          <div className="sectionHeader"><div><div className="eyebrow">Risk story</div><h3>Top risk patterns</h3></div></div>
+          <div className="insightList scrollPanel scrollPanel--medium">
+            {riskStories.map((story, idx) => (
+              <button key={idx} className={classNames('insight', story.severity === 'high' && 'is-danger', story.severity === 'medium' && 'is-warn')} onClick={() => focusActivity('all', '', story.eventIds, story.title, false)}>
+                <strong>{story.title}</strong><div className="muted">{story.message}</div>
+              </button>
+            ))}
+            {!riskStories.length ? <div className="emptyState"><strong>No notable risk stories yet.</strong><span className="muted">Run the OSS demo to seed a full allow / warn / block flow.</span></div> : null}
+          </div>
+        </div>
+      </section>
+
+      <section className="layout layout--equalCols">
+        <div className="card card--stretch" ref={activityRef as any}>
+          <div className="sectionHeader">
+            <div><div className="eyebrow">Live rail</div><h3>Recent activity</h3></div>
+            <div className="filters filters--activity">
+              <input className="input" placeholder="Search tool, agent, domain" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
+              <select className="input input--small" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="all">All</option><option value="allowed">Allowed</option><option value="warned">Warned</option><option value="blocked">Blocked</option></select>
+              <input className="input input--small" type="datetime-local" value={filters.from || ''} onChange={(e) => setFilters({ ...filters, from: e.target.value })} title="From" />
+              <input className="input input--small" type="datetime-local" value={filters.to || ''} onChange={(e) => setFilters({ ...filters, to: e.target.value })} title="To" />
+              <button className="button button--ghost" onClick={() => { const latest = dateFilteredEvents[0]?.timestamp || sourceEvents[0]?.timestamp || Math.floor(Date.now()/1000); const from = latest - 3600; setFilters({ ...filters, from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(latest) }); }}>Last hour</button>
+              <button className="button button--ghost" onClick={() => { const latest = sourceEvents[0]?.timestamp || Math.floor(Date.now()/1000); const from = latest - 86400; setFilters({ ...filters, from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(latest) }); }}>Last 24h</button>
+            </div>
+          </div>
+          {(selectedBucket || filters.status !== 'all' || filters.search || focusedEventIds?.length || focusLabel || filters.from || filters.to) ? <div className="activeFilterBar"><div className="traceSummaryBar">{selectedBucket ? <span>Focused minute: {fmtTs(selectedBucket.timestamp)}</span> : null}{focusLabel ? <span>{focusLabel}</span> : null}{filters.status !== 'all' ? <span>Status: {filters.status}</span> : null}{filters.search ? <span>Search: {filters.search}</span> : null}{filters.from ? <span>From: {fmtTs(fromDatetimeLocalValue(filters.from) || undefined)}</span> : null}{filters.to ? <span>To: {fmtTs(fromDatetimeLocalValue(filters.to) || undefined)}</span> : null}<span>{scopedEvents.length} events in current focus</span></div><button className="button button--ghost" onClick={clearFocus}>Clear focus</button></div> : null}
+          <div className="eventRail scrollPanel scrollPanel--large">{scopedEvents.length ? scopedEvents.map((event: any) => (<button key={event.id} className="eventRow" onClick={() => { if (event.trace_id) setSelectedTraceId(event.trace_id); onOpenDecision(event.id); }}><div className={classNames('eventRow__dot', `is-${statusTone(event.status)}`)} /><div className="eventRow__main"><div className="eventRow__title">{event.tool || 'unknown'} <span className={`badge badge--${statusTone(event.status)}`}>{event.status}</span>{event.matched_rule_label ? <span className="badge badge--rule">{event.matched_rule_label}</span> : null}</div><div className="eventRow__meta">{event.agent_name || 'unknown agent'} · {event.domain || event.route_target || 'no route'} · {fmtTs(event.timestamp)}</div></div><div className="eventRow__score">{Math.round(event.risk_score || 0)}</div></button>)) : <div className="emptyState"><strong>No events match the current focus.</strong><span className="muted">Try clearing the timeline focus or using a broader status filter.</span></div>}</div>
+        </div>
+
+        <div className="card card--stretch" ref={alertsRef as any}>
+          <div className="sectionHeader"><div><div className="eyebrow">Response</div><h3>Insights and alerts</h3></div><div className="toggleRow"><button className={classNames('segmented', selectedAlertMode === 'all' && 'is-active')} onClick={() => focusAlerts('all')}>All alerts</button><button className={classNames('segmented', selectedAlertMode === 'open' && 'is-active')} onClick={() => focusAlerts('open')}>Open only</button></div></div>
+          <div className="insightList scrollPanel scrollPanel--large">{(overview.insights || []).map((insight: any, idx: number) => (<div key={idx} className={classNames('insight', insight.severity === 'high' && 'is-danger', insight.severity === 'medium' && 'is-warn')}><strong>{insight.title}</strong><div className="muted">{insight.message}</div></div>))}{visibleAlerts.map((alert: any, idx: number) => (<button key={alert.id || idx} className={classNames('alertItem', !alert.acknowledged && 'alertItem--open')} onClick={() => alert.event_id ? onOpenDecision(alert.event_id) : undefined}><div><div className="alertItem__title">{alert.title || 'Alert'}</div><div className="alertItem__meta">{alert.message || 'No message'} · {alert.severity || 'info'}</div></div><div className={`badge badge--${alert.severity === 'high' ? 'danger' : alert.severity === 'medium' ? 'warn' : 'ok'}`}>{alert.acknowledged ? 'acknowledged' : 'open'}</div></button>))}</div>
+        </div>
+      </section>
+
+      <section className="stack">
+        <section className="card card--hero">
+          <div className="hero__left">
+            <div className="eyebrow">Command view</div>
+            <h2>Execution flow explorer</h2>
+            <p className="muted">Run the built-in OSS demo, replay a trace, and inspect the exact rule fields that fired.</p>
+            {!hasTraceData ? <div className="emptyState"><strong>No trace data yet.</strong><span className="muted">Run the OSS demo to generate traces and unlock the replay explorer.</span></div> : null}
+            <div className="hero__stats">
+              <Stat label="Trace events" value={selectedTrace?.summary?.event_count || 0} />
+              <Stat label="Agents" value={Object.keys(selectedTrace?.summary?.agents || {}).length} />
+              <Stat label="Tools" value={Object.keys(selectedTrace?.summary?.tools || {}).length} />
+              <Stat label="Duration" value={selectedTrace?.summary ? `${Math.max(0, Math.round((selectedTrace.summary.end_timestamp - selectedTrace.summary.start_timestamp) * 1000))} ms` : '—'} />
+            </div>
+            <div className="toggleRow replayToolbar">
+              <button className="button" onClick={onRunDemo}>Run OSS demo</button>
+              <button className="button button--ghost" onClick={() => setIsPlaying((v) => !v)} disabled={!replayEvents.length}>{isPlaying ? 'Pause replay' : 'Play replay'}</button>
+              <button className="button button--ghost" onClick={() => { setReplayIndex(0); setIsPlaying(false); }} disabled={!replayEvents.length}>Reset</button>
+            </div>
+            <div className="replayScrubber">
+              <input type="range" min={0} max={Math.max(0, replayEvents.length - 1)} value={Math.min(replayIndex, Math.max(0, replayEvents.length - 1))} onChange={(e) => { setReplayIndex(Number(e.target.value)); setIsPlaying(false); }} disabled={!replayEvents.length} />
+              <div className="traceSummaryBar">
+                <span>Replay step {replayEvents.length ? replayIndex + 1 : 0} / {replayEvents.length}</span>
+                <span>{visibleReplayEvents.at(-1)?.tool || 'Select a trace'}</span>
+                <span>{visibleReplayEvents.at(-1)?.matched_rule_label ? `Rule: ${visibleReplayEvents.at(-1)?.matched_rule_label}` : 'No rule highlighted yet'}</span>
+              </div>
+            </div>
+          </div>
+          <div className="hero__right">
+            <TraceGraph trace={replayTrace as any} onOpenDecision={onOpenDecision} compact={false} />
+          </div>
+        </section>
+
+        <section className="layout layout--equalCols layout--bottomSupport">
+          <div className="card">
+            <div className="sectionHeader"><div><div className="eyebrow">Trace catalogue</div><h3>Recent traces</h3></div></div>
+            <div className="traceList scrollPanel scrollPanel--medium">{traceCatalogue.length ? (traceCatalogue.map((trace: TraceSummary) => (<button key={trace.trace_id} className="traceCard" onClick={() => setSelectedTraceId(trace.trace_id)}><div><div className="traceCard__title">{trace.trace_id}</div><div className="traceCard__meta">{trace.summary?.event_count || 0} events · {Object.keys(trace.summary?.statuses || {}).join(', ') || 'no statuses'}</div></div><div className={`traceCard__status badge badge--${statusTone(Object.entries(trace.summary?.statuses || {}).sort((a: any, b: any) => b[1] - a[1])[0]?.[0] || 'allowed')}`}>{Object.entries(trace.summary?.statuses || {}).sort((a: any, b: any) => b[1] - a[1])[0]?.[0] || 'allowed'}</div></button>))) : <div className="emptyState"><strong>No traces available yet.</strong><span className="muted">Use the Run OSS demo button to seed a complete allow / warn / block trace set.</span></div>}</div>
+          </div>
+
+          <div className="card">
+            <div className="sectionHeader"><div><div className="eyebrow">Scenario simulation</div><h3>What changes if policy changes?</h3></div><button className="button" onClick={runSimulation} disabled={!selectedTrace?.trace_id || simulating}>{simulating ? 'Simulating…' : 'Run simulation'}</button></div>
+            <p className="muted">Paste a candidate policy fragment, replay it across the selected trace, and compare original versus simulated outcomes before changing production policy.</p>
+            <textarea className="editor editor--compact" value={simulationDraft} onChange={(e) => setSimulationDraft(e.target.value)} spellCheck={false} />
+            {simulationResult ? <div className="simulationPanel"><div className="traceSummaryBar"><span>Allow {simulationResult.summary?.allow || 0}</span><span>Warn {simulationResult.summary?.warn || 0}</span><span>Block {simulationResult.summary?.block || 0}</span></div><div className="eventRail scrollPanel scrollPanel--medium">{(simulationResult.results || []).slice(0, 6).map((row: any) => (<button key={row.event_id} className="eventRow" onClick={() => onOpenDecision(row.event_id)}><div className={classNames('eventRow__dot', `is-${statusTone(row.simulated_status === 'warn' ? 'warned' : row.simulated_status === 'block' ? 'blocked' : 'allowed')}`)} /><div className="eventRow__main"><div className="eventRow__title">Event {row.event_id} {row.changed ? <span className="badge badge--warn">changed</span> : <span className="badge badge--ok">same</span>}</div><div className="eventRow__meta">Original: {row.original_status} · Simulated: {row.simulated_status}</div></div><div className="eventRow__score">{row.explanations?.length || 0}</div></button>))}</div></div> : null}
+          </div>
+        </section>
+      </section>
+    </div>
+  );
+}
+
+
+function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTemplate, onSave, loading }: any) {
+  const [selectedBucket, setSelectedBucket] = useState<typeof RULE_BUCKETS[number]>('block');
+  const [selectedRuleIndex, setSelectedRuleIndex] = useState(0);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [templateMode, setTemplateMode] = useState<'replace' | 'merge'>('merge');
+
+  const workingPolicy = useMemo(() => safeParsePolicy(policyText, policy), [policyText, policy]);
+  const activeRules = workingPolicy[selectedBucket] || [];
+  const activeRule = activeRules[selectedRuleIndex] || null;
+
+  useEffect(() => {
+    if (selectedRuleIndex > Math.max(0, activeRules.length - 1)) {
+      setSelectedRuleIndex(Math.max(0, activeRules.length - 1));
+    }
+  }, [selectedRuleIndex, activeRules.length, selectedBucket]);
+
+  function updateDoc(nextDoc: PolicyDoc) {
+    setPolicyText(JSON.stringify(ensurePolicyDoc(nextDoc), null, 2));
+  }
+
+  function mutateRule(mutator: (rule: any) => any) {
+    const nextDoc = ensurePolicyDoc(workingPolicy);
+    const bucketRules = [...nextDoc[selectedBucket]];
+    const current = bucketRules[selectedRuleIndex] || {};
+    bucketRules[selectedRuleIndex] = mutator({ ...current });
+    nextDoc[selectedBucket] = bucketRules;
+    updateDoc(nextDoc);
+  }
+
+  function addRule(bucket = selectedBucket) {
+    const nextDoc = ensurePolicyDoc(workingPolicy);
+    const bucketRules = [...nextDoc[bucket]];
+    bucketRules.push({ title: 'New rule', enabled: true, type: bucket === 'allow' ? '' : 'http_request' });
+    nextDoc[bucket] = bucketRules;
+    updateDoc(nextDoc);
+    setSelectedBucket(bucket);
+    setSelectedRuleIndex(bucketRules.length - 1);
+  }
+
+  function duplicateRule() {
+    if (!activeRule) return;
+    const nextDoc = ensurePolicyDoc(workingPolicy);
+    const bucketRules = [...nextDoc[selectedBucket]];
+    bucketRules.splice(selectedRuleIndex + 1, 0, { ...activeRule, title: `${summarizeRule(activeRule)} copy` });
+    nextDoc[selectedBucket] = bucketRules;
+    updateDoc(nextDoc);
+    setSelectedRuleIndex(selectedRuleIndex + 1);
+  }
+
+  function deleteRule() {
+    if (!activeRule) return;
+    const nextDoc = ensurePolicyDoc(workingPolicy);
+    const bucketRules = [...nextDoc[selectedBucket]];
+    bucketRules.splice(selectedRuleIndex, 1);
+    nextDoc[selectedBucket] = bucketRules;
+    updateDoc(nextDoc);
+    setSelectedRuleIndex(Math.max(0, selectedRuleIndex - 1));
+  }
+
+  function moveRule(direction: -1 | 1) {
+    const target = selectedRuleIndex + direction;
+    if (target < 0 || target >= activeRules.length) return;
+    const nextDoc = ensurePolicyDoc(workingPolicy);
+    const bucketRules = [...nextDoc[selectedBucket]];
+    const [rule] = bucketRules.splice(selectedRuleIndex, 1);
+    bucketRules.splice(target, 0, rule);
+    nextDoc[selectedBucket] = bucketRules;
+    updateDoc(nextDoc);
+    setSelectedRuleIndex(target);
+  }
+
+  function updateCustomEntry(index: number, patch: Partial<{ key: string; operator: string; value: any; mode: string }>) {
+    mutateRule((rule) => {
+      const entries = customRuleEntries(rule).map(([key, expected]) => ({
+        key,
+        operator: getRuleOperator({ [key]: expected }, key, 'eq'),
+        value: getRuleValue({ [key]: expected }, key),
+        mode: Array.isArray(getRuleValue({ [key]: expected }, key)) ? 'list' : typeof getRuleValue({ [key]: expected }, key) === 'number' ? 'number' : typeof getRuleValue({ [key]: expected }, key) === 'boolean' ? 'boolean' : 'text',
+      }));
+      entries[index] = { ...entries[index], ...patch };
+      for (const [key] of Object.entries(rule)) {
+        if (!['enabled', 'priority', 'description', 'reason', 'title', 'name', 'type', 'tool'].includes(key) && !String(key).startsWith('classifier:') && !['field:url', 'field:domain', 'field:args.args', 'field:risk_score', 'field:metadata.behavior.suspicious_sequence', 'field:metadata.behavior.previous_blocked'].includes(key)) {
+          delete rule[key];
+        }
+      }
+      for (const entry of entries) {
+        if (!entry.key) continue;
+        const value = coerceRuleInput(String(entry.value ?? ''), entry.mode as any);
+        Object.assign(rule, setRuleOperatorValue(rule, entry.key, entry.operator || 'eq', value));
+      }
+      return rule;
+    });
+  }
+
+  function addCustomEntry() {
+    mutateRule((rule) => {
+      rule['field:route_target'] = { contains: '' };
+      return rule;
+    });
+  }
+
+  const templateCards = Array.isArray(templates) ? templates : [];
+  const parseError = (() => { try { JSON.parse(policyText); return ''; } catch (error: any) { return error?.message || 'Invalid JSON'; } })();
+
+  return (
+    <div className="pageGrid">
+      <section className="layout layout--twoThirds rulesLayout">
+        <div className="stack">
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Rule sets</div>
+                <h3>Interactive policy builder</h3>
+              </div>
+              <div className="toggleRow">
+                <button className="button button--ghost" onClick={() => addRule()}>New rule</button>
+                <button className="button" onClick={onSave} disabled={loading || !!parseError}>{loading ? 'Saving…' : 'Validate & save'}</button>
+              </div>
+            </div>
+            <div className="bucketTabs">
+              {RULE_BUCKETS.map((bucket) => (
+                <button key={bucket} className={classNames('bucketTab', selectedBucket === bucket && 'is-active')} onClick={() => { setSelectedBucket(bucket); setSelectedRuleIndex(0); }}>
+                  <span>{bucket}</span>
+                  <strong>{workingPolicy[bucket].length}</strong>
+                </button>
+              ))}
+            </div>
+            <div className="rulesSplit">
+              <div className="ruleRail">
+                <div className="ruleRail__header">
+                  <div>
+                    <div className="subheading">{selectedBucket} rules</div>
+                    <p className="muted">Grouped the way analysts expect: block, warn, monitor, and allow.</p>
+                  </div>
+                </div>
+                <div className="ruleList">
+                  {activeRules.map((rule: any, idx: number) => (
+                    <button key={idx} className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active')} onClick={() => setSelectedRuleIndex(idx)}>
+                      <div>
+                        <div className="ruleCard__title">{summarizeRule(rule)}</div>
+                        <div className="ruleCard__meta">{rule.type || 'any type'} {rule.tool ? `· ${rule.tool}` : ''}</div>
+                      </div>
+                      <div className="ruleCard__flags">
+                        {rule.enabled === false ? <span className="badge">disabled</span> : null}
+                        <span className={`badge badge--${selectedBucket === 'block' ? 'danger' : selectedBucket === 'warn' ? 'warn' : 'ok'}`}>{selectedBucket}</span>
+                      </div>
+                    </button>
+                  ))}
+                  {!activeRules.length ? (
+                    <div className="emptyState">
+                      <strong>No {selectedBucket} rules yet</strong>
+                      <p className="muted">Create the first rule in this group and Sentinel will preserve the JSON under the hood.</p>
+                      <button className="button" onClick={() => addRule(selectedBucket)}>Create {selectedBucket} rule</button>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="ruleEditorPane">
+                {activeRule ? (
+                  <div className="ruleEditor">
+                    <div className="ruleEditor__toolbar">
+                      <div>
+                        <div className="eyebrow">Selected rule</div>
+                        <h4>{summarizeRule(activeRule)}</h4>
+                      </div>
+                      <div className="toggleRow">
+                        <button className="button button--ghost" onClick={() => moveRule(-1)} disabled={selectedRuleIndex === 0}>Up</button>
+                        <button className="button button--ghost" onClick={() => moveRule(1)} disabled={selectedRuleIndex === activeRules.length - 1}>Down</button>
+                        <button className="button button--ghost" onClick={duplicateRule}>Duplicate</button>
+                        <button className="button button--ghost" onClick={deleteRule}>Delete</button>
+                      </div>
+                    </div>
+
+                    <div className="ruleEditorGrid">
+                      <label className="formField"><span>Rule name</span><input className="input" value={activeRule.title || activeRule.name || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'title', e.target.value), 'name', ''))} /></label>
+                      <label className="formField"><span>Action type</span><select className="input" value={activeRule.type || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'type', e.target.value))}>{RULE_TYPES.map((type) => <option key={type} value={type}>{type || 'Any type'}</option>)}</select></label>
+                      <label className="formField"><span>Tool name</span><input className="input" placeholder="delete_database or subprocess.run" value={activeRule.tool || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'tool', e.target.value))} /></label>
+                      <label className="formField"><span>Priority</span><input className="input" type="number" value={activeRule.priority ?? ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'priority', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                    </div>
+
+                    <div className="formField"><span>Description</span><textarea className="input ruleTextarea" value={activeRule.description || activeRule.reason || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'description', e.target.value), 'reason', ''))} /></div>
+                    <label className="switchRow"><input type="checkbox" checked={activeRule.enabled !== false} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'enabled', e.target.checked ? true : false))} /> Enabled</label>
+
+                    <div className="logicBuilder">
+                      <div className="subheading">Rule logic builder</div>
+                      <div className="logicFlow">
+                        <div className="logicNode"><strong>IF</strong><span>{activeRule.type || 'any action'}{activeRule.tool ? ` · ${activeRule.tool}` : ''}</span></div>
+                        <div className="logicConnector">AND</div>
+                        <div className="logicNode"><strong>WHEN</strong><span>{customRuleEntries(activeRule).length + ADVANCED_FIELDS.filter((field) => Boolean(getRuleValue(activeRule, field.key))).length + CLASSIFIER_KEYS.filter((key) => Boolean(activeRule[`classifier:${key}`])).length} active conditions</span></div>
+                        <div className="logicConnector">THEN</div>
+                        <div className={`logicNode logicNode--${selectedBucket === 'block' ? 'danger' : selectedBucket === 'warn' ? 'warn' : 'ok'}`}><strong>{selectedBucket.toUpperCase()}</strong><span>{activeRule.description || activeRule.reason || 'policy outcome'}</span></div>
+                      </div>
+                    </div>
+
+                    <div className="formSection">
+                      <div className="subheading">Common matches</div>
+                      <div className="ruleEditorGrid">
+                        {ADVANCED_FIELDS.map((field) => field.valueType === 'boolean' ? (
+                          <label key={field.key} className="switchRow switchRow--card">
+                            <input type="checkbox" checked={Boolean(getRuleValue(activeRule, field.key))} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, field.key, field.operator, e.target.checked))} />
+                            <span>{field.label}</span>
+                          </label>
+                        ) : (
+                          <label key={field.key} className="formField"><span>{field.label}</span><input className="input" placeholder={field.placeholder || ''} value={String(getRuleValue(activeRule, field.key) || '')} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, field.key, field.operator, e.target.value))} /></label>
+                        ))}
+                        <label className="formField"><span>Risk score at least</span><input className="input" type="number" value={getRuleOperator(activeRule, 'field:risk_score') === 'gte' ? String(getRuleValue(activeRule, 'field:risk_score') || '') : ''} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, 'field:risk_score', 'gte', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                        <label className="formField"><span>Risk score at most</span><input className="input" type="number" value={getRuleOperator(activeRule, 'field:risk_score') === 'lte' ? String(getRuleValue(activeRule, 'field:risk_score') || '') : ''} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, 'field:risk_score', 'lte', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                      </div>
+                    </div>
+
+                    <div className="formSection">
+                      <div className="subheading">Classifier hits</div>
+                      <div className="classifierGrid">
+                        {CLASSIFIER_KEYS.map((classifier) => (
+                          <label key={classifier} className="switchRow switchRow--card">
+                            <input type="checkbox" checked={Boolean(activeRule[`classifier:${classifier}`])} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, `classifier:${classifier}`, e.target.checked ? true : ''))} />
+                            <span>{classifier.replace(/_/g, ' ')}</span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="formSection">
+                      <div className="sectionHeader sectionHeader--tight">
+                        <div>
+                          <div className="subheading">Custom conditions</div>
+                          <p className="muted">Keep the flexible engine, but edit conditions with fields instead of raw JSON.</p>
+                        </div>
+                        <button className="button button--ghost" onClick={addCustomEntry}>Add condition</button>
+                      </div>
+                      <div className="customList">
+                        {customRuleEntries(activeRule).map(([key, expected], idx) => {
+                          const entryRule = { [key]: expected };
+                          const operator = getRuleOperator(entryRule, key, 'eq');
+                          const rawValue = getRuleValue(entryRule, key);
+                          const valueMode = Array.isArray(rawValue) ? 'list' : typeof rawValue === 'number' ? 'number' : typeof rawValue === 'boolean' ? 'boolean' : 'text';
+                          return (
+                            <div key={`${key}-${idx}`} className="customRow">
+                              <input className="input" value={key} onChange={(e) => updateCustomEntry(idx, { key: e.target.value })} placeholder="field:route_target" />
+                              <select className="input input--small" value={operator} onChange={(e) => updateCustomEntry(idx, { operator: e.target.value })}>{OPERATOR_OPTIONS.map((op) => <option key={op} value={op}>{op}</option>)}</select>
+                              <input className="input" value={Array.isArray(rawValue) ? rawValue.join(', ') : String(rawValue ?? '')} onChange={(e) => updateCustomEntry(idx, { value: e.target.value, mode: valueMode })} placeholder="value" />
+                            </div>
+                          );
+                        })}
+                        {!customRuleEntries(activeRule).length ? <div className="muted">No extra conditions on this rule.</div> : null}
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="emptyState"><strong>Select a rule</strong><p className="muted">Pick a rule from the grouped list, or create a new one in this bucket.</p></div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="stack">
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Templates</div>
+                <h3>Quick starting points</h3>
+              </div>
+              <div className="toggleRow">
+                <button className={classNames('segmented', templateMode === 'merge' && 'is-active')} onClick={() => setTemplateMode('merge')}>Merge</button>
+                <button className={classNames('segmented', templateMode === 'replace' && 'is-active')} onClick={() => setTemplateMode('replace')}>Replace</button>
+              </div>
+            </div>
+            <div className="templateList">
+              {templateCards.map((template: any, idx: number) => {
+                const doc = ensurePolicyDoc(template.template || template || {});
+                return (
+                  <button key={idx} className="templateCard templateCard--stacked" onClick={() => {
+                    if (templateMode === 'replace') onApplyTemplate(template);
+                    else {
+                      const merged = ensurePolicyDoc({
+                        block: [...workingPolicy.block, ...doc.block],
+                        warn: [...workingPolicy.warn, ...doc.warn],
+                        monitor: [...workingPolicy.monitor, ...doc.monitor],
+                        allow: [...workingPolicy.allow, ...doc.allow],
+                      });
+                      setPolicyText(JSON.stringify(merged, null, 2));
+                    }
+                  }}>
+                    <strong>{template.name || `Template ${idx + 1}`}</strong>
+                    <div className="templateCounts">{RULE_BUCKETS.map((bucket) => <span key={bucket}>{bucket}: {doc[bucket].length}</span>)}</div>
+                    <code>{JSON.stringify(doc).slice(0, 180)}…</code>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Advanced</div>
+                <h3>Raw policy document</h3>
+              </div>
+              <button className="button button--ghost" onClick={() => setShowAdvanced((v) => !v)}>{showAdvanced ? 'Hide JSON' : 'Show JSON'}</button>
+            </div>
+            <p className="muted">The visual builder writes straight back to the real OSS policy file, so advanced users can still inspect or hand-edit the underlying JSON.</p>
+            {parseError ? <div className="banner banner--error">JSON error: {parseError}</div> : null}
+            {showAdvanced ? <textarea className="editor editor--compact" value={policyText} onChange={(e) => setPolicyText(e.target.value)} spellCheck={false} /> : null}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
+  const event = detail.event || {};
+  const action = event.action || {};
+  const narrative = describeEventIntent(event);
+  const workflow = detail.workflow_events || [];
+  const matchedFields = detail.explainability?.matched_fields || [];
+  const matchedRuleObject = event?.matched_rule || event?.decision?.matched_rule || null;
+  const matchedRuleLabel = deriveMatchedRuleLabel(event) || 'No matched rule recorded';
+  const matchedRuleDetails = matchedRuleObject && typeof matchedRuleObject === 'object'
+    ? Object.entries(matchedRuleObject).map(([key, value]) => ({ key, value }))
+    : [];
+  const detailCards = [
+    { label: 'Agent', value: action.agent_name || 'unknown agent' },
+    { label: 'Tool', value: action.tool || action.type || 'event' },
+    { label: 'Sent to', value: narrative.target },
+    { label: 'Risk', value: action.risk_score ?? 0 },
+    { label: 'Rule hit', value: matchedRuleLabel },
+    { label: 'Decision', value: `${narrative.outcome} · ${narrative.reason}` },
+  ];
+  return (
+    <div className="pageGrid">
+      <section className="layout layout--twoThirds">
+        <div className="stack">
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Decision details</div>
+                <h3>{action.tool || action.type || 'event'} <span className={`badge badge--${statusTone(event.status)}`}>{event.status}</span></h3>
+              </div>
+              <div className="toggleRow">
+                {detail.neighbors?.previous_event_id ? <button className="button button--ghost" onClick={() => onOpenDecision(detail.neighbors.previous_event_id)}>Previous</button> : null}
+                {detail.neighbors?.next_event_id ? <button className="button button--ghost" onClick={() => onOpenDecision(detail.neighbors.next_event_id)}>Next</button> : null}
+              </div>
+            </div>
+            <div className="detailGrid detailGrid--wide">
+              <KeyValue label="Timestamp" value={fmtTs(event.timestamp)} />
+              <KeyValue label="Trace" value={event.trace_id} />
+              <KeyValue label="Route" value={event.decision?.route_target || action.route_target} />
+            </div>
+            <div className="decisionStoryGrid">
+              <div className="decisionStoryCard">
+                <div className="eyebrow">Narrative</div>
+                <h4>What happened</h4>
+                <div className="storySteps">
+                  <div className="storyStep"><span className="storyStep__index">1</span><div><strong>{action.agent_name || 'Unknown agent'}</strong><div className="muted">used <code>{narrative.tool}</code></div></div></div>
+                  <div className="storyStep"><span className="storyStep__index">2</span><div><strong>It sent this data</strong><div className="muted">{narrative.dataPreview}</div></div></div>
+                  <div className="storyStep"><span className="storyStep__index">3</span><div><strong>Sentinel evaluated the action</strong><div className="muted">Target: {narrative.target} · Risk score {Math.round(Number(action.risk_score || 0))}</div></div></div>
+                  <div className="storyStep"><span className="storyStep__index">4</span><div><strong>{matchedRuleLabel}</strong><div className="muted">{narrative.reason}</div></div></div>
+                  <div className="storyStep"><span className={`storyStep__index is-${statusTone(event.status)}`}>5</span><div><strong>Final decision: {narrative.outcome}</strong><div className="muted">{event.decision?.route_target || 'No alternate route selected'}</div></div></div>
+                </div>
+              </div>
+              <div className="decisionStoryCard">
+                <div className="eyebrow">Decision factors</div>
+                <h4>Why Sentinel acted</h4>
+                <div className="decisionFactGrid">{detailCards.map((item) => <div key={item.label} className="decisionFact"><span>{item.label}</span><strong>{displayValue(item.value)}</strong></div>)}</div>
+                <div className="subheading">Matched rule</div>
+                <div className="chipGrid">
+                  <button type="button" className="chip chip--interactive" onClick={() => onOpenRule?.(matchedRuleObject || matchedRuleLabel)}>
+                    <strong>{matchedRuleLabel}</strong>
+                    <span>Open this rule in the Rules Workspace</span>
+                  </button>
+                  {matchedRuleDetails.map((row: any, idx: number) => <div key={idx} className="chip"><strong>{row.key}</strong><code>{displayValue(row.value)}</code></div>)}
+                </div>
+                <div className="subheading">Matched rule fields</div>
+                <div className="chipGrid">{matchedFields.length ? matchedFields.map((row: any, idx: number) => <div key={idx} className="chip"><strong>{row.field}</strong><span>{row.operator} {displayValue(row.expected)}</span><code>{displayValue(row.actual)}</code></div>) : <div className="muted">No rule-field explanation was captured for this event.</div>}</div>
+              </div>
+            </div>
+            <div className="codeGrid codeGrid--decision">
+              <CodeCard title="Action" value={action} />
+              <CodeCard title="Input payload" value={event.input_payload} />
+              <CodeCard title="Output payload" value={event.output_payload} />
+              <CodeCard title="Decision JSON" value={event.decision} />
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Workflow context</div>
+                <h3>Related events</h3>
+              </div>
+            </div>
+            <div className="eventRail">
+              {workflow.map((row: any) => (
+                <button key={row.id} className="eventRow" onClick={() => onOpenDecision(row.id)}>
+                  <div className={classNames('eventRow__dot', `is-${statusTone(row.status)}`)} />
+                  <div className="eventRow__main">
+                    <div className="eventRow__title">{row.action?.tool || row.action?.type || 'event'}</div>
+                    <div className="eventRow__meta">{row.action?.agent_name || 'unknown agent'} · {fmtTs(row.timestamp)}</div>
+                  </div>
+                  <div className="eventRow__score">{Math.round(row.action?.risk_score || 0)}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="stack">
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Trace graph</div>
+                <h3>Flow around this decision</h3>
+              </div>
+            </div>
+            <TraceGraph trace={detail.trace} onOpenDecision={onOpenDecision} onOpenRule={onOpenRule} compact />
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: TraceSummary | null; onOpenDecision: (id: number) => void; onOpenRule?: (rule: any) => void; compact?: boolean; }) {
+  if (!trace?.graph?.nodes?.length) return <div className="traceEmpty">No trace selected yet.</div>;
+  const nodes = trace.graph.nodes;
+  const width = Math.max(920, nodes.length * 220);
+  const height = compact ? 320 : 420;
+  const laneY = compact ? 110 : 138;
+  const eventPositions = nodes.map((node, index) => ({ ...node, x: 80 + (index * 210), y: laneY }));
+  const byId = new Map(eventPositions.map((node) => [node.id, node]));
+  const eventMap = new Map((trace.events || []).map((event: any) => [event.id, event]));
+  const ruleNodes = eventPositions.flatMap((node, index) => {
+    const event = eventMap.get(node.id);
+    const matchedRule = event?.decision?.matched_rule;
+    if (!matchedRule) return [];
+    const label = typeof matchedRule === 'string' ? matchedRule : summarizeRule(matchedRule) || 'Triggered rule';
+    const severity = node.status === 'blocked' ? 'danger' : node.status === 'warned' ? 'warn' : 'ok';
+    return [{
+      id: `rule-${node.id}`,
+      parentId: node.id,
+      label,
+      severity,
+      x: node.x,
+      y: laneY + (compact ? 118 : 140) + ((index % 2) * 12),
+    }];
+  });
+
+  return (
+    <div className="traceGraphWrap">
+      <div className="traceSummaryBar">
+        <span>{trace.trace_id}</span>
+        <span>{trace.summary.event_count} events</span>
+        <span>{fmtTs(trace.summary.start_timestamp)}</span>
+        <span>{ruleNodes.length} triggered rules shown inline</span>
+      </div>
+      <div className="traceGraphScroller">
+        <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="traceSvg">
+          <defs>
+            <linearGradient id="traceGradient" x1="0%" x2="100%" y1="0%" y2="0%">
+              <stop offset="0%" stopColor="rgba(123,97,255,0.18)" />
+              <stop offset="100%" stopColor="rgba(76,224,181,0.18)" />
+            </linearGradient>
+          </defs>
+          <rect x="30" y={laneY - 52} width={width - 60} height="104" rx="22" fill="url(#traceGradient)" />
+          {ruleNodes.length ? <rect x="30" y={laneY + (compact ? 76 : 92)} width={width - 60} height={compact ? 132 : 162} rx="22" className="traceRuleLane" /> : null}
+          {trace.graph.edges.map((edge, idx) => {
+            const source = byId.get(edge.source);
+            const target = byId.get(edge.target);
+            if (!source || !target) return null;
+            return <line key={idx} x1={source.x + 72} y1={source.y} x2={target.x - 72} y2={target.y} className={`traceEdge traceEdge--${edge.kind || 'sequence'}`} />;
+          })}
+          {ruleNodes.map((rule, idx) => {
+            const source = byId.get(rule.parentId);
+            if (!source) return null;
+            return (
+              <g key={rule.id}>
+                <path d={`M ${source.x} ${source.y + 52} C ${source.x} ${source.y + 76}, ${rule.x} ${rule.y - 58}, ${rule.x} ${rule.y - 34}`} className={`traceEdge traceEdge--triggered traceEdge--${rule.severity}`} />
+                <g transform={`translate(${rule.x}, ${rule.y})`} className="traceRuleNode" onClick={() => onOpenRule?.(rule.label)}>
+                  <rect x="-82" y="-26" width="164" height="52" rx="18" className={`traceRuleNode__card traceRuleNode__card--${rule.severity}`} />
+                  <text x="0" y="-3" textAnchor="middle" className="traceRuleNode__title">{String(rule.label).slice(0, 26)}</text>
+                  <text x="0" y="15" textAnchor="middle" className="traceRuleNode__meta">open rule</text>
+                </g>
+              </g>
+            );
+          })}
+          {eventPositions.map((node) => {
+            const event = eventMap.get(node.id);
+            const matchedRule = event?.decision?.matched_rule;
+            const matchedLabel = deriveMatchedRuleLabel(event) || '';
+            return (
+              <g key={node.id} transform={`translate(${node.x}, ${node.y})`} onClick={() => onOpenDecision(Number(node.id))} className="traceNode">
+                <rect x="-72" y="-52" width="144" height="104" rx="24" className={`traceNode__card traceNode__card--${statusTone(node.status)}`} />
+                <text x="0" y="-14" textAnchor="middle" className="traceNode__title">{String(node.label || 'event').slice(0, 18)}</text>
+                <text x="0" y="10" textAnchor="middle" className="traceNode__meta">{node.status}</text>
+                <text x="0" y="34" textAnchor="middle" className="traceNode__risk">risk {Math.round(node.risk_score || 0)}</text>
+                {matchedLabel ? <text x="0" y="56" textAnchor="middle" className="traceNode__rule">{String(matchedLabel).slice(0, 16)}</text> : null}
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function SankeyPanel({ overview, sourceEvents, onFocus, mode = 'agent_tool_outcome' }: { overview: DashboardPayload; sourceEvents: any[]; onFocus: (opts: { status?: string; search?: string; eventIds?: number[]; label?: string }) => void; mode?: 'agent_tool_outcome' | 'agent_rule_outcome' | 'tool_rule_outcome'; }) {
+  const events = (sourceEvents || []).map(normalizeEventRow).filter((event) => event.id);
+  const laneMaps: Record<string, Map<string, number>> = { left: new Map(), mid: new Map(), right: new Map() } as any;
+  const flowCounts = new Map<string, { value: number; statuses: Record<string, number>; eventIds: number[] }>();
+  const pushFlow = (key: string, status: string, eventId: number) => {
+    const current = flowCounts.get(key) || { value: 0, statuses: {}, eventIds: [] };
+    current.value += 1;
+    current.statuses[status] = (current.statuses[status] || 0) + 1;
+    current.eventIds.push(eventId);
+    flowCounts.set(key, current);
+  };
+  const leftLabel = mode === 'tool_rule_outcome' ? 'Tools' : 'Agents';
+  const midLabel = mode === 'agent_tool_outcome' ? 'Tools' : 'Rules';
+  const rightLabel = 'Outcomes';
+  for (const event of events) {
+    const left = mode === 'tool_rule_outcome' ? (event.tool || 'unknown tool') : (event.agent_name || 'unknown agent');
+    const ruleLabel = (event as any).matched_rule_label || deriveMatchedRuleLabel(event) || (event.status === 'allowed' ? 'no rule hit' : `${event.status} decision`);
+    const mid = mode === 'agent_tool_outcome' ? (event.tool || 'unknown tool') : ruleLabel;
+    const status = event.status || 'allowed';
+    const right = ruleLabel && mode !== 'agent_tool_outcome' ? `${status} · ${ruleLabel}` : status;
+    laneMaps.left.set(left, (laneMaps.left.get(left) || 0) + 1);
+    laneMaps.mid.set(mid, (laneMaps.mid.get(mid) || 0) + 1);
+    laneMaps.right.set(right, (laneMaps.right.get(right) || 0) + 1);
+    pushFlow(`l|${left}|m|${mid}`, status, event.id);
+    pushFlow(`m|${mid}|r|${right}`, status, event.id);
+  }
+  const leftNodesRaw = Array.from(laneMaps.left.entries()).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const midNodesRaw = Array.from(laneMaps.mid.entries()).sort((a,b)=>b[1]-a[1]).slice(0,6);
+  const rightNodesRaw = Array.from(laneMaps.right.entries()).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const maxFlow = Math.max(...Array.from(flowCounts.values()).map((entry) => entry.value), 1);
+  const columnX = [80, 400, 720];
+  const laneHeight = 56;
+  const gap = 18;
+  const nodeWidth = 210;
+  const buildNodes = (raw: any[], x: number, lane: string, baseY: number) => raw.map(([key, value], i) => ({ key, value, x, y: baseY + i * (laneHeight + gap), lane }));
+  const leftNodes = buildNodes(leftNodesRaw, columnX[0], 'left', 34);
+  const midNodes = buildNodes(midNodesRaw, columnX[1], 'mid', 20);
+  const rightNodes = buildNodes(rightNodesRaw, columnX[2], 'right', 42);
+  const nodeByKey = new Map<string, any>();
+  [...leftNodes, ...midNodes, ...rightNodes].forEach((node) => nodeByKey.set(`${node.lane}:${node.key}`, node));
+  const dominantTone = (statuses: Record<string, number>) => {
+    const blocked = statuses.blocked || 0; const warned = statuses.warned || 0;
+    return blocked >= warned && blocked > 0 ? 'danger' : warned > 0 ? 'warn' : 'ok';
+  };
+  const edges: Array<{ source: any; target: any; value: number; tone: string; eventIds: number[] }> = [];
+  for (const [key, entry] of flowCounts.entries()) {
+    const [fromLane, fromLabel, toLane, toLabel] = key.split('|');
+    const from = fromLane === 'l' ? nodeByKey.get(`left:${fromLabel}`) : nodeByKey.get(`mid:${fromLabel}`);
+    const to = toLane === 'm' ? nodeByKey.get(`mid:${toLabel}`) : nodeByKey.get(`right:${toLabel}`);
+    if (from && to) edges.push({ source: from, target: to, value: entry.value, tone: dominantTone(entry.statuses), eventIds: entry.eventIds });
+  }
+  const height = Math.max(260, Math.max(leftNodes.length, midNodes.length, rightNodes.length) * (laneHeight + gap) + 40);
+  const outcomeTone = (label: string) => label.startsWith('blocked') ? 'danger' : label.startsWith('warned') ? 'warn' : 'ok';
+  return (
+    <div className="sankeyWrap">
+      <div className="traceSummaryBar"><span>{leftLabel} → {midLabel} → {rightLabel}</span><span>{events.length} observed actions</span><span>Click nodes or coloured lanes to jump into filtered activity</span></div>
+      <div className="signalLegend"><span><i className="legendSwatch legendSwatch--danger" />Blocked-heavy path</span><span><i className="legendSwatch legendSwatch--warn" />Warn-heavy path</span><span><i className="legendSwatch legendSwatch--ok" />Allow-heavy path</span></div>
+      <div className="sankeyScroller">
+        <svg width="980" height={height} viewBox={`0 0 980 ${height}`} className="traceSvg">
+          <text x="100" y="20" className="traceNode__meta">{leftLabel}</text><text x="420" y="20" className="traceNode__meta">{midLabel}</text><text x="740" y="20" className="traceNode__meta">{rightLabel}</text>
+          {edges.map((edge, idx) => {
+            const x1 = edge.source.x + nodeWidth; const y1 = edge.source.y + laneHeight / 2; const x2 = edge.target.x; const y2 = edge.target.y + laneHeight / 2; const dx = (x2 - x1) * 0.5;
+            return <path key={idx} d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`} className={`sankeyEdge sankeyEdge--${edge.tone}`} style={{ strokeWidth: 8 + (edge.value / maxFlow) * 16 }} onClick={() => onFocus({ eventIds: edge.eventIds, label: `${edge.value} events on ${edge.tone} path` })} />;
+          })}
+          {[...leftNodes, ...midNodes, ...rightNodes].map((node) => (<g key={`${node.lane}-${node.key}`} className="sankeyNode" transform={`translate(${node.x}, ${node.y})`} onClick={() => {
+            if (node.lane === 'left') onFocus({ search: node.key, eventIds: events.filter((event) => (mode === 'tool_rule_outcome' ? event.tool : event.agent_name) === node.key).map((event) => event.id), label: `${leftLabel} focus · ${node.key}` });
+            if (node.lane === 'mid') onFocus({ search: node.key, eventIds: events.filter((event) => (mode === 'agent_tool_outcome' ? event.tool : (((event as any).matched_rule_label || deriveMatchedRuleLabel(event) || (event.status === 'allowed' ? 'no rule hit' : `${event.status} decision`)))) === node.key).map((event) => event.id), label: `${midLabel} focus · ${node.key}` });
+            if (node.lane === 'right') { const status = node.key.startsWith('blocked') ? 'blocked' : node.key.startsWith('warned') ? 'warned' : 'allowed'; onFocus({ status, eventIds: events.filter((event) => event.status === status).map((event) => event.id), label: `Outcome focus · ${node.key}` }); }
+          }}><rect width={nodeWidth} height={laneHeight} rx="18" className={`sankeyNode__card sankeyNode__card--${node.lane === 'right' ? outcomeTone(node.key) : 'neutral'}`} /><text x="16" y="24" className="sankeyNode__title">{String(node.key).slice(0, 28)}</text><text x="16" y="42" className="sankeyNode__meta">{node.value} events</text></g>))}
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+
+function MiniTimeline({ data, selectedTimestamp, sourceEvents, onSelectBucket }: { data: any[]; selectedTimestamp?: number | null; sourceEvents?: any[]; onSelectBucket?: (timestamp: number | null, eventIds?: number[]) => void; }) {
+  const events = (sourceEvents || []).map(normalizeEventRow);
+  const maxSeverity = Math.max(...(data || []).map((d) => ((d.blocked || 0) * 1) + ((d.warned || 0) * 0.65) + ((d.allowed || 0) * 0.3)), 1);
+  return (
+    <div className="timelineChart timelineChart--interactive">
+      {(data || []).map((point, idx) => {
+        const blocked = Number(point.blocked || 0);
+        const warned = Number(point.warned || 0);
+        const allowed = Number(point.allowed || 0);
+        const severity = (blocked * 1) + (warned * 0.65) + (allowed * 0.3);
+        const height = Math.max(16, (severity / maxSeverity) * 100);
+        const total = blocked + warned + allowed || 1;
+        const bucketStart = Math.floor(Number(point.timestamp || 0) / 60) * 60;
+        const eventIds = events.filter((event) => Math.floor(Number(event.timestamp || 0) / 60) * 60 === bucketStart).map((event) => event.id);
+        return (
+          <button
+            type="button"
+            key={idx}
+            className={classNames('timelineChart__barWrap', selectedTimestamp === point.timestamp && 'is-active')}
+            title={`${fmtTs(point.timestamp)} · blocked ${blocked} · warned ${warned} · allowed ${allowed} · linked ${eventIds.length}`}
+            onClick={() => onSelectBucket?.(point.timestamp, eventIds)}
+          >
+            <div className="timelineChart__bar timelineChart__bar--stacked" style={{ height: `${height}%` }}>
+              <span className="timelineChart__segment timelineChart__segment--danger" style={{ height: `${Math.max(12, (blocked / total) * 100)}%` }} />
+              <span className="timelineChart__segment timelineChart__segment--warn" style={{ height: `${Math.max(10, (warned / total) * 100)}%` }} />
+              <span className="timelineChart__segment timelineChart__segment--ok" style={{ height: `${Math.max(8, (allowed / total) * 100)}%` }} />
+            </div>
+            <span className="timelineChart__count">{eventIds.length}</span>
+            <span className="timelineChart__label">{new Date(point.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function MiniBarList({ title, items }: { title: string; items: Array<{ label: string; value: number }> }) {
+  const max = Math.max(...items.map((item) => item.value), 1);
+  return (
+    <div>
+      <div className="subheading">{title}</div>
+      <div className="barList">
+        {items.map((item) => (
+          <div key={item.label} className="barList__row">
+            <span>{item.label}</span>
+            <div className="barList__track"><div className="barList__fill" style={{ width: `${(item.value / max) * 100}%` }} /></div>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MetricCard({ title, value, subtitle, tone, onClick }: any) {
+  const Tag: any = onClick ? 'button' : 'div';
+  return (
+    <Tag className={classNames('metricCard', tone && `metricCard--${tone}`, onClick && 'metricCard--interactive')} onClick={onClick}>
+      <div className="metricCard__title">{title}</div>
+      <div className="metricCard__value">{value}</div>
+      <div className="metricCard__subtitle">{subtitle}</div>
+    </Tag>
+  );
+}
+
+function Stat({ label, value }: any) {
+  return <div className="stat"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function KeyValue({ label, value }: { label: string; value: any }) {
+  return <div className="kv"><span>{label}</span><strong>{displayValue(value)}</strong></div>;
+}
+
+function CodeCard({ title, value }: { title: string; value: any }) {
+  return (
+    <div className="codeCard">
+      <div className="subheading">{title}</div>
+      <pre>{displayValue(value)}</pre>
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(<Shell />);

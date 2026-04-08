@@ -1,0 +1,29 @@
+GNU AFFERO GENERAL PUBLIC LICENSE
+Version 3 or later (AGPL-3.0-or-later)
+
+Sentinel Core Platform
+Copyright (c) 2026 Mark Griffiths
+
+This repository's core platform components are licensed under the GNU Affero General Public License,
+version 3 or (at your option) any later version.
+
+You may obtain a copy of the license at:
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+Unless required by applicable law or agreed to in writing, the software is distributed on an
+"AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the AGPL license text at the URL above for the specific language governing permissions and
+limitations under the license.
+
+Scope of this root license:
+- sentinel/ (core platform, control plane, policy engine, dashboard backend, packaged UI)
+- frontend/ (dashboard source)
+- all other repository content unless a subdirectory contains its own LICENSE file
+
+Exceptions:
+- sdks/python/ is licensed under Apache License 2.0
+- sdks/java/ is licensed under Apache License 2.0
+- sdks/rust/ is licensed under Apache License 2.0
+
+Commercial licensing is available. See COMMERCIAL.md.
+Brand usage is restricted. See TRADEMARK.md.
