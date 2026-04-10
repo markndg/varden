@@ -44,3 +44,13 @@ What it proves:
 - one-line protection does not get in the way of ordinary safe agent work
 - Sentinel records the event, trace, and allow decision
 - the command center can now show blocked, warned, and allowed flows side by side
+
+
+## LangChain demos
+
+Official LangChain integration demos live in `demos/langchain/`:
+- `allow_warn_block_demo.py`
+- `sql_guard_demo.py`
+- `exfiltration_demo.py`
+
+These are intended to be the fastest way for OSS users to see Sentinel protecting a framework they already know.

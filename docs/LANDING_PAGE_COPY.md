@@ -28,7 +28,7 @@ Real risk happens when agents take action:
 - runs self-hosted in your environment
 
 ## How it works
-1. Add Sentinel to the application
+1. Add Sentinel to the application1
 2. Sentinel observes outbound actions
 3. Policy evaluates the action and context
 4. Sentinel allows, warns, blocks, or monitors the action

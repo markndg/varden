@@ -36,6 +36,10 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
+
+        host = os.getenv("SENTINEL_HOST", "127.0.0.1")
+        port = os.getenv("SENTINEL_PORT", "8000")
+
         blaze = os.getenv("SENTINEL_BLAZE_COMMAND", "").strip()
         blaze_cmd = blaze.split(" ") if blaze else None
         return cls(
@@ -63,7 +67,7 @@ class AppConfig:
             ingest_rate_limit_per_minute=int(os.getenv("SENTINEL_INGEST_RATE_LIMIT_PER_MINUTE", "12000")),
             stream_connect_rate_limit_per_minute=int(os.getenv("SENTINEL_STREAM_CONNECT_RATE_LIMIT_PER_MINUTE", "120")),
             webhook_signing_secret=os.getenv("SENTINEL_WEBHOOK_SIGNING_SECRET", "change-me-webhook"),
-            public_base_url=os.getenv("SENTINEL_PUBLIC_BASE_URL", f"http://{os.getenv("SENTINEL_HOST", "127.0.0.1")}:{os.getenv("SENTINEL_PORT", "8000")}"),
+            public_base_url = os.getenv("SENTINEL_PUBLIC_BASE_URL",f"http://{host}:{port}"),
             backup_dir=os.getenv("SENTINEL_BACKUP_DIR", "backups"),
             enable_dev_bootstrap=os.getenv("SENTINEL_ENABLE_DEV_BOOTSTRAP", "true").lower() == "true",
             scan_mode=os.getenv("SENTINEL_SCAN_MODE", "deep").lower(),

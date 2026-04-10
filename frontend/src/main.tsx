@@ -126,41 +126,17 @@ function fmtNum(v?: number | null, digits = 0) {
   return Number(v).toFixed(digits);
 }
 
-function toDatetimeLocalValue(ts?: number | null) {
+function toDateTimeLocalValue(ts?: number | null) {
   if (!ts) return '';
-  const d = new Date(ts * 1000);
-  const offset = d.getTimezoneOffset();
-  const local = new Date(d.getTime() - offset * 60000);
-  return local.toISOString().slice(0, 16);
+  const dt = new Date(ts * 1000);
+  const pad = (v: number) => String(v).padStart(2, '0');
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:${pad(dt.getSeconds())}`;
 }
 
-function fromDatetimeLocalValue(value?: string) {
+function fromDateTimeLocalValue(value?: string) {
   if (!value) return null;
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return Math.floor(parsed.getTime() / 1000);
-}
-
-function compactJson(value: any) {
-  if (value === undefined || value === null || value === '') return '—';
-  const text = typeof value === 'string' ? value : JSON.stringify(value);
-  return text.length > 220 ? `${text.slice(0, 220)}…` : text;
-}
-
-function describeEventIntent(event: any) {
-  const action = event?.action || event || {};
-  const decision = event?.decision || {};
-  const tool = action.tool || action.type || 'unknown tool';
-  const target = action.domain || decision.route_target || action.route_target || 'default route';
-  const dataPreview = compactJson(event?.input_payload || action.args || action.input || action.payload);
-  return {
-    tool,
-    target,
-    dataPreview,
-    outcome: event?.status || decision?.effective_action || 'allowed',
-    reason: decision?.reason || 'No reason recorded',
-    matchedRule: deriveMatchedRuleLabel(event) || 'No matched rule recorded',
-  };
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? Math.floor(ts / 1000) : null;
 }
 
 function isElementFullyVisible(el: Element | null) {
@@ -180,7 +156,7 @@ function deriveMatchedRuleLabel(event: any): string | null {
   const decision = event?.decision || {};
   const matchedRule = event?.matched_rule || decision?.matched_rule;
   const explicitLabel = event?.matched_rule_label
-    || (typeof matchedRule === 'string' ? matchedRule : summarizeRule(matchedRule))
+    || (typeof matchedRule === 'string' ? matchedRule : matchedRule?.title || matchedRule?.name || matchedRule?.description || matchedRule?.reason)
     || decision?.rule_name
     || decision?.triggered_rule
     || null;
@@ -235,6 +211,50 @@ function ensurePolicyDoc(doc: any): PolicyDoc {
   };
 }
 
+function stableStringify(value: any): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(',')}]`;
+  const entries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
+  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringify(entryValue)}`).join(',')}}`;
+}
+
+function ruleFingerprint(rule: any): string {
+  return stableStringify(rule || {});
+}
+
+function dedupeRules(rules: any[]) {
+  const seen = new Set<string>();
+  const output: any[] = [];
+  for (const rule of rules || []) {
+    const fingerprint = ruleFingerprint(rule);
+    if (seen.has(fingerprint)) continue;
+    seen.add(fingerprint);
+    output.push(rule);
+  }
+  return output;
+}
+
+function dedupePolicyDoc(doc: PolicyDoc): PolicyDoc {
+  return {
+    block: dedupeRules(doc.block),
+    warn: dedupeRules(doc.warn),
+    monitor: dedupeRules(doc.monitor),
+    allow: dedupeRules(doc.allow),
+  };
+}
+
+function mergePolicyWithoutDuplicates(baseDoc: PolicyDoc, templateDoc: PolicyDoc): PolicyDoc {
+  return dedupePolicyDoc({
+    block: [...baseDoc.block, ...templateDoc.block],
+    warn: [...baseDoc.warn, ...templateDoc.warn],
+    monitor: [...baseDoc.monitor, ...templateDoc.monitor],
+    allow: [...baseDoc.allow, ...templateDoc.allow],
+  });
+}
+
+function pickFirstNonEmptyBucket(doc: PolicyDoc): typeof RULE_BUCKETS[number] {
+  return RULE_BUCKETS.find((bucket) => (doc[bucket] || []).length > 0) || 'block';
+}
 
 const RULE_BUCKETS = ['block', 'warn', 'monitor', 'allow'] as const;
 const RULE_TYPES = ['', 'tool_call', 'http_request', 'llm_call'];
@@ -326,7 +346,10 @@ function Shell() {
   const [selectedTraceId, setSelectedTraceId] = useState<string>('');
   const [selectedTrace, setSelectedTrace] = useState<TraceSummary | null>(null);
   const [traceOptions, setTraceOptions] = useState<TraceOption[]>([]);
-  const [filters, setFilters] = usePersistentState('sentinel.filters', { search: '', status: 'all' });
+  const [ruleFocus, setRuleFocus] = useState<string>(new URLSearchParams(location.search).get('rule') || '');
+  const [ruleBucketFocus, setRuleBucketFocus] = useState<string>(new URLSearchParams(location.search).get('bucket') || '');
+  const [ruleFocusNonce, setRuleFocusNonce] = useState<string>(new URLSearchParams(location.search).get('focus') || '');
+  const [filters, setFilters] = usePersistentState('sentinel.filters', { search: '', status: 'all', from: '', to: '' });
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
@@ -335,6 +358,10 @@ function Shell() {
     const handlePop = () => {
       setPage(pageFromLocation(location.pathname));
       setDetailId(detailIdFromLocation(location.pathname));
+      const params = new URLSearchParams(location.search);
+      setRuleFocus(params.get('rule') || '');
+      setRuleBucketFocus(params.get('bucket') || '');
+      setRuleFocusNonce(params.get('focus') || '');
     };
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
@@ -443,6 +470,10 @@ function Shell() {
     history.pushState({}, '', path);
     setPage(next);
     setDetailId(detailIdFromLocation(path));
+    const params = new URLSearchParams(path.split('?')[1] || '');
+    setRuleFocus(params.get('rule') || '');
+    setRuleBucketFocus(params.get('bucket') || '');
+    setRuleFocusNonce(params.get('focus') || '');
   }
 
   async function savePolicy() {
@@ -451,7 +482,8 @@ function Shell() {
     setError('');
     setNotice('');
     try {
-      const parsed = ensurePolicyDoc(JSON.parse(policyText));
+      const parsed = dedupePolicyDoc(ensurePolicyDoc(JSON.parse(policyText)));
+      setPolicyText(JSON.stringify(parsed, null, 2));
       await api('/policy/validate', { method: 'POST', body: JSON.stringify(parsed) }, token);
       await api('/policy', { method: 'PUT', body: JSON.stringify(parsed) }, token);
       setPolicy(parsed);
@@ -483,6 +515,10 @@ function Shell() {
         const blob = JSON.stringify(row).toLowerCase();
         if (!blob.includes(filters.search.toLowerCase())) return false;
       }
+      const fromTs = fromDateTimeLocalValue((filters as any).from);
+      const toTs = fromDateTimeLocalValue((filters as any).to);
+      if (fromTs && Number(row.timestamp || 0) < fromTs) return false;
+      if (toTs && Number(row.timestamp || 0) > toTs) return false;
       return true;
     });
   }, [overview, filters]);
@@ -617,20 +653,18 @@ function Shell() {
             }}
             onSave={savePolicy}
             loading={loading}
+            ruleFocus={ruleFocus}
+            ruleBucketFocus={ruleBucketFocus}
+            ruleFocusNonce={ruleFocusNonce}
           />
         ) : null}
 
         {page === 'decision' && detail ? (
-          <DecisionPage detail={detail} onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)} onOpenRule={(rule: any) => {
-            const ruleLabel = typeof rule === 'string' ? rule : summarizeRule(rule);
-            navigate('rules', '/ui/rules');
-            requestAnimationFrame(() => {
-              const cards = Array.from(document.querySelectorAll('.ruleCard')) as HTMLElement[];
-              const target = cards.find((card) => (card.textContent || '').toLowerCase().includes(String(ruleLabel).toLowerCase()));
-              target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              target?.click();
-            });
-          }} />
+          <DecisionPage
+            detail={detail}
+            onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
+            onOpenRule={(label: string, bucket?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}&focus=${Date.now()}`)}
+          />
         ) : null}
       </main>
     </div>
@@ -638,7 +672,7 @@ function Shell() {
 }
 
 function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedTrace, setSelectedTraceId, onOpenDecision, token, onRunDemo, traceCandidates }: any) {
-  const [signalView, setSignalView] = useState<'timeline' | 'sankey'>('timeline');
+  const [signalView, setSignalView] = useState<'timeline' | 'sankey'>('sankey');
   const [selectedBucketTs, setSelectedBucketTs] = useState<number | null>(null);
   const [selectedAlertMode, setSelectedAlertMode] = useState<'all' | 'open'>('all');
   const [focusedEventIds, setFocusedEventIds] = useState<number[] | null>(null);
@@ -653,19 +687,17 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
   const alertsRef = useRef<HTMLElement | null>(null);
 
   const sourceEvents = useMemo(() => {
-    const traceEvents = (overview.recent_traces || []).flatMap((trace: TraceSummary) => trace.events || []).map(normalizeEventRow).filter((event: EventRow) => event.id);
-    return traceEvents.length ? traceEvents : (overview.recent_events || []).map(normalizeEventRow);
+    const merged = new Map<number, EventRow>();
+    for (const row of (overview.recent_events || []).map(normalizeEventRow)) {
+      if (row.id) merged.set(row.id, row);
+    }
+    for (const trace of (overview.recent_traces || [])) {
+      for (const row of (trace.events || []).map(normalizeEventRow)) {
+        if (row.id) merged.set(row.id, { ...(merged.get(row.id) || {}), ...row });
+      }
+    }
+    return Array.from(merged.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
   }, [overview.recent_traces, overview.recent_events]);
-
-  const dateFilteredEvents = useMemo(() => {
-    const fromTs = fromDatetimeLocalValue(filters.from);
-    const toTs = fromDatetimeLocalValue(filters.to);
-    return sourceEvents.filter((event: EventRow) => {
-      if (fromTs && (event.timestamp || 0) < fromTs) return false;
-      if (toTs && (event.timestamp || 0) > toTs) return false;
-      return true;
-    });
-  }, [sourceEvents, filters.from, filters.to]);
 
   const replayEvents = useMemo(() => ((selectedTrace?.events || []).map(normalizeEventRow).sort((a: EventRow, b: EventRow) => (a.timestamp || 0) - (b.timestamp || 0))), [selectedTrace]);
 
@@ -690,8 +722,26 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
 
   const visibleReplayEvents = useMemo(() => replayEvents.slice(0, Math.max(1, replayIndex + 1)), [replayEvents, replayIndex]);
 
+  const timelinePoints = useMemo(() => {
+    const buckets = new Map<number, { timestamp: number; blocked: number; warned: number; allowed: number; eventIds: number[] }>();
+    for (const event of sourceEvents) {
+      const bucketStart = Math.floor(Number(event.timestamp || 0) / 60) * 60;
+      const bucket = buckets.get(bucketStart) || { timestamp: bucketStart, blocked: 0, warned: 0, allowed: 0, eventIds: [] };
+      if (event.status === 'blocked') bucket.blocked += 1;
+      else if (event.status === 'warned') bucket.warned += 1;
+      else bucket.allowed += 1;
+      bucket.eventIds.push(event.id);
+      buckets.set(bucketStart, bucket);
+    }
+    return Array.from(buckets.values()).sort((a, b) => a.timestamp - b.timestamp);
+  }, [sourceEvents]);
+
   const scopedEvents = useMemo(() => {
-    let rows = dateFilteredEvents;
+    let rows = sourceEvents;
+    const fromTs = fromDateTimeLocalValue(filters.from);
+    const toTs = fromDateTimeLocalValue(filters.to);
+    if (fromTs) rows = rows.filter((event: EventRow) => Number(event.timestamp || 0) >= fromTs);
+    if (toTs) rows = rows.filter((event: EventRow) => Number(event.timestamp || 0) <= toTs);
     if (selectedBucketTs) {
       const bucketStart = Math.floor(selectedBucketTs / 60) * 60;
       rows = rows.filter((event: EventRow) => Math.floor((event.timestamp || 0) / 60) * 60 === bucketStart);
@@ -706,13 +756,7 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
       rows = rows.filter((row: EventRow) => JSON.stringify(row).toLowerCase().includes(term));
     }
     return rows.sort((a: EventRow, b: EventRow) => (b.timestamp || 0) - (a.timestamp || 0));
-  }, [dateFilteredEvents, selectedBucketTs, focusedEventIds, filters]);
-
-  const activityCounts = useMemo(() => ({
-    blocked: dateFilteredEvents.filter((event: EventRow) => event.status === 'blocked').length,
-    warned: dateFilteredEvents.filter((event: EventRow) => event.status === 'warned').length,
-    allowed: dateFilteredEvents.filter((event: EventRow) => event.status === 'allowed').length,
-  }), [dateFilteredEvents]);
+  }, [sourceEvents, selectedBucketTs, focusedEventIds, filters]);
 
   const visibleAlerts = useMemo(() => {
     const items = overview.alerts?.items || overview.recent_alerts || [];
@@ -720,7 +764,7 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
     return items;
   }, [overview.alerts, overview.recent_alerts, selectedAlertMode]);
 
-  const selectedBucket = useMemo(() => (overview.timeline || []).find((point: any) => point.timestamp === selectedBucketTs) || null, [overview.timeline, selectedBucketTs]);
+  const selectedBucket = useMemo(() => timelinePoints.find((point: any) => point.timestamp === selectedBucketTs) || null, [timelinePoints, selectedBucketTs]);
 
   const riskStories = useMemo(() => {
     const stories: Array<{title: string; message: string; severity: string; eventIds: number[]}> = [];
@@ -805,16 +849,16 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
   return (
     <div className="pageGrid">
       <section className="metricsRow">
-        <MetricCard title="Blocked" value={activityCounts.blocked} subtitle={`${dateFilteredEvents.length} events in range`} tone="danger" onClick={() => focusActivity('blocked', '', dateFilteredEvents.filter((event: EventRow) => event.status === 'blocked').map((event: EventRow) => event.id), 'Blocked events')} />
-        <MetricCard title="Warned" value={activityCounts.warned} subtitle={`${dateFilteredEvents.length} events in range`} tone="warn" onClick={() => focusActivity('warned', '', dateFilteredEvents.filter((event: EventRow) => event.status === 'warned').map((event: EventRow) => event.id), 'Warned events')} />
-        <MetricCard title="Allowed" value={activityCounts.allowed} subtitle={`${dateFilteredEvents.length} events in range`} tone="ok" onClick={() => focusActivity('allowed', '', dateFilteredEvents.filter((event: EventRow) => event.status === 'allowed').map((event: EventRow) => event.id), 'Allowed events')} />
+        <MetricCard title="Blocked" value={sourceEvents.filter((event: EventRow) => event.status === 'blocked').length} subtitle="Current activity window" tone="danger" onClick={() => focusActivity('blocked', '', sourceEvents.filter((event: EventRow) => event.status === 'blocked').map((event: EventRow) => event.id), 'Blocked events')} />
+        <MetricCard title="Warned" value={sourceEvents.filter((event: EventRow) => event.status === 'warned').length} subtitle="Current activity window" tone="warn" onClick={() => focusActivity('warned', '', sourceEvents.filter((event: EventRow) => event.status === 'warned').map((event: EventRow) => event.id), 'Warned events')} />
+        <MetricCard title="Allowed" value={sourceEvents.filter((event: EventRow) => event.status === 'allowed').length} subtitle="Current activity window" tone="ok" onClick={() => focusActivity('allowed', '', sourceEvents.filter((event: EventRow) => event.status === 'allowed').map((event: EventRow) => event.id), 'Allowed events')} />
         <MetricCard title="Open alerts" value={overview.metrics?.open_alerts || 0} subtitle="Needs analyst review" onClick={() => focusAlerts('open')} />
       </section>
 
       <section className="layout layout--topOverview">
         <div className="card card--signalHero">
           <div className="sectionHeader"><div><div className="eyebrow">Signal trends</div><h3>Risk and timeline</h3></div><div className="toggleRow"><button className={classNames('segmented', signalView === 'timeline' && 'is-active')} onClick={() => setSignalView('timeline')}>Timeline</button><button className={classNames('segmented', signalView === 'sankey' && 'is-active')} onClick={() => setSignalView('sankey')}>Sankey</button></div></div>
-          {signalView === 'timeline' ? <><MiniTimeline data={overview.timeline || []} selectedTimestamp={selectedBucketTs} sourceEvents={dateFilteredEvents} onSelectBucket={(ts: number | null, eventIds?: number[]) => { setSelectedBucketTs((current) => current === ts ? null : ts); setFocusedEventIds(eventIds && eventIds.length ? eventIds : null); setFocusLabel(ts ? `Timeline focus · ${eventIds?.length || 0} linked events` : ''); requestAnimationFrame(() => scrollIntoViewIfNeeded(activityRef.current, 'start')); }} /><div className="signalLegend"><span><i className="legendSwatch legendSwatch--danger" />Blocked</span><span><i className="legendSwatch legendSwatch--warn" />Warned</span><span><i className="legendSwatch legendSwatch--ok" />Allowed</span><span><i className="legendSwatch legendSwatch--severity" />Severity-weighted height</span></div>{selectedBucket ? <div className="focusSummary"><strong>{fmtTs(selectedBucket.timestamp)}</strong><span>{selectedBucket.blocked || 0} blocked · {selectedBucket.warned || 0} warned · {selectedBucket.allowed || 0} allowed · {scopedEvents.length} linked events</span></div> : null}</> : <><div className="toggleRow sankeyModes"><button className={classNames('segmented', sankeyMode === 'agent_tool_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_tool_outcome')}>Agent → Tool → Outcome</button><button className={classNames('segmented', sankeyMode === 'agent_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_rule_outcome')}>Agent → Rule → Outcome</button><button className={classNames('segmented', sankeyMode === 'tool_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('tool_rule_outcome')}>Tool → Rule → Outcome</button></div><SankeyPanel overview={overview} sourceEvents={dateFilteredEvents} mode={sankeyMode} onFocus={(opts: any) => focusActivity(opts.status || 'all', opts.search || '', opts.eventIds || null, opts.label || 'Sankey focus')} /></>}
+          {signalView === 'timeline' ? <><MiniTimeline data={timelinePoints} selectedTimestamp={selectedBucketTs} sourceEvents={sourceEvents} onSelectBucket={(ts: number | null, eventIds?: number[]) => { setSelectedBucketTs((current) => current === ts ? null : ts); setFocusedEventIds(eventIds && eventIds.length ? eventIds : null); setFocusLabel(ts ? `Timeline focus · ${eventIds?.length || 0} linked events` : ''); requestAnimationFrame(() => scrollIntoViewIfNeeded(activityRef.current, 'start')); }} /><div className="signalLegend"><span><i className="legendSwatch legendSwatch--danger" />Blocked</span><span><i className="legendSwatch legendSwatch--warn" />Warned</span><span><i className="legendSwatch legendSwatch--ok" />Allowed</span><span><i className="legendSwatch legendSwatch--severity" />Severity-weighted height</span></div>{selectedBucket ? <div className="focusSummary"><strong>{fmtTs(selectedBucket.timestamp)}</strong><span>{selectedBucket.blocked || 0} blocked · {selectedBucket.warned || 0} warned · {selectedBucket.allowed || 0} allowed · {scopedEvents.length} linked events</span></div> : null}</> : <><div className="toggleRow sankeyModes"><button className={classNames('segmented', sankeyMode === 'agent_tool_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_tool_outcome')}>Agent → Tool → Outcome</button><button className={classNames('segmented', sankeyMode === 'agent_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_rule_outcome')}>Agent → Rule → Outcome</button><button className={classNames('segmented', sankeyMode === 'tool_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('tool_rule_outcome')}>Tool → Rule → Outcome</button></div><SankeyPanel overview={overview} sourceEvents={sourceEvents} mode={sankeyMode} onFocus={(opts: any) => focusActivity(opts.status || 'all', opts.search || '', opts.eventIds || null, opts.label || 'Sankey focus')} /></>}
           <div className="twoColStats"><MiniBarList title="Top tools" items={(overview.top_tools || []).map((item: any) => ({ label: item.tool, value: item.count }))} /><MiniBarList title="Classifier hits" items={(overview.classifier_hits || []).map((item: any) => ({ label: item.classifier, value: item.count }))} /></div>
         </div>
 
@@ -822,7 +866,7 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
           <div className="sectionHeader"><div><div className="eyebrow">Risk story</div><h3>Top risk patterns</h3></div></div>
           <div className="insightList scrollPanel scrollPanel--medium">
             {riskStories.map((story, idx) => (
-              <button key={idx} className={classNames('insight', story.severity === 'high' && 'is-danger', story.severity === 'medium' && 'is-warn')} onClick={() => focusActivity('all', '', story.eventIds, story.title, false)}>
+              <button key={idx} className={classNames('insight', story.severity === 'high' && 'is-danger', story.severity === 'medium' && 'is-warn')} onClick={() => focusActivity('all', '', story.eventIds, story.title)}>
                 <strong>{story.title}</strong><div className="muted">{story.message}</div>
               </button>
             ))}
@@ -835,16 +879,16 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
         <div className="card card--stretch" ref={activityRef as any}>
           <div className="sectionHeader">
             <div><div className="eyebrow">Live rail</div><h3>Recent activity</h3></div>
-            <div className="filters filters--activity">
+            <div className="filters filters--wrap">
               <input className="input" placeholder="Search tool, agent, domain" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} />
               <select className="input input--small" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="all">All</option><option value="allowed">Allowed</option><option value="warned">Warned</option><option value="blocked">Blocked</option></select>
-              <input className="input input--small" type="datetime-local" value={filters.from || ''} onChange={(e) => setFilters({ ...filters, from: e.target.value })} title="From" />
-              <input className="input input--small" type="datetime-local" value={filters.to || ''} onChange={(e) => setFilters({ ...filters, to: e.target.value })} title="To" />
-              <button className="button button--ghost" onClick={() => { const latest = dateFilteredEvents[0]?.timestamp || sourceEvents[0]?.timestamp || Math.floor(Date.now()/1000); const from = latest - 3600; setFilters({ ...filters, from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(latest) }); }}>Last hour</button>
-              <button className="button button--ghost" onClick={() => { const latest = sourceEvents[0]?.timestamp || Math.floor(Date.now()/1000); const from = latest - 86400; setFilters({ ...filters, from: toDatetimeLocalValue(from), to: toDatetimeLocalValue(latest) }); }}>Last 24h</button>
+              <input className="input input--small" type="datetime-local" step="1" value={filters.from || ''} onChange={(e) => setFilters({ ...filters, from: e.target.value })} />
+              <input className="input input--small" type="datetime-local" step="1" value={filters.to || ''} onChange={(e) => setFilters({ ...filters, to: e.target.value })} />
+              <button className="button button--ghost" onClick={() => { const now = Math.floor(Date.now() / 1000); setFilters({ ...filters, from: toDateTimeLocalValue(now - 3600), to: toDateTimeLocalValue(now) }); }}>Last hour</button>
+              <button className="button button--ghost" onClick={() => { const now = Math.floor(Date.now() / 1000); setFilters({ ...filters, from: toDateTimeLocalValue(now - 86400), to: toDateTimeLocalValue(now) }); }}>Last 24h</button>
             </div>
           </div>
-          {(selectedBucket || filters.status !== 'all' || filters.search || focusedEventIds?.length || focusLabel || filters.from || filters.to) ? <div className="activeFilterBar"><div className="traceSummaryBar">{selectedBucket ? <span>Focused minute: {fmtTs(selectedBucket.timestamp)}</span> : null}{focusLabel ? <span>{focusLabel}</span> : null}{filters.status !== 'all' ? <span>Status: {filters.status}</span> : null}{filters.search ? <span>Search: {filters.search}</span> : null}{filters.from ? <span>From: {fmtTs(fromDatetimeLocalValue(filters.from) || undefined)}</span> : null}{filters.to ? <span>To: {fmtTs(fromDatetimeLocalValue(filters.to) || undefined)}</span> : null}<span>{scopedEvents.length} events in current focus</span></div><button className="button button--ghost" onClick={clearFocus}>Clear focus</button></div> : null}
+          {(selectedBucket || filters.status !== 'all' || filters.search || filters.from || filters.to || focusedEventIds?.length || focusLabel) ? <div className="activeFilterBar"><div className="traceSummaryBar">{selectedBucket ? <span>Focused minute: {fmtTs(selectedBucket.timestamp)}</span> : null}{focusLabel ? <span>{focusLabel}</span> : null}{filters.status !== 'all' ? <span>Status: {filters.status}</span> : null}{filters.search ? <span>Search: {filters.search}</span> : null}{filters.from ? <span>From: {filters.from}</span> : null}{filters.to ? <span>To: {filters.to}</span> : null}<span>{scopedEvents.length} events in current focus</span></div><button className="button button--ghost" onClick={clearFocus}>Clear focus</button></div> : null}
           <div className="eventRail scrollPanel scrollPanel--large">{scopedEvents.length ? scopedEvents.map((event: any) => (<button key={event.id} className="eventRow" onClick={() => { if (event.trace_id) setSelectedTraceId(event.trace_id); onOpenDecision(event.id); }}><div className={classNames('eventRow__dot', `is-${statusTone(event.status)}`)} /><div className="eventRow__main"><div className="eventRow__title">{event.tool || 'unknown'} <span className={`badge badge--${statusTone(event.status)}`}>{event.status}</span>{event.matched_rule_label ? <span className="badge badge--rule">{event.matched_rule_label}</span> : null}</div><div className="eventRow__meta">{event.agent_name || 'unknown agent'} · {event.domain || event.route_target || 'no route'} · {fmtTs(event.timestamp)}</div></div><div className="eventRow__score">{Math.round(event.risk_score || 0)}</div></button>)) : <div className="emptyState"><strong>No events match the current focus.</strong><span className="muted">Try clearing the timeline focus or using a broader status filter.</span></div>}</div>
         </div>
 
@@ -882,7 +926,7 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
             </div>
           </div>
           <div className="hero__right">
-            <TraceGraph trace={replayTrace as any} onOpenDecision={onOpenDecision} compact={false} />
+            <TraceGraph trace={replayTrace as any} onOpenDecision={onOpenDecision} compact={false} onOpenRule={() => {}} />
           </div>
         </section>
 
@@ -905,11 +949,16 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
 }
 
 
-function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTemplate, onSave, loading }: any) {
+
+function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTemplate, onSave, loading, ruleFocus, ruleBucketFocus, ruleFocusNonce }: any) {
   const [selectedBucket, setSelectedBucket] = useState<typeof RULE_BUCKETS[number]>('block');
   const [selectedRuleIndex, setSelectedRuleIndex] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [templateMode, setTemplateMode] = useState<'replace' | 'merge'>('merge');
+  const ruleRailRef = useRef<HTMLDivElement | null>(null);
+  const ruleEditorPaneRef = useRef<HTMLDivElement | null>(null);
+  const ruleItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [highlightedRuleKey, setHighlightedRuleKey] = useState<string>('');
 
   const workingPolicy = useMemo(() => safeParsePolicy(policyText, policy), [policyText, policy]);
   const activeRules = workingPolicy[selectedBucket] || [];
@@ -921,8 +970,112 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     }
   }, [selectedRuleIndex, activeRules.length, selectedBucket]);
 
+  function ruleKey(bucket: string, idx: number) {
+    return `${bucket}:${idx}`;
+  }
+
+  function scrollSelectedRuleIntoView(bucket = selectedBucket, index = selectedRuleIndex) {
+    const target = ruleItemRefs.current[ruleKey(bucket, index)];
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' });
+    }
+  }
+
+  function resetRuleEditorScroll() {
+    if (ruleEditorPaneRef.current) ruleEditorPaneRef.current.scrollTop = 0;
+  }
+
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      scrollSelectedRuleIntoView();
+      resetRuleEditorScroll();
+    });
+  }, [selectedBucket, selectedRuleIndex]);
+
+  useEffect(() => {
+    if (!ruleFocus && !ruleBucketFocus) return;
+
+    const preferredBucket = RULE_BUCKETS.includes((ruleBucketFocus || '').toLowerCase() as any)
+      ? (ruleBucketFocus.toLowerCase() as typeof RULE_BUCKETS[number])
+      : null;
+    const bucketsToCheck = preferredBucket
+      ? [preferredBucket, ...RULE_BUCKETS.filter((bucket) => bucket !== preferredBucket)]
+      : [...RULE_BUCKETS];
+
+    const normalize = (value: any) => String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .replace(/[·•]/g, '-')
+      .replace(/[^a-z0-9\-_:/. ]+/g, '');
+
+    const wanted = normalize(ruleFocus || '');
+
+    const fieldCandidates = (rule: any) => Array.from(new Set([
+      rule?.title,
+      rule?.name,
+      rule?.description,
+      rule?.reason,
+      summarizeRule(rule),
+    ].filter(Boolean).map(normalize)));
+
+    let bestMatch: { bucket: typeof RULE_BUCKETS[number]; index: number; score: number } | null = null;
+
+    for (const bucket of bucketsToCheck) {
+      for (let idx = 0; idx < (workingPolicy[bucket] || []).length; idx += 1) {
+        const rule = workingPolicy[bucket][idx];
+        const candidates = fieldCandidates(rule);
+        let score = 0;
+        if (!wanted) score = 10;
+        else if (candidates.some((value) => value === wanted)) score = 100;
+        else if (candidates.some((value) => value.includes(wanted) || wanted.includes(value))) score = 70;
+        else if (candidates.some((value) => value.split(' - ').includes(wanted) || value.split(' · ').includes(wanted))) score = 60;
+        else if (preferredBucket && bucket === preferredBucket) score = 5;
+        if (score && (!bestMatch || score > bestMatch.score)) bestMatch = { bucket, index: idx, score };
+      }
+    }
+
+    if (bestMatch) {
+      selectRule(bestMatch.bucket, bestMatch.index, true);
+    } else if (preferredBucket) {
+      selectRule(preferredBucket, 0, true);
+    }
+  }, [ruleFocus, ruleBucketFocus, ruleFocusNonce, policyText]);
+
   function updateDoc(nextDoc: PolicyDoc) {
-    setPolicyText(JSON.stringify(ensurePolicyDoc(nextDoc), null, 2));
+    setPolicyText(JSON.stringify(dedupePolicyDoc(ensurePolicyDoc(nextDoc)), null, 2));
+  }
+
+  function selectRule(bucket: typeof RULE_BUCKETS[number], index: number, highlight = false) {
+    setSelectedBucket(bucket);
+    setSelectedRuleIndex(index);
+    const key = ruleKey(bucket, index);
+    if (highlight) {
+      setHighlightedRuleKey(key);
+      window.setTimeout(() => setHighlightedRuleKey((current) => current === key ? '' : current), 1800);
+    }
+    requestAnimationFrame(() => {
+      scrollSelectedRuleIntoView(bucket, index);
+      resetRuleEditorScroll();
+    });
+  }
+
+  function applyTemplateToBuilder(template: any) {
+    const templateDoc = dedupePolicyDoc(ensurePolicyDoc(template?.template || template || {}));
+    const nextDoc = templateMode === 'replace'
+      ? templateDoc
+      : mergePolicyWithoutDuplicates(workingPolicy, templateDoc);
+
+    setPolicyText(JSON.stringify(nextDoc, null, 2));
+
+    const focusDoc = templateMode === 'replace' ? nextDoc : templateDoc;
+    const nextBucket = pickFirstNonEmptyBucket(focusDoc);
+    const targetRule = focusDoc[nextBucket]?.[0] || nextDoc[nextBucket]?.[0] || null;
+    const nextIndex = targetRule
+      ? Math.max(0, nextDoc[nextBucket].findIndex((rule: any) => ruleFingerprint(rule) === ruleFingerprint(targetRule)))
+      : 0;
+
+    selectRule(nextBucket, nextIndex);
   }
 
   function mutateRule(mutator: (rule: any) => any) {
@@ -940,18 +1093,19 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     bucketRules.push({ title: 'New rule', enabled: true, type: bucket === 'allow' ? '' : 'http_request' });
     nextDoc[bucket] = bucketRules;
     updateDoc(nextDoc);
-    setSelectedBucket(bucket);
-    setSelectedRuleIndex(bucketRules.length - 1);
+    selectRule(bucket, bucketRules.length - 1);
   }
 
   function duplicateRule() {
     if (!activeRule) return;
     const nextDoc = ensurePolicyDoc(workingPolicy);
     const bucketRules = [...nextDoc[selectedBucket]];
-    bucketRules.splice(selectedRuleIndex + 1, 0, { ...activeRule, title: `${summarizeRule(activeRule)} copy` });
-    nextDoc[selectedBucket] = bucketRules;
+    const duplicated = { ...activeRule, title: `${summarizeRule(activeRule)} copy` };
+    bucketRules.splice(selectedRuleIndex + 1, 0, duplicated);
+    nextDoc[selectedBucket] = dedupeRules(bucketRules);
     updateDoc(nextDoc);
-    setSelectedRuleIndex(selectedRuleIndex + 1);
+    const targetIndex = Math.max(0, nextDoc[selectedBucket].findIndex((rule: any) => ruleFingerprint(rule) === ruleFingerprint(duplicated)));
+    selectRule(selectedBucket, targetIndex);
   }
 
   function deleteRule() {
@@ -961,7 +1115,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     bucketRules.splice(selectedRuleIndex, 1);
     nextDoc[selectedBucket] = bucketRules;
     updateDoc(nextDoc);
-    setSelectedRuleIndex(Math.max(0, selectedRuleIndex - 1));
+    selectRule(selectedBucket, Math.max(0, selectedRuleIndex - 1));
   }
 
   function moveRule(direction: -1 | 1) {
@@ -973,7 +1127,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     bucketRules.splice(target, 0, rule);
     nextDoc[selectedBucket] = bucketRules;
     updateDoc(nextDoc);
-    setSelectedRuleIndex(target);
+    selectRule(selectedBucket, target);
   }
 
   function updateCustomEntry(index: number, patch: Partial<{ key: string; operator: string; value: any; mode: string }>) {
@@ -1020,20 +1174,25 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                 <h3>Interactive policy builder</h3>
               </div>
               <div className="toggleRow">
-                <button className="button button--ghost" onClick={() => addRule()}>New rule</button>
-                <button className="button" onClick={onSave} disabled={loading || !!parseError}>{loading ? 'Saving…' : 'Validate & save'}</button>
+                <button type="button" className="button button--ghost" onClick={() => addRule()}>New rule</button>
+                <button type="button" className="button" onClick={onSave} disabled={loading || !!parseError}>{loading ? 'Saving…' : 'Validate & save'}</button>
               </div>
             </div>
             <div className="bucketTabs">
               {RULE_BUCKETS.map((bucket) => (
-                <button key={bucket} className={classNames('bucketTab', selectedBucket === bucket && 'is-active')} onClick={() => { setSelectedBucket(bucket); setSelectedRuleIndex(0); }}>
+                <button
+                  type="button"
+                  key={bucket}
+                  className={classNames('bucketTab', selectedBucket === bucket && 'is-active')}
+                  onClick={() => selectRule(bucket, 0)}
+                >
                   <span>{bucket}</span>
                   <strong>{workingPolicy[bucket].length}</strong>
                 </button>
               ))}
             </div>
             <div className="rulesSplit">
-              <div className="ruleRail">
+              <div className="ruleRail" ref={ruleRailRef}>
                 <div className="ruleRail__header">
                   <div>
                     <div className="subheading">{selectedBucket} rules</div>
@@ -1042,7 +1201,13 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                 </div>
                 <div className="ruleList">
                   {activeRules.map((rule: any, idx: number) => (
-                    <button key={idx} className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active')} onClick={() => setSelectedRuleIndex(idx)}>
+                    <button
+                      type="button"
+                      key={idx}
+                      ref={(node) => { ruleItemRefs.current[ruleKey(selectedBucket, idx)] = node; }}
+                      className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active', highlightedRuleKey === ruleKey(selectedBucket, idx) && 'is-focused')}
+                      onClick={() => selectRule(selectedBucket, idx)}
+                    >
                       <div>
                         <div className="ruleCard__title">{summarizeRule(rule)}</div>
                         <div className="ruleCard__meta">{rule.type || 'any type'} {rule.tool ? `· ${rule.tool}` : ''}</div>
@@ -1057,13 +1222,13 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                     <div className="emptyState">
                       <strong>No {selectedBucket} rules yet</strong>
                       <p className="muted">Create the first rule in this group and Sentinel will preserve the JSON under the hood.</p>
-                      <button className="button" onClick={() => addRule(selectedBucket)}>Create {selectedBucket} rule</button>
+                      <button type="button" className="button" onClick={() => addRule(selectedBucket)}>Create {selectedBucket} rule</button>
                     </div>
                   ) : null}
                 </div>
               </div>
 
-              <div className="ruleEditorPane">
+              <div className="ruleEditorPane" ref={ruleEditorPaneRef}>
                 {activeRule ? (
                   <div className="ruleEditor">
                     <div className="ruleEditor__toolbar">
@@ -1072,21 +1237,21 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                         <h4>{summarizeRule(activeRule)}</h4>
                       </div>
                       <div className="toggleRow">
-                        <button className="button button--ghost" onClick={() => moveRule(-1)} disabled={selectedRuleIndex === 0}>Up</button>
-                        <button className="button button--ghost" onClick={() => moveRule(1)} disabled={selectedRuleIndex === activeRules.length - 1}>Down</button>
-                        <button className="button button--ghost" onClick={duplicateRule}>Duplicate</button>
-                        <button className="button button--ghost" onClick={deleteRule}>Delete</button>
+                        <button type="button" className="button button--ghost" onClick={() => moveRule(-1)} disabled={selectedRuleIndex === 0}>Up</button>
+                        <button type="button" className="button button--ghost" onClick={() => moveRule(1)} disabled={selectedRuleIndex === activeRules.length - 1}>Down</button>
+                        <button type="button" className="button button--ghost" onClick={duplicateRule}>Duplicate</button>
+                        <button type="button" className="button button--ghost" onClick={deleteRule}>Delete</button>
                       </div>
                     </div>
 
                     <div className="ruleEditorGrid">
-                      <label className="formField"><span>Rule name</span><input className="input" value={activeRule.title || activeRule.name || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'title', e.target.value), 'name', ''))} /></label>
-                      <label className="formField"><span>Action type</span><select className="input" value={activeRule.type || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'type', e.target.value))}>{RULE_TYPES.map((type) => <option key={type} value={type}>{type || 'Any type'}</option>)}</select></label>
-                      <label className="formField"><span>Tool name</span><input className="input" placeholder="delete_database or subprocess.run" value={activeRule.tool || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'tool', e.target.value))} /></label>
-                      <label className="formField"><span>Priority</span><input className="input" type="number" value={activeRule.priority ?? ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'priority', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                      <label className="formField"><span>Rule name</span><input className="input" value={String(activeRule.title || activeRule.name || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'title', e.target.value), 'name', ''))} /></label>
+                      <label className="formField"><span>Action type</span><input className="input" value={String(activeRule.type || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'type', e.target.value))} placeholder="http_request, process_spawn, sql_query" /></label>
+                      <label className="formField"><span>Tool name</span><input className="input" value={String(activeRule.tool || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'tool', e.target.value))} placeholder="requests.get" /></label>
+                      <label className="formField"><span>Priority</span><input className="input" type="number" value={String(activeRule.priority ?? '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'priority', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                      <label className="formField formField--wide"><span>Description</span><textarea className="input textarea" value={String(activeRule.description || activeRule.reason || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'description', e.target.value), 'reason', ''))} /></label>
                     </div>
 
-                    <div className="formField"><span>Description</span><textarea className="input ruleTextarea" value={activeRule.description || activeRule.reason || ''} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'description', e.target.value), 'reason', ''))} /></div>
                     <label className="switchRow"><input type="checkbox" checked={activeRule.enabled !== false} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'enabled', e.target.checked ? true : false))} /> Enabled</label>
 
                     <div className="logicBuilder">
@@ -1134,7 +1299,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                           <div className="subheading">Custom conditions</div>
                           <p className="muted">Keep the flexible engine, but edit conditions with fields instead of raw JSON.</p>
                         </div>
-                        <button className="button button--ghost" onClick={addCustomEntry}>Add condition</button>
+                        <button type="button" className="button button--ghost" onClick={addCustomEntry}>Add condition</button>
                       </div>
                       <div className="customList">
                         {customRuleEntries(activeRule).map(([key, expected], idx) => {
@@ -1170,26 +1335,15 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                 <h3>Quick starting points</h3>
               </div>
               <div className="toggleRow">
-                <button className={classNames('segmented', templateMode === 'merge' && 'is-active')} onClick={() => setTemplateMode('merge')}>Merge</button>
-                <button className={classNames('segmented', templateMode === 'replace' && 'is-active')} onClick={() => setTemplateMode('replace')}>Replace</button>
+                <button type="button" className={classNames('segmented', templateMode === 'merge' && 'is-active')} onClick={() => setTemplateMode('merge')}>Merge</button>
+                <button type="button" className={classNames('segmented', templateMode === 'replace' && 'is-active')} onClick={() => setTemplateMode('replace')}>Replace</button>
               </div>
             </div>
             <div className="templateList">
               {templateCards.map((template: any, idx: number) => {
                 const doc = ensurePolicyDoc(template.template || template || {});
                 return (
-                  <button key={idx} className="templateCard templateCard--stacked" onClick={() => {
-                    if (templateMode === 'replace') onApplyTemplate(template);
-                    else {
-                      const merged = ensurePolicyDoc({
-                        block: [...workingPolicy.block, ...doc.block],
-                        warn: [...workingPolicy.warn, ...doc.warn],
-                        monitor: [...workingPolicy.monitor, ...doc.monitor],
-                        allow: [...workingPolicy.allow, ...doc.allow],
-                      });
-                      setPolicyText(JSON.stringify(merged, null, 2));
-                    }
-                  }}>
+                  <button type="button" key={idx} className="templateCard templateCard--stacked" onClick={() => applyTemplateToBuilder(template)}>
                     <strong>{template.name || `Template ${idx + 1}`}</strong>
                     <div className="templateCounts">{RULE_BUCKETS.map((bucket) => <span key={bucket}>{bucket}: {doc[bucket].length}</span>)}</div>
                     <code>{JSON.stringify(doc).slice(0, 180)}…</code>
@@ -1205,7 +1359,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                 <div className="eyebrow">Advanced</div>
                 <h3>Raw policy document</h3>
               </div>
-              <button className="button button--ghost" onClick={() => setShowAdvanced((v) => !v)}>{showAdvanced ? 'Hide JSON' : 'Show JSON'}</button>
+              <button type="button" className="button button--ghost" onClick={() => setShowAdvanced((v) => !v)}>{showAdvanced ? 'Hide JSON' : 'Show JSON'}</button>
             </div>
             <p className="muted">The visual builder writes straight back to the real OSS policy file, so advanced users can still inspect or hand-edit the underlying JSON.</p>
             {parseError ? <div className="banner banner--error">JSON error: {parseError}</div> : null}
@@ -1220,22 +1374,6 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
 function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
   const event = detail.event || {};
   const action = event.action || {};
-  const narrative = describeEventIntent(event);
-  const workflow = detail.workflow_events || [];
-  const matchedFields = detail.explainability?.matched_fields || [];
-  const matchedRuleObject = event?.matched_rule || event?.decision?.matched_rule || null;
-  const matchedRuleLabel = deriveMatchedRuleLabel(event) || 'No matched rule recorded';
-  const matchedRuleDetails = matchedRuleObject && typeof matchedRuleObject === 'object'
-    ? Object.entries(matchedRuleObject).map(([key, value]) => ({ key, value }))
-    : [];
-  const detailCards = [
-    { label: 'Agent', value: action.agent_name || 'unknown agent' },
-    { label: 'Tool', value: action.tool || action.type || 'event' },
-    { label: 'Sent to', value: narrative.target },
-    { label: 'Risk', value: action.risk_score ?? 0 },
-    { label: 'Rule hit', value: matchedRuleLabel },
-    { label: 'Decision', value: `${narrative.outcome} · ${narrative.reason}` },
-  ];
   return (
     <div className="pageGrid">
       <section className="layout layout--twoThirds">
@@ -1251,44 +1389,41 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
                 {detail.neighbors?.next_event_id ? <button className="button button--ghost" onClick={() => onOpenDecision(detail.neighbors.next_event_id)}>Next</button> : null}
               </div>
             </div>
-            <div className="detailGrid detailGrid--wide">
+            <div className="detailGrid">
               <KeyValue label="Timestamp" value={fmtTs(event.timestamp)} />
+              <KeyValue label="Agent" value={action.agent_name} />
               <KeyValue label="Trace" value={event.trace_id} />
+              <KeyValue label="Risk" value={action.risk_score} />
+              <KeyValue label="Reason" value={event.decision?.reason} />
               <KeyValue label="Route" value={event.decision?.route_target || action.route_target} />
             </div>
-            <div className="decisionStoryGrid">
-              <div className="decisionStoryCard">
-                <div className="eyebrow">Narrative</div>
-                <h4>What happened</h4>
-                <div className="storySteps">
-                  <div className="storyStep"><span className="storyStep__index">1</span><div><strong>{action.agent_name || 'Unknown agent'}</strong><div className="muted">used <code>{narrative.tool}</code></div></div></div>
-                  <div className="storyStep"><span className="storyStep__index">2</span><div><strong>It sent this data</strong><div className="muted">{narrative.dataPreview}</div></div></div>
-                  <div className="storyStep"><span className="storyStep__index">3</span><div><strong>Sentinel evaluated the action</strong><div className="muted">Target: {narrative.target} · Risk score {Math.round(Number(action.risk_score || 0))}</div></div></div>
-                  <div className="storyStep"><span className="storyStep__index">4</span><div><strong>{matchedRuleLabel}</strong><div className="muted">{narrative.reason}</div></div></div>
-                  <div className="storyStep"><span className={`storyStep__index is-${statusTone(event.status)}`}>5</span><div><strong>Final decision: {narrative.outcome}</strong><div className="muted">{event.decision?.route_target || 'No alternate route selected'}</div></div></div>
-                </div>
+            <div className="decisionNarrative">
+              <div className="subheading">Decision journey</div>
+              <div className="journeyList">
+                <div className="journeyStep"><span className="journeyStep__index">1</span><div><strong>{action.agent_name || 'Agent'}</strong><span>selected the <code>{action.tool || action.type || 'action'}</code> tool</span></div></div>
+                <div className="journeyStep"><span className="journeyStep__index">2</span><div><strong>Sent payload</strong><span>{displayValue(event.input_payload || action.args || action.payload || 'No payload recorded')}</span></div></div>
+                <div className="journeyStep"><span className="journeyStep__index">3</span><div><strong>Targeted route</strong><span>{displayValue(event.decision?.route_target || action.route_target || action.domain || 'No route recorded')}</span></div></div>
+                <div className="journeyStep"><span className="journeyStep__index">4</span><div><strong>Rules evaluated</strong><span>{deriveMatchedRuleLabel(event) || detail.explainability?.reason || 'No explicit rule hit recorded'}</span></div></div>
+                <div className="journeyStep journeyStep--decision"><span className="journeyStep__index">5</span><div><strong>Final decision</strong><span>{detail.explainability?.effective_action || event.status} · {detail.explainability?.reason || event.decision?.reason || 'No reason recorded'}</span></div></div>
               </div>
-              <div className="decisionStoryCard">
-                <div className="eyebrow">Decision factors</div>
-                <h4>Why Sentinel acted</h4>
-                <div className="decisionFactGrid">{detailCards.map((item) => <div key={item.label} className="decisionFact"><span>{item.label}</span><strong>{displayValue(item.value)}</strong></div>)}</div>
-                <div className="subheading">Matched rule</div>
-                <div className="chipGrid">
-                  <button type="button" className="chip chip--interactive" onClick={() => onOpenRule?.(matchedRuleObject || matchedRuleLabel)}>
-                    <strong>{matchedRuleLabel}</strong>
-                    <span>Open this rule in the Rules Workspace</span>
-                  </button>
-                  {matchedRuleDetails.map((row: any, idx: number) => <div key={idx} className="chip"><strong>{row.key}</strong><code>{displayValue(row.value)}</code></div>)}
-                </div>
-                <div className="subheading">Matched rule fields</div>
-                <div className="chipGrid">{matchedFields.length ? matchedFields.map((row: any, idx: number) => <div key={idx} className="chip"><strong>{row.field}</strong><span>{row.operator} {displayValue(row.expected)}</span><code>{displayValue(row.actual)}</code></div>) : <div className="muted">No rule-field explanation was captured for this event.</div>}</div>
+              <div className="ruleJumpRow">
+                {Array.from(new Set([deriveMatchedRuleLabel(event), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[])).map((label: string) => (
+                  <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, event.status === 'warned' ? 'warn' : event.status === 'blocked' ? 'block' : event.status === 'allowed' ? 'allow' : undefined)}>Open rule · {label}</button>
+                ))}
               </div>
             </div>
-            <div className="codeGrid codeGrid--decision">
+            <div className="codeGrid">
               <CodeCard title="Action" value={action} />
               <CodeCard title="Input payload" value={event.input_payload} />
               <CodeCard title="Output payload" value={event.output_payload} />
-              <CodeCard title="Decision JSON" value={event.decision} />
+              <div className="codeCard">
+                <div className="subheading">Why this triggered</div>
+                <div className="traceSummaryBar"><span>{detail.explainability?.effective_action || event.status}</span><span>{detail.explainability?.reason || 'No reason recorded'}</span></div>
+                <div className="chipGrid">
+                  {(detail.explainability?.matched_fields || []).map((row: any, idx: number) => <div key={idx} className="chip"><strong>{row.field}</strong><span>{row.operator} {displayValue(row.expected)}</span><code>{displayValue(row.actual)}</code></div>)}
+                  {!(detail.explainability?.matched_fields || []).length ? <div className="muted">No rule-field explanation was captured for this event.</div> : null}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1300,7 +1435,7 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
               </div>
             </div>
             <div className="eventRail">
-              {workflow.map((row: any) => (
+              {(detail.workflow_events || []).map((row: any) => (
                 <button key={row.id} className="eventRow" onClick={() => onOpenDecision(row.id)}>
                   <div className={classNames('eventRow__dot', `is-${statusTone(row.status)}`)} />
                   <div className="eventRow__main">
@@ -1330,7 +1465,7 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
   );
 }
 
-function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: TraceSummary | null; onOpenDecision: (id: number) => void; onOpenRule?: (rule: any) => void; compact?: boolean; }) {
+function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: TraceSummary | null; onOpenDecision: (id: number) => void; onOpenRule: (label: string, bucket?: string) => void; compact?: boolean; }) {
   if (!trace?.graph?.nodes?.length) return <div className="traceEmpty">No trace selected yet.</div>;
   const nodes = trace.graph.nodes;
   const width = Math.max(920, nodes.length * 220);
@@ -1343,7 +1478,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
     const event = eventMap.get(node.id);
     const matchedRule = event?.decision?.matched_rule;
     if (!matchedRule) return [];
-    const label = typeof matchedRule === 'string' ? matchedRule : summarizeRule(matchedRule) || 'Triggered rule';
+    const label = typeof matchedRule === 'string' ? matchedRule : matchedRule?.title || matchedRule?.name || matchedRule?.description || matchedRule?.reason || 'Triggered rule';
     const severity = node.status === 'blocked' ? 'danger' : node.status === 'warned' ? 'warn' : 'ok';
     return [{
       id: `rule-${node.id}`,
@@ -1354,6 +1489,38 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
       y: laneY + (compact ? 118 : 140) + ((index % 2) * 12),
     }];
   });
+
+  if (compact) {
+    const steps = (trace.events || []).map((event: any) => normalizeEventRow(event)).sort((a: EventRow, b: EventRow) => (a.timestamp || 0) - (b.timestamp || 0));
+    return (
+      <div className="traceGraphWrap traceGraphWrap--compact">
+        <div className="traceSummaryBar">
+          <span>{trace.trace_id}</span>
+          <span>{trace.summary.event_count} events</span>
+          <span>{fmtTs(trace.summary.start_timestamp)}</span>
+        </div>
+        <div className="journeyTimeline">
+          {steps.map((step: any, index: number) => {
+            const event = eventMap.get(step.id) || step;
+            const ruleLabels = Array.from(new Set([deriveMatchedRuleLabel(event), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[]));
+            return (
+              <div key={step.id} className="journeyTimeline__item">
+                <button className={`journeyTimeline__card journeyTimeline__card--${statusTone(step.status)}`} onClick={() => onOpenDecision(Number(step.id))}>
+                  <div className="journeyTimeline__header"><span className="badge">Step {index + 1}</span><span className={`badge badge--${statusTone(step.status)}`}>{step.status}</span></div>
+                  <strong>{step.agent_name || 'agent'} → {step.tool || 'tool'}</strong>
+                  <div className="muted">{fmtTs(step.timestamp)} · risk {Math.round(step.risk_score || 0)}</div>
+                  <div className="muted">{displayValue(event?.decision?.route_target || step.route_target || step.domain || 'No route recorded')}</div>
+                </button>
+                <div className="journeyTimeline__rules">
+                  {ruleLabels.length ? ruleLabels.map((label) => <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, step.status === 'warned' ? 'warn' : step.status === 'blocked' ? 'block' : step.status === 'allowed' ? 'allow' : undefined)}>{label}</button>) : <span className="muted">No explicit rule hit</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="traceGraphWrap">
@@ -1385,10 +1552,10 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
             return (
               <g key={rule.id}>
                 <path d={`M ${source.x} ${source.y + 52} C ${source.x} ${source.y + 76}, ${rule.x} ${rule.y - 58}, ${rule.x} ${rule.y - 34}`} className={`traceEdge traceEdge--triggered traceEdge--${rule.severity}`} />
-                <g transform={`translate(${rule.x}, ${rule.y})`} className="traceRuleNode" onClick={() => onOpenRule?.(rule.label)}>
+                <g transform={`translate(${rule.x}, ${rule.y})`} className="traceRuleNode" onClick={() => onOpenRule(rule.label, rule.severity === 'warn' ? 'warn' : rule.severity === 'danger' ? 'block' : 'allow') }>
                   <rect x="-82" y="-26" width="164" height="52" rx="18" className={`traceRuleNode__card traceRuleNode__card--${rule.severity}`} />
                   <text x="0" y="-3" textAnchor="middle" className="traceRuleNode__title">{String(rule.label).slice(0, 26)}</text>
-                  <text x="0" y="15" textAnchor="middle" className="traceRuleNode__meta">open rule</text>
+                  <text x="0" y="15" textAnchor="middle" className="traceRuleNode__meta">triggered rule</text>
                 </g>
               </g>
             );
@@ -1396,7 +1563,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
           {eventPositions.map((node) => {
             const event = eventMap.get(node.id);
             const matchedRule = event?.decision?.matched_rule;
-            const matchedLabel = deriveMatchedRuleLabel(event) || '';
+            const matchedLabel = typeof matchedRule === 'string' ? matchedRule : matchedRule?.title || matchedRule?.name || '';
             return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} onClick={() => onOpenDecision(Number(node.id))} className="traceNode">
                 <rect x="-72" y="-52" width="144" height="104" rx="24" className={`traceNode__card traceNode__card--${statusTone(node.status)}`} />

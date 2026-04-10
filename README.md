@@ -140,6 +140,53 @@ After running the demos, the dashboard should show:
 
 ---
 
+
+## Official LangChain integration
+
+Sentinel ships a first-class optional LangChain integration in `sentinel_langchain` so teams can add policy enforcement and tracing to LangChain tools without rewriting their app architecture.
+
+### Install
+
+```bash
+pip install -e .[langchain]
+```
+
+### Drop-in usage
+
+```python
+import sentinel
+from sentinel_langchain import protect_tools
+
+sentinel.protect_from_env(auto_instrument=False)
+tools = protect_tools(tools, agent_name='support-agent')
+```
+
+### What you get
+
+- pre-execution allow / warn / block checks on tool calls
+- LangChain callback events for traces and chain visibility
+- dashboard-linked traces, decisions, and rule hits
+- support for wrapping tools directly or instrumenting an agent object
+
+### LangChain demo set
+
+Run these after Sentinel is up:
+
+```bash
+python demos/langchain/allow_warn_block_demo.py
+python demos/langchain/sql_guard_demo.py
+python demos/langchain/exfiltration_demo.py
+```
+
+The demos are designed to look good in the OSS dashboard:
+- a clear allowed tool call
+- a warned outbound data movement attempt
+- a blocked dangerous SQL action
+
+See also: `docs/langchain.md`
+
+---
+
 ## Python: one-line protection
 
 ```python
@@ -307,6 +354,31 @@ Notes:
 These are intended to be the shortest path from clone to “I can see Sentinel doing useful work.”
 
 ---
+
+
+
+## LangChain integration
+
+Sentinel includes a drop-in `sentinel_langchain` integration package for protecting LangChain tool execution without relying on fragile monkey patching. The recommended model is:
+
+- wrap tools with `protect_tools(...)` for allow / warn / block enforcement
+- attach `SentinelCallbackHandler(...)` for chain, tool, and LLM trace events
+- or use `create_protected_agent(...)` to get both in one step
+
+```python
+import sentinel
+from sentinel_langchain import create_protected_agent
+
+sentinel.protect_from_env(auto_instrument=False, app_name="langchain-app")
+protected = create_protected_agent(tools=my_tools, agent_name="research-agent")
+agent = initialize_agent(
+    tools=protected["tools"],
+    llm=llm,
+    callbacks=protected["callbacks"],
+)
+```
+
+A lightweight demo lives at `demos/langchain_integration_demo.py`.
 
 ## Language SDKs
 
