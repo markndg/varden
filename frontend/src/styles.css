@@ -598,9 +598,9 @@ button { cursor: pointer; }
 .layout--topOverview { grid-template-columns: minmax(0, 1.45fr) minmax(320px, .85fr); align-items: start; }
 .layout--equalCols { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .layout--bottomSupport { align-items: start; }
-.card--signalHero { min-height: 0; }
-.card--riskPanel { min-height: 0; }
-.card--stretch { height: auto; display: grid; grid-template-rows: auto auto minmax(0, 1fr); min-height: 0; }
+.card--signalHero { min-height: 100%; }
+.card--riskPanel { min-height: 100%; }
+.card--stretch { height: 100%; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
 .scrollPanel { overflow: auto; padding-right: 6px; padding-bottom: 0; align-content: start; min-height: 0; }
 .scrollPanel--medium { max-height: 360px; }
 .scrollPanel--large { max-height: 520px; }
@@ -624,7 +624,31 @@ button { cursor: pointer; }
 .journeyList { display: grid; gap: 10px; }
 .journeyStep { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; align-items: start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.03); }
 .journeyStep--decision { border-color: rgba(123,97,255,.35); background: linear-gradient(135deg, rgba(123,97,255,.14), rgba(76,224,181,.06)); }
-.journeyStep__index { width: 34px; min-width: 34px; height: 34px; border-radius: 999px; display: inline-flex !important; align-items: center !important; justify-content: center !important; place-items: center; line-height: 34px; text-align: center; padding: 0; margin: 0; background: rgba(123,97,255,.18); color: #efe9ff; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+.journeyStep__index {
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  align-self: start;
+  justify-self: start;
+  background: rgba(123,97,255,.18);
+  color: #efe9ff;
+  font-weight: 800;
+  font-size: 14px;
+  line-height: 1;
+  text-align: center;
+  vertical-align: middle;
+  font-variant-numeric: tabular-nums;
+   line-height: 28px; 
+}
+
 .journeyStep strong, .journeyTimeline__card strong { display: block; margin-bottom: 6px; }
 .journeyStep span, .journeyTimeline__card .muted { display: block; }
 .ruleJumpRow { display: flex; flex-wrap: wrap; gap: 10px; }
@@ -646,7 +670,31 @@ button { cursor: pointer; }
 .ruleList, .customList { min-height: 0; }
 .customList { overflow-y: auto; }
 
-.ruleCard.is-focused { outline: 2px solid rgba(76, 224, 181, .72); box-shadow: 0 0 0 1px rgba(76,224,181,.18), 0 12px 24px rgba(10,18,38,.28); }
-.card--riskPanel .scrollPanel, .card--stretch .scrollPanel { padding-bottom: 0; }
-.card--riskPanel .insightList, .card--stretch .insightList { align-content: start; }
-.card--riskPanel .insightList > :last-child, .card--stretch .insightList > :last-child { margin-bottom: 0; }
+
+/* overlay update: avg latency metric + timeline latency markers + tighter overview panels */
+.card--riskPanel { min-height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.card--riskPanel > .scrollPanel,
+.card--stretch > .scrollPanel,
+.scrollPanel--fill { max-height: none !important; height: 100%; align-self: stretch; }
+.insightList.scrollPanel,
+.eventRail.scrollPanel,
+.traceList.scrollPanel { padding-bottom: 0; }
+
+.legendSwatch--latency { background: linear-gradient(180deg, rgba(128,190,255,.98), rgba(123,97,255,.86)); }
+.timelineChart__plot { position: relative; height: 100%; display: flex; align-items: end; }
+.timelineChart__latencyMarker { position: absolute; left: 50%; transform: translateX(-50%); width: calc(100% + 4px); pointer-events: none; }
+.timelineChart__latencyMarker::before { content: ''; position: absolute; left: 50%; transform: translateX(-50%); width: 2px; height: 10px; bottom: -10px; background: linear-gradient(180deg, rgba(128,190,255,.9), rgba(123,97,255,.25)); border-radius: 999px; }
+.timelineChart__latencyDot { display: block; width: 10px; height: 10px; border-radius: 999px; margin: 0 auto; background: linear-gradient(135deg, rgba(128,190,255,1), rgba(123,97,255,.96)); box-shadow: 0 0 0 3px rgba(128,190,255,.12), 0 0 14px rgba(123,97,255,.28); }
+.timelineChart__latencyValue { font-size: 10px; line-height: 1; color: var(--muted); }
+.timelineChart__barWrap { align-items: stretch; }
+.timelineChart__barWrap.is-active .timelineChart__latencyDot { box-shadow: 0 0 0 4px rgba(123,97,255,.18), 0 0 18px rgba(123,97,255,.4); }
+/* overlay update: move trace focus into command view and match live rail/response panel heights */
+.commandTracePicker { display:grid; gap:8px; margin: 6px 0 14px; max-width: 420px; }
+.card--matchedScroll { height: 760px; display:grid; grid-template-rows: auto auto minmax(0, 1fr); }
+.scrollPanel--rail { height: 100%; max-height: 760px; overflow-y: auto; padding-right: 6px; }
+.eventRail.scrollPanel--rail { min-height: 0; }
+.insightList.scrollPanel--rail { min-height: 0; }
+@media (max-width: 1180px) {
+  .card--matchedScroll { height: auto; }
+  .scrollPanel--rail { max-height: 520px; }
+}
