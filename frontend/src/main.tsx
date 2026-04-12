@@ -87,6 +87,14 @@ function ruleFocusTokenFromSearch(search: string) {
   return new URLSearchParams(search).get('focus') || '';
 }
 
+function bucketFromStatus(status?: string | null) {
+  if (status === 'blocked') return 'block';
+  if (status === 'warned') return 'warn';
+  if (status === 'allowed') return 'allow';
+  if (status === 'monitored') return 'monitor';
+  return '';
+}
+
 function latencyValueFromPoint(point: any): number | null {
   const value = point?.avg_latency_ms ?? point?.average_latency_ms ?? point?.latency_ms ?? point?.value_ms ?? point?.value ?? point?.avg ?? null;
   const num = Number(value);
@@ -172,12 +180,68 @@ function scrollIntoViewIfNeeded(el: Element | null, block: ScrollLogicalPosition
   el.scrollIntoView({ behavior: 'smooth', block });
 }
 
+function formatRuleFieldLabel(field?: string | null) {
+  if (!field) return 'condition';
+  if (field.startsWith('classifier:')) return `classifier ${field.split(':', 2)[1].replace(/_/g, ' ')}`;
+  const normalized = field.startsWith('field:') ? field.slice(6) : field;
+  return normalized.replace(/\./g, ' → ').replace(/_/g, ' ');
+}
+
+function compactValue(value: any) {
+  if (value === undefined || value === null || value === '') return '—';
+  if (typeof value === 'string') return value.length > 56 ? `${value.slice(0, 53)}…` : value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.slice(0, 3).map((item) => compactValue(item)).join(', ') + (value.length > 3 ? '…' : '');
+  if (typeof value === 'object') {
+    const entries = Object.entries(value).slice(0, 3).map(([key, entryValue]) => `${key}=${compactValue(entryValue)}`);
+    return entries.join(', ');
+  }
+  return String(value);
+}
+
+function describeMatchedField(row: any): string {
+  const field = formatRuleFieldLabel(row?.field);
+  const operator = row?.operator;
+  if (operator === 'contains') return `${field} contains ${compactValue(row?.expected)}`;
+  if (operator === 'in') return `${field} matches ${compactValue(row?.expected)}`;
+  if (operator === 'gte') return `${field} ≥ ${compactValue(row?.expected)} (actual ${compactValue(row?.actual)})`;
+  if (operator === 'lte') return `${field} ≤ ${compactValue(row?.expected)} (actual ${compactValue(row?.actual)})`;
+  if (operator === 'exists') return `${field} ${row?.expected ? 'exists' : 'is absent'}`;
+  return `${field} is ${compactValue(row?.expected)}`;
+}
+
+function summarizeMatchedFields(rows: any[], max = 3) {
+  const items = (rows || []).slice(0, max).map((row) => describeMatchedField(row)).filter(Boolean);
+  return items.length ? items.join('; ') : null;
+}
+
+function deriveRuleLabelFromRuleObject(matchedRule: any, fallbackStatus?: string): string | null {
+  if (!matchedRule) return null;
+  if (typeof matchedRule === 'string') return matchedRule;
+  const explicit = matchedRule?.title || matchedRule?.name || matchedRule?.description || matchedRule?.reason;
+  if (explicit) return explicit;
+  const conditions = Object.entries(matchedRule || {})
+    .filter(([key]) => !['enabled', 'priority', 'description', 'reason', 'title', 'name'].includes(key))
+    .slice(0, 2)
+    .map(([key, value]) => {
+      if (typeof value === 'object' && value && !Array.isArray(value)) {
+        const operator = Object.keys(value as any)[0];
+        const expected = (value as any)[operator];
+        return describeMatchedField({ field: key, operator, expected });
+      }
+      return describeMatchedField({ field: key, operator: 'eq', expected: value });
+    })
+    .filter(Boolean);
+  if (conditions.length) return conditions.join(' · ');
+  return fallbackStatus ? `${fallbackStatus} policy` : null;
+}
+
 function deriveMatchedRuleLabel(event: any): string | null {
   const action = event?.action || event || {};
   const decision = event?.decision || {};
   const matchedRule = event?.matched_rule || decision?.matched_rule;
   const explicitLabel = event?.matched_rule_label
-    || (typeof matchedRule === 'string' ? matchedRule : matchedRule?.title || matchedRule?.name || matchedRule?.description || matchedRule?.reason)
+    || deriveRuleLabelFromRuleObject(matchedRule, event?.status || decision?.effective_action || decision?.action)
     || decision?.rule_name
     || decision?.triggered_rule
     || null;
@@ -211,6 +275,66 @@ function normalizeEventRow(event: any): EventRow & { matched_rule_label?: string
     decision_latency_ms: Number(event?.decision_latency_ms ?? action?.decision_latency_ms ?? decision?.latency_ms ?? decision?.decision_latency_ms ?? 0) || null,
   };
 }
+
+function formatRiskReasonLabel(reason?: string) {
+  if (!reason) return null;
+  const labels: Record<string, string> = {
+    tool_call: 'tool invocation observed',
+    http_request: 'HTTP call observed',
+    llm_call: 'LLM call observed',
+    destructive_tool: 'destructive tool usage',
+    network_tool: 'network egress tool',
+    database_query: 'database/SQL activity',
+    suspicious_domain: 'suspicious destination',
+    external_domain: 'external destination',
+    contains_secrets: 'secrets detected',
+    contains_internal_data: 'internal data detected',
+    contains_pii: 'PII detected',
+    financial_data: 'financial data detected',
+    unsafe_keywords: 'unsafe terms detected',
+    sql_dangerous: 'dangerous SQL pattern',
+    sql_unbounded_write: 'unbounded SQL write',
+    sql_privilege_change: 'SQL privilege change',
+    sql_schema_enumeration: 'schema enumeration',
+    sql_sensitive_table: 'sensitive table access',
+    sql_select_star: 'SELECT * query shape',
+    sql_missing_limit: 'missing LIMIT on SQL query',
+    sql_union_access: 'UNION-based SQL access',
+    sql_multi_statement: 'multi-statement SQL',
+    sql_comment_obfuscation: 'SQL obfuscation/comment markers',
+    sql_suspect: 'suspect SQL structure',
+    warned_by_policy: 'warning policy applied',
+    blocked_by_policy: 'blocking policy applied',
+    repeated_warn_pattern: 'repeated warn pattern',
+    repeated_block_pattern: 'repeated block pattern',
+    burst_same_tool: 'burst of same tool usage',
+    workflow_activity_burst: 'workflow activity burst',
+    multi_tool_trace: 'multi-tool trace behaviour',
+    multi_domain_trace: 'multi-domain trace behaviour',
+    prior_warn_in_trace: 'prior warning already present in trace',
+    prior_block_in_trace: 'prior blocking already present in trace',
+    suspicious_sequence: 'suspicious multi-step sequence',
+  };
+  return labels[reason] || reason.replace(/_/g, ' ');
+}
+
+function summarizeRiskReasonLabels(reasons?: string[], max = 4) {
+  const labels = (reasons || []).map((reason) => formatRiskReasonLabel(reason)).filter(Boolean) as string[];
+  return labels.slice(0, max).join(' · ');
+}
+
+function eventRoleTone(explainability: any) {
+  if (explainability?.inherited_decision_context) return 'muted';
+  if ((explainability?.risk_score || 0) > 0) return 'accent';
+  return 'muted';
+}
+
+function eventRoleDescription(explainability: any) {
+  if (explainability?.inherited_decision_context) return 'This step carries forward an earlier warning/block decision and does not add fresh risk on its own.';
+  if ((explainability?.risk_score || 0) > 0) return 'This is the scored step that introduced the risk and triggered the visible decision.';
+  return 'This is a recorded trace step with no explicit new risk score.';
+}
+
 
 function displayValue(value: any) {
   if (value === undefined || value === null || value === '') return '—';
@@ -497,6 +621,14 @@ function Shell() {
     setRuleFocusToken(ruleFocusTokenFromSearch(search));
   }
 
+  function buildRuleNavigationPath(label: string, bucket?: string, matchedRule?: any) {
+    const params = new URLSearchParams();
+    params.set('rule', label);
+    if (bucket) params.set('bucket', bucket);
+    params.set('focus', matchedRule ? ruleFingerprint(matchedRule) : `${label}:${Date.now()}`);
+    return `/ui/rules?${params.toString()}`;
+  }
+
   async function savePolicy() {
     if (!token) return;
     setLoading(true);
@@ -584,12 +716,12 @@ function Shell() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand__markWrap">
-            <img src="/static/assets/sentinel-icon.png" alt="Sentinel shield" className="brand__icon" />
+            <img src="/static/assets/sentinel-icon.png" alt="Arbiter mark" className="brand__icon" />
             <span className="brand__pulse" aria-hidden="true" />
           </div>
           <div className="brand__copy">
             <div className="brand__eyebrow">Agent governance</div>
-            <div className="brand__title">Sentinel</div>
+            <div className="brand__title">Arbiter</div>
             <div className="brand__subtitle">Command Center</div>
           </div>
         </div>
@@ -631,7 +763,7 @@ function Shell() {
           <div>
             <div className="eyebrow">Live operations</div>
             <h1>{page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : 'Trace and flow mission control'}</h1>
-            <p className="muted">See what the agent attempted, why Sentinel scored it the way it did, and how policy changed the outcome.</p>
+            <p className="muted">See what the agent attempted, why Arbiter scored it the way it did, and how policy changed the outcome.</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -680,7 +812,7 @@ function Shell() {
           <DecisionPage
             detail={detail}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
-            onOpenRule={(label: string, bucket?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}&focus=${Date.now()}`)}
+            onOpenRule={(label: string, bucket?: string, matchedRule?: any) => navigate('rules', buildRuleNavigationPath(label, bucket, matchedRule))}
           />
         ) : null}
       </main>
@@ -990,11 +1122,13 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
 function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTemplate, onSave, loading, ruleFocus, ruleFocusBucket, ruleFocusToken }: any) {
   const [selectedBucket, setSelectedBucket] = useState<typeof RULE_BUCKETS[number]>('block');
   const [selectedRuleIndex, setSelectedRuleIndex] = useState(0);
+  const [highlightedRuleKey, setHighlightedRuleKey] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [templateMode, setTemplateMode] = useState<'replace' | 'merge'>('merge');
   const ruleRailRef = useRef<HTMLDivElement | null>(null);
   const ruleEditorPaneRef = useRef<HTMLDivElement | null>(null);
   const ruleItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const highlightTimerRef = useRef<number | null>(null);
 
   const workingPolicy = useMemo(() => safeParsePolicy(policyText, policy), [policyText, policy]);
   const activeRules = workingPolicy[selectedBucket] || [];
@@ -1021,6 +1155,16 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     if (ruleEditorPaneRef.current) ruleEditorPaneRef.current.scrollTop = 0;
   }
 
+  function flashRuleHighlight(bucket: string, index: number) {
+    const nextKey = ruleKey(bucket, index);
+    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+    setHighlightedRuleKey(nextKey);
+    highlightTimerRef.current = window.setTimeout(() => {
+      setHighlightedRuleKey((current) => (current === nextKey ? '' : current));
+      highlightTimerRef.current = null;
+    }, 2600);
+  }
+
   useEffect(() => {
     requestAnimationFrame(() => {
       scrollSelectedRuleIntoView();
@@ -1028,10 +1172,15 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     });
   }, [selectedBucket, selectedRuleIndex]);
 
+  useEffect(() => () => {
+    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
+  }, []);
+
   useEffect(() => {
-    if (!ruleFocus) return;
-    const wanted = String(ruleFocus).trim().toLowerCase();
-    if (!wanted) return;
+    if (!ruleFocus && !ruleFocusToken) return;
+    const wanted = String(ruleFocus || '').trim().toLowerCase();
+    const wantedToken = String(ruleFocusToken || '').trim();
+    if (!wanted && !wantedToken) return;
 
     const orderedBuckets = [
       ...(ruleFocusBucket && RULE_BUCKETS.includes(ruleFocusBucket as any) ? [ruleFocusBucket as typeof RULE_BUCKETS[number]] : []),
@@ -1039,6 +1188,8 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     ];
 
     const findRuleIndex = (bucket: typeof RULE_BUCKETS[number]) => (workingPolicy[bucket] || []).findIndex((rule: any) => {
+      if (wantedToken && ruleFingerprint(rule) === wantedToken) return true;
+      if (!wanted) return false;
       const summary = summarizeRule(rule).toLowerCase();
       const fields = [
         rule?.title,
@@ -1058,6 +1209,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
         requestAnimationFrame(() => {
           scrollSelectedRuleIntoView(bucket, idx);
           resetRuleEditorScroll();
+          flashRuleHighlight(bucket, idx);
         });
         return;
       }
@@ -1220,7 +1372,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                       type="button"
                       key={idx}
                       ref={(node) => { ruleItemRefs.current[ruleKey(selectedBucket, idx)] = node; }}
-                      className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active')}
+                      className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active', highlightedRuleKey === ruleKey(selectedBucket, idx) && 'is-highlighted')}
                       onClick={() => selectRule(selectedBucket, idx)}
                     >
                       <div>
@@ -1236,7 +1388,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                   {!activeRules.length ? (
                     <div className="emptyState">
                       <strong>No {selectedBucket} rules yet</strong>
-                      <p className="muted">Create the first rule in this group and Sentinel will preserve the JSON under the hood.</p>
+                      <p className="muted">Create the first rule in this group and Arbiter will preserve the JSON under the hood.</p>
                       <button type="button" className="button" onClick={() => addRule(selectedBucket)}>Create {selectedBucket} rule</button>
                     </div>
                   ) : null}
@@ -1408,22 +1560,29 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
               <KeyValue label="Timestamp" value={fmtTs(event.timestamp)} />
               <KeyValue label="Agent" value={action.agent_name} />
               <KeyValue label="Trace" value={event.trace_id} />
-              <KeyValue label="Risk" value={action.risk_score} />
-              <KeyValue label="Reason" value={event.decision?.reason} />
+              <KeyValue label="Risk" value={`${detail.explainability?.risk_score ?? action.risk_score ?? 0}/100`} />
+              <KeyValue label="Decision reason" value={detail.explainability?.reason || event.decision?.reason} />
+              <KeyValue label="Triggered rule" value={detail.explainability?.rule_label || deriveMatchedRuleLabel(event)} />
+              <KeyValue label="Step type" value={detail.explainability?.event_role_label || 'Recorded trace step'} />
               <KeyValue label="Route" value={event.decision?.route_target || action.route_target} />
+              <KeyValue label="Scored because" value={detail.explainability?.score_summary || summarizeRiskReasonLabels(detail.explainability?.risk_reasons || []) || 'No scoring explanation recorded'} />
             </div>
             <div className="decisionNarrative">
+              <div className={`decisionCallout decisionCallout--${eventRoleTone(detail.explainability)}`}>
+                <strong>{detail.explainability?.event_role_label || 'Recorded trace step'}</strong>
+                <span>{eventRoleDescription(detail.explainability)}</span>
+              </div>
               <div className="subheading">Decision journey</div>
               <div className="journeyList">
                 <div className="journeyStep"><span className="journeyStep__index">1</span><div><strong>{action.agent_name || 'Agent'}</strong><span>selected the <code>{action.tool || action.type || 'action'}</code> tool</span></div></div>
                 <div className="journeyStep"><span className="journeyStep__index">2</span><div><strong>Sent payload</strong><span>{displayValue(event.input_payload || action.args || action.payload || 'No payload recorded')}</span></div></div>
-                <div className="journeyStep"><span className="journeyStep__index">3</span><div><strong>Targeted route</strong><span>{displayValue(event.decision?.route_target || action.route_target || action.domain || 'No route recorded')}</span></div></div>
-                <div className="journeyStep"><span className="journeyStep__index">4</span><div><strong>Rules evaluated</strong><span>{deriveMatchedRuleLabel(event) || detail.explainability?.reason || 'No explicit rule hit recorded'}</span></div></div>
-                <div className="journeyStep journeyStep--decision"><span className="journeyStep__index">5</span><div><strong>Final decision</strong><span>{detail.explainability?.effective_action || event.status} · {detail.explainability?.reason || event.decision?.reason || 'No reason recorded'}</span></div></div>
+                <div className="journeyStep"><span className="journeyStep__index">3</span><div><strong>Risk evaluation</strong><span>{detail.explainability?.score_summary || summarizeRiskReasonLabels(detail.explainability?.risk_reasons || []) || 'No scoring explanation recorded'}</span></div></div>
+                <div className="journeyStep"><span className="journeyStep__index">4</span><div><strong>Triggered policy</strong><span><strong>{detail.explainability?.rule_label || deriveMatchedRuleLabel(event) || 'No explicit rule hit recorded'}</strong>{detail.explainability?.trigger_summary ? ` · ${detail.explainability?.trigger_summary}` : ''}</span></div></div>
+                <div className="journeyStep journeyStep--decision"><span className="journeyStep__index">5</span><div><strong>Final decision</strong><span>{detail.explainability?.effective_action || event.status} · {detail.explainability?.reason || event.decision?.reason || 'No reason recorded'}{detail.explainability?.inherited_decision_context ? ' · context carried forward from earlier trace step' : ''}</span></div></div>
               </div>
               <div className="ruleJumpRow">
-                {Array.from(new Set([deriveMatchedRuleLabel(event), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[])).map((label: string) => (
-                  <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, event.status === 'blocked' ? 'block' : event.status === 'warned' ? 'warn' : event.status === 'allowed' ? 'allow' : '')}>Open rule · {label}</button>
+                {Array.from(new Set([detail.explainability?.rule_label, deriveMatchedRuleLabel(event), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[])).map((label: string) => (
+                  <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, bucketFromStatus(event.status), detail.explainability?.matched_rule || event?.decision?.matched_rule)}>Open rule · {label}</button>
                 ))}
               </div>
             </div>
@@ -1433,11 +1592,20 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
               <CodeCard title="Output payload" value={event.output_payload} />
               <div className="codeCard">
                 <div className="subheading">Why this triggered</div>
-                <div className="traceSummaryBar"><span>{detail.explainability?.effective_action || event.status}</span><span>{detail.explainability?.reason || 'No reason recorded'}</span></div>
+                <div className="explainPanel">
+                  <div className="explainPanel__headline">
+                    <strong>{detail.explainability?.rule_label || deriveMatchedRuleLabel(event) || 'No explicit rule hit recorded'}</strong>
+                    <span>{detail.explainability?.effective_action || event.status}</span>
+                  </div>
+                  <div className="explainPanel__summary">{detail.explainability?.trigger_summary || detail.explainability?.rule_match_summary || summarizeMatchedFields(detail.explainability?.matched_fields || [], 3) || detail.explainability?.reason || 'No specific rule-field explanation was captured for this event.'}</div>
+                  <div className="explainPanel__summary"><strong>Risk score:</strong> {detail.explainability?.score_summary || 'No scoring explanation recorded.'}</div>
+                  {detail.explainability?.inherited_decision_context ? <div className="explainPanel__note">This step appears to inherit a previous warn/block context rather than introducing new scored risk on its own.</div> : null}
+                </div>
                 <div className="chipGrid">
-                  {(detail.explainability?.matched_fields || []).map((row: any, idx: number) => <div key={idx} className="chip"><strong>{row.field}</strong><span>{row.operator} {displayValue(row.expected)}</span><code>{displayValue(row.actual)}</code></div>)}
+                  {(detail.explainability?.matched_fields || []).map((row: any, idx: number) => <div key={idx} className="chip"><strong>{formatRuleFieldLabel(row.field)}</strong><span>{describeMatchedField(row)}</span><code>{compactValue(row.actual)}</code></div>)}
                   {!(detail.explainability?.matched_fields || []).length ? <div className="muted">No rule-field explanation was captured for this event.</div> : null}
                 </div>
+                {(detail.explainability?.risk_reason_labels || []).length ? <div className="chipGrid">{(detail.explainability?.risk_reason_labels || []).map((label: string, idx: number) => <div key={`${label}-${idx}`} className="chip chip--reason"><strong>Score driver</strong><span>{label}</span></div>)}</div> : null}
               </div>
             </div>
           </div>
@@ -1480,7 +1648,7 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
   );
 }
 
-function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: TraceSummary | null; onOpenDecision: (id: number) => void; onOpenRule: (label: string) => void; compact?: boolean; }) {
+function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: TraceSummary | null; onOpenDecision: (id: number) => void; onOpenRule: (label: string, bucket?: string, matchedRule?: any) => void; compact?: boolean; }) {
   if (!trace?.graph?.nodes?.length) return <div className="traceEmpty">No trace selected yet.</div>;
   const nodes = trace.graph.nodes;
   const width = Math.max(920, nodes.length * 220);
@@ -1493,7 +1661,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
     const event = eventMap.get(node.id);
     const matchedRule = event?.decision?.matched_rule;
     if (!matchedRule) return [];
-    const label = typeof matchedRule === 'string' ? matchedRule : matchedRule?.title || matchedRule?.name || matchedRule?.description || matchedRule?.reason || 'Triggered rule';
+    const label = deriveMatchedRuleLabel(event) || deriveRuleLabelFromRuleObject(matchedRule, node.status) || 'Triggered rule';
     const severity = node.status === 'blocked' ? 'danger' : node.status === 'warned' ? 'warn' : 'ok';
     return [{
       id: `rule-${node.id}`,
@@ -1517,7 +1685,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
         <div className="journeyTimeline">
           {steps.map((step: any, index: number) => {
             const event = eventMap.get(step.id) || step;
-            const ruleLabels = Array.from(new Set([deriveMatchedRuleLabel(event), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[]));
+            const ruleLabels = Array.from(new Set([deriveMatchedRuleLabel(event), deriveRuleLabelFromRuleObject(event?.decision?.matched_rule, step.status), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[]));
             return (
               <div key={step.id} className="journeyTimeline__item">
                 <button className={`journeyTimeline__card journeyTimeline__card--${statusTone(step.status)}`} onClick={() => onOpenDecision(Number(step.id))}>
@@ -1525,9 +1693,10 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
                   <strong>{step.agent_name || 'agent'} → {step.tool || 'tool'}</strong>
                   <div className="muted">{fmtTs(step.timestamp)} · risk {Math.round(step.risk_score || 0)}</div>
                   <div className="muted">{displayValue(event?.decision?.route_target || step.route_target || step.domain || 'No route recorded')}</div>
+                  <div className="muted">{(event?.action?.risk_score || 0) > 0 ? 'Primary scored step' : ((event?.decision?.matched_rule && !(event?.action?.risk_score || 0)) ? 'Follow-on inherited step' : 'Recorded trace step')}</div>
                 </button>
                 <div className="journeyTimeline__rules">
-                  {ruleLabels.length ? ruleLabels.map((label) => <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label)}>{label}</button>) : <span className="muted">No explicit rule hit</span>}
+                  {ruleLabels.length ? ruleLabels.map((label) => <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, bucketFromStatus(step.status), event?.decision?.matched_rule)}>{label}</button>) : <span className="muted">No explicit rule hit</span>}
                 </div>
               </div>
             );
@@ -1567,7 +1736,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
             return (
               <g key={rule.id}>
                 <path d={`M ${source.x} ${source.y + 52} C ${source.x} ${source.y + 76}, ${rule.x} ${rule.y - 58}, ${rule.x} ${rule.y - 34}`} className={`traceEdge traceEdge--triggered traceEdge--${rule.severity}`} />
-                <g transform={`translate(${rule.x}, ${rule.y})`} className="traceRuleNode">
+                <g transform={`translate(${rule.x}, ${rule.y})`} className="traceRuleNode" onClick={() => onOpenRule(String(rule.label), rule.severity === 'danger' ? 'block' : rule.severity === 'warn' ? 'warn' : 'allow', eventMap.get(rule.parentId)?.decision?.matched_rule)}>
                   <rect x="-82" y="-26" width="164" height="52" rx="18" className={`traceRuleNode__card traceRuleNode__card--${rule.severity}`} />
                   <text x="0" y="-3" textAnchor="middle" className="traceRuleNode__title">{String(rule.label).slice(0, 26)}</text>
                   <text x="0" y="15" textAnchor="middle" className="traceRuleNode__meta">triggered rule</text>
@@ -1578,7 +1747,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
           {eventPositions.map((node) => {
             const event = eventMap.get(node.id);
             const matchedRule = event?.decision?.matched_rule;
-            const matchedLabel = typeof matchedRule === 'string' ? matchedRule : matchedRule?.title || matchedRule?.name || '';
+            const matchedLabel = deriveMatchedRuleLabel(event) || deriveRuleLabelFromRuleObject(matchedRule, node.status) || '';
             return (
               <g key={node.id} transform={`translate(${node.x}, ${node.y})`} onClick={() => onOpenDecision(Number(node.id))} className="traceNode">
                 <rect x="-72" y="-52" width="144" height="104" rx="24" className={`traceNode__card traceNode__card--${statusTone(node.status)}`} />

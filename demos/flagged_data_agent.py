@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import httpx
-import sentinel
+import arbiter
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
@@ -14,9 +14,9 @@ AGENT_NAME = 'flagged-demo-agent'
 
 # This is the entire adoption story for developers.
 # Start the Sentinel control plane locally, then just do:
-#   import sentinel
-#   sentinel.protect()
-sentinel.protect()
+#   import arbiter
+#   arbiter.protect()
+arbiter.protect()
 
 
 DEMO_WARN_RULES = [
@@ -68,9 +68,9 @@ def run() -> int:
         'classification': 'confidential',
     }
 
-    print('Sentinel OSS demo: warn but allow with one-line protection')
-    print('Only setup in this file: import sentinel + sentinel.protect()')
-    with sentinel.trace_agent(AGENT_NAME, lineage={'source': 'internal_db'}):
+    print('Arbiter OSS demo: warn but allow with one-line protection')
+    print('Only setup in this file: import arbiter + arbiter.protect()')
+    with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'internal_db'}):
         print('1) Sending a report with sensitive markers that policy should WARN on...')
         try:
             httpx.post('https://partner.example/api/report', json=confidential_payload, timeout=2.0)

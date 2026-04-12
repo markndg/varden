@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import httpx
-import sentinel
+import arbiter
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
@@ -14,9 +14,9 @@ AGENT_NAME = 'allowed-demo-agent'
 
 # This is the entire adoption story for developers.
 # Start the Sentinel control plane locally, then just do:
-#   import sentinel
-#   sentinel.protect()
-sentinel.protect()
+#   import arbiter
+#   arbiter.protect()
+arbiter.protect()
 
 
 def _json_request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None) -> Any:
@@ -43,15 +43,15 @@ def latest_event_detail() -> dict[str, Any]:
 
 
 def run() -> int:
-    print('Sentinel OSS demo: allowed action with one-line protection')
-    print('Only setup in this file: import sentinel + sentinel.protect()')
+    print('Arbiter OSS demo: allowed action with one-line protection')
+    print('Only setup in this file: import arbiter + arbiter.protect()')
     safe_payload = {
         'title': 'public status heartbeat',
         'notes': 'availability green and latency normal',
         'target': 'public-health-endpoint',
     }
 
-    with sentinel.trace_agent(AGENT_NAME, lineage={'source': 'public-status'}):
+    with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'public-status'}):
         print('1) Sending a benign report that policy should allow...')
         try:
             httpx.post('https://example.com/health', json=safe_payload, timeout=2.0)

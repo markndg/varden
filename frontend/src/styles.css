@@ -290,6 +290,7 @@ button { cursor: pointer; }
   text-align: left;
 }
 .ruleCard.is-active { border-color: rgba(123,97,255,.55); background: linear-gradient(135deg, rgba(123,97,255,.18), rgba(76,224,181,.08)); }
+.ruleCard.is-highlighted { border-color: rgba(76,224,181,.72); box-shadow: 0 0 0 1px rgba(76,224,181,.28), 0 0 0 8px rgba(76,224,181,.10), 0 20px 40px rgba(9, 24, 46, .28); animation: ruleHighlightPulse 1.8s ease; }
 .ruleCard__title { font-weight: 700; margin-bottom: 6px; }
 .ruleCard__meta { color: var(--muted); font-size: 13px; }
 .ruleCard__flags { display: flex; gap: 8px; flex-wrap: wrap; justify-content: end; }
@@ -621,6 +622,21 @@ button { cursor: pointer; }
 .filters--wrap { flex-wrap: wrap; }
 .badge--clickable { cursor: pointer; }
 .decisionNarrative { display: grid; gap: 14px; margin-bottom: 18px; }
+
+.decisionCallout {
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.03);
+}
+.decisionCallout strong { font-size: 14px; }
+.decisionCallout span { color: var(--muted); font-size: 13px; line-height: 1.45; }
+.decisionCallout--accent { border-color: rgba(255,191,90,.38); background: linear-gradient(135deg, rgba(255,191,90,.12), rgba(123,97,255,.05)); }
+.decisionCallout--muted { border-color: rgba(123,97,255,.22); background: rgba(255,255,255,.025); }
+.chip--reason { background: rgba(255,255,255,.035); }
+.chip--reason strong { color: var(--muted); }
 .journeyList { display: grid; gap: 10px; }
 .journeyStep { display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; align-items: start; padding: 12px 14px; border: 1px solid var(--line); border-radius: 18px; background: rgba(255,255,255,.03); }
 .journeyStep--decision { border-color: rgba(123,97,255,.35); background: linear-gradient(135deg, rgba(123,97,255,.14), rgba(76,224,181,.06)); }
@@ -697,4 +713,49 @@ button { cursor: pointer; }
 @media (max-width: 1180px) {
   .card--matchedScroll { height: auto; }
   .scrollPanel--rail { max-height: 520px; }
+}
+
+/* overlay update: clearer decision explainability */
+.explainPanel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  background: linear-gradient(180deg, rgba(18,28,58,.86), rgba(12,22,46,.72));
+  border: 1px solid rgba(123,97,255,.18);
+  margin-bottom: 12px;
+}
+.explainPanel__headline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.explainPanel__headline strong {
+  font-size: 15px;
+  line-height: 1.35;
+}
+.explainPanel__headline span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--muted);
+}
+.explainPanel__summary {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.explainPanel__note {
+  font-size: 12px;
+  color: var(--muted);
+  padding-top: 2px;
+}
+.journeyStep span strong { color: var(--text); }
+.traceRuleNode { cursor: pointer; }
+
+@keyframes ruleHighlightPulse {
+  0% { transform: translateY(0); box-shadow: 0 0 0 1px rgba(76,224,181,.18), 0 0 0 0 rgba(76,224,181,0); }
+  35% { transform: translateY(-1px); box-shadow: 0 0 0 1px rgba(76,224,181,.34), 0 0 0 10px rgba(76,224,181,.14); }
+  100% { transform: translateY(0); box-shadow: 0 0 0 1px rgba(76,224,181,.28), 0 0 0 8px rgba(76,224,181,.10); }
 }

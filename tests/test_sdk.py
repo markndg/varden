@@ -3,7 +3,7 @@ from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 
-import sentinel
+import arbiter
 from sentinel.app_factory import create_app
 from sentinel.config import AppConfig
 
@@ -40,13 +40,13 @@ def test_sdk_guard_endpoint_allows_and_logs():
 
 
 def test_python_sdk_exports_protect():
-    assert hasattr(sentinel, 'protect')
-    assert hasattr(sentinel, 'tool')
-    assert hasattr(sentinel, 'trace_agent')
+    assert hasattr(arbiter, 'protect')
+    assert hasattr(arbiter, 'tool')
+    assert hasattr(arbiter, 'trace_agent')
 
 
 def test_sdk_bootstrap_credentials_can_be_auto_loaded(monkeypatch):
-    from sentinel.sdk import SentinelClient
+    from arbiter.sdk import SentinelClient
     calls = {"bootstrap": 0}
 
     def fake_bootstrap(self):
@@ -54,10 +54,10 @@ def test_sdk_bootstrap_credentials_can_be_auto_loaded(monkeypatch):
         return {"bootstrap_api_key": "auto-key", "base_url": "http://bootstrap"}
 
     monkeypatch.setattr(SentinelClient, "bootstrap", fake_bootstrap)
-    guard = sentinel.protect(base_url="http://placeholder", auto_instrument=False)
+    guard = arbiter.protect(base_url="http://placeholder", auto_instrument=False)
     assert guard.client.api_key == "auto-key"
     assert guard.client.base_url == "http://bootstrap"
-    sentinel.unpatch_runtime()
+    arbiter.unpatch_runtime()
 
 
 def test_rules_page_exists():

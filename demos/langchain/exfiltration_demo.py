@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import sentinel
+import arbiter
 
 from demos.langchain.common import DemoTool, configure_guard, make_demo_bundle, print_banner
 
@@ -21,7 +21,7 @@ def main() -> int:
     )
     export_tool = bundle['tools'][0]
 
-    with sentinel.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
+    with arbiter.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
         print_banner('External data movement demo')
         print(
             export_tool.invoke(

@@ -1,13 +1,13 @@
-# Sentinel OSS
+# Arbiter OSS
 
-![Sentinel logo](sentinel/web/assets/sentinel-logo.png)
+![Arbiter logo](sentinel/web/assets/sentinel-logo.png)
 
-**Sentinel OSS is a self-hosted runtime firewall for AI agents.**
+**Arbiter OSS is a self-hosted runtime firewall for AI agents.**
 It sits between agent reasoning and action execution so teams can allow, warn, or block tool calls, HTTP requests, LLM calls, and workflow steps from infrastructure they run themselves.
 
 This OSS edition is shaped for adoption:
 - 5-minute local start
-- one-line Python protection with `sentinel.protect()`
+- one-line Python protection with `arbiter.protect()`
 - fast mode by default for low overhead
 - optional deep scan mode for slower, richer inspection
 - production-style dashboard at `/`
@@ -19,10 +19,10 @@ This OSS edition is shaped for adoption:
 
 ---
 
-## Why Sentinel OSS exists
+## Why Arbiter OSS exists
 
 Most AI security products still focus on the chatbot threat model: prompt in, response out.
-Sentinel protects the **agent runtime** instead:
+Arbiter protects the **agent runtime** instead:
 
 - tool execution
 - HTTP/API calls
@@ -40,8 +40,8 @@ That makes it useful for teams building internal agents, copilots, orchestration
 - policy engine with `allow`, `warn`, `block`, and `monitor` paths
 - classifier-assisted decisions for secrets, PII, and internal data markers
 - action logging for tool calls, HTTP calls, and LLM calls
-- Python SDK with invisible runtime protection via `sentinel.protect()`
-- optional `sentinel.trace_agent(...)`, `sentinel.tool(...)`, and tagging helpers for advanced use cases only
+- Python SDK with invisible runtime protection via `arbiter.protect()`
+- optional `arbiter.trace_agent(...)`, `arbiter.tool(...)`, and tagging helpers for advanced use cases only
 
 ### Self-hosted control plane
 - dashboard at `/`
@@ -74,7 +74,7 @@ pip install -e .
 copy examples\policy.json policy.json
 ```
 
-### 3) Start Sentinel
+### 3) Start Arbiter
 
 ```bash
 python -m sentinel.api --config examples/dev.env
@@ -100,7 +100,7 @@ admin-demo-key
 ### Fastest path
 
 ```bash
-sentinel demo
+arbiter demo
 ```
 
 That starts the local OSS stack, seeds one allowed, one warned, and one blocked trace, and opens the command center.
@@ -117,7 +117,7 @@ python demos/blocked_tool_agent.py
 What it does:
 - runs normal application code
 - attempts a dangerous subprocess command containing `delete_database`
-- Sentinel blocks it before execution
+- Arbiter blocks it before execution
 - a blocked event is written to the control plane
 
 ### Demo 2: warned outbound HTTP action
@@ -128,8 +128,8 @@ python demos/flagged_data_agent.py
 
 What it does:
 - sends an outbound HTTP request containing internal/secrets markers
-- Sentinel classifies the payload automatically
-- Sentinel warns, logs classifiers, and still records the event even if the remote call fails
+- Arbiter classifies the payload automatically
+- Arbiter warns, logs classifiers, and still records the event even if the remote call fails
 
 ### What you should see in the dashboard
 
@@ -143,7 +143,7 @@ After running the demos, the dashboard should show:
 
 ## Official LangChain integration
 
-Sentinel ships a first-class optional LangChain integration in `sentinel_langchain` so teams can add policy enforcement and tracing to LangChain tools without rewriting their app architecture.
+Arbiter ships a first-class optional LangChain integration in `arbiter_langchain` (alias for `sentinel_langchain`) so teams can add policy enforcement and tracing to LangChain tools without rewriting their app architecture.
 
 ### Install
 
@@ -154,10 +154,10 @@ pip install -e .[langchain]
 ### Drop-in usage
 
 ```python
-import sentinel
-from sentinel_langchain import protect_tools
+import arbiter
+from arbiter_langchain import protect_tools
 
-sentinel.protect_from_env(auto_instrument=False)
+arbiter.protect_from_env(auto_instrument=False)
 tools = protect_tools(tools, agent_name='support-agent')
 ```
 
@@ -170,7 +170,7 @@ tools = protect_tools(tools, agent_name='support-agent')
 
 ### LangChain demo set
 
-Run these after Sentinel is up:
+Run these after Arbiter is up:
 
 ```bash
 python demos/langchain/allow_warn_block_demo.py
@@ -190,10 +190,10 @@ See also: `docs/langchain.md`
 ## Python: one-line protection
 
 ```python
-import sentinel
+import arbiter
 import requests
 
-sentinel.protect()
+arbiter.protect()
 
 requests.post(
     "https://partner.example/api/report",
@@ -204,7 +204,7 @@ requests.post(
 
 ### What `protect()` does
 
-With zero extra developer instrumentation, Sentinel patches common Python runtime paths so actions are checked by the control plane:
+With zero extra developer instrumentation, Arbiter patches common Python runtime paths so actions are checked by the control plane:
 
 - `requests`
 - `httpx` sync and async clients
@@ -213,7 +213,7 @@ With zero extra developer instrumentation, Sentinel patches common Python runtim
 - Anthropic Messages, if installed
 - future imports of those libraries after `protect()` is called
 
-Sentinel sends pre-execution checks to:
+Arbiter sends pre-execution checks to:
 - `POST /sdk/guard`
 
 and outcome logging to:
@@ -222,9 +222,9 @@ and outcome logging to:
 ### Environment-based configuration
 
 ```python
-import sentinel
+import arbiter
 
-sentinel.protect_from_env()
+arbiter.protect_from_env()
 ```
 
 Environment variables for local or self-hosted rollouts:
@@ -241,7 +241,7 @@ SENTINEL_TIMEOUT=5.0
 
 ### Scan modes
 
-Sentinel OSS defaults to **fast** mode to keep the policy path lightweight.
+Arbiter OSS defaults to **fast** mode to keep the policy path lightweight.
 
 ```text
 SENTINEL_SCAN_MODE=fast
@@ -330,7 +330,7 @@ The backend continues to serve the UI at `/ui` and `/ui/rules`, so deployment an
 
 ## Self-hosting
 
-Sentinel OSS is designed so teams can run it themselves.
+Arbiter OSS is designed so teams can run it themselves.
 
 Use:
 - `deploy/docker-compose.yml`
@@ -351,7 +351,7 @@ Notes:
 - `demos/flagged_data_agent.py`
 - `demos/README.md`
 
-These are intended to be the shortest path from clone to “I can see Sentinel doing useful work.”
+These are intended to be the shortest path from clone to “I can see Arbiter doing useful work.”
 
 ---
 
@@ -359,17 +359,17 @@ These are intended to be the shortest path from clone to “I can see Sentinel d
 
 ## LangChain integration
 
-Sentinel includes a drop-in `sentinel_langchain` integration package for protecting LangChain tool execution without relying on fragile monkey patching. The recommended model is:
+Arbiter includes a drop-in `arbiter_langchain` (alias for `sentinel_langchain`) integration package for protecting LangChain tool execution without relying on fragile monkey patching. The recommended model is:
 
 - wrap tools with `protect_tools(...)` for allow / warn / block enforcement
-- attach `SentinelCallbackHandler(...)` for chain, tool, and LLM trace events
+- attach `ArbiterCallbackHandler(...)` for chain, tool, and LLM trace events
 - or use `create_protected_agent(...)` to get both in one step
 
 ```python
-import sentinel
-from sentinel_langchain import create_protected_agent
+import arbiter
+from arbiter_langchain import create_protected_agent
 
-sentinel.protect_from_env(auto_instrument=False, app_name="langchain-app")
+arbiter.protect_from_env(auto_instrument=False, app_name="langchain-app")
 protected = create_protected_agent(tools=my_tools, agent_name="research-agent")
 agent = initialize_agent(
     tools=protected["tools"],
@@ -391,7 +391,7 @@ Python is the most complete runtime-integrated path in this OSS release.
 
 ## License
 
-Sentinel OSS is licensed under **AGPL-3.0-or-later**. That means anyone who modifies and runs Sentinel for users over a network must make the corresponding source code for those modifications available to those users.
+Arbiter OSS is licensed under **AGPL-3.0-or-later**. That means anyone who modifies and runs Arbiter for users over a network must make the corresponding source code for those modifications available to those users.
 
 This is the strongest widely adopted **open-source** option if you want to discourage companies from taking the code, modifying it, and quietly running it as a closed hosted service.
 
@@ -419,7 +419,7 @@ This repository includes:
 
 ## Included OSS policy packs
 
-Sentinel now ships with an out-of-the-box database safety pack for agent-written SQL. The default policy blocks destructive database operations and warns on suspect SQL patterns such as schema enumeration, broad reads from sensitive tables, `SELECT *`, and missing `LIMIT` clauses on reads.
+Arbiter now ships with an out-of-the-box database safety pack for agent-written SQL. The default policy blocks destructive database operations and warns on suspect SQL patterns such as schema enumeration, broad reads from sensitive tables, `SELECT *`, and missing `LIMIT` clauses on reads.
 
 Included SQL protections:
 - block destructive SQL such as `DROP TABLE`, `DROP DATABASE`, `TRUNCATE`, dangerous privilege changes, unbounded `DELETE` / `UPDATE`, and multi-statement SQL

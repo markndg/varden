@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sentinel
-from sentinel import SentinelBlockedError
+import arbiter
+from arbiter import SentinelBlockedError
 
 from demos.langchain.common import DemoTool, configure_guard, make_demo_bundle, print_banner
 
@@ -22,7 +22,7 @@ def main() -> int:
     )
     sql_tool = bundle['tools'][0]
 
-    with sentinel.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
+    with arbiter.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
         print_banner('Safe read query')
         print(sql_tool.invoke('SELECT id, status FROM orders LIMIT 10;'))
 

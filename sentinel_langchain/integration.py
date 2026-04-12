@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from sentinel import current_guard
-from sentinel.sdk import GuardResult, SentinelBlockedError, SentinelGuard, _json_safe
+from sentinel_sdk.sdk import GuardResult, SentinelBlockedError, SentinelGuard, _json_safe
 
 try:
     from langchain_core.callbacks import BaseCallbackHandler as _LangChainBaseCallbackHandler

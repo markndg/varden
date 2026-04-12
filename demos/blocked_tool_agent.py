@@ -7,7 +7,7 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import sentinel
+import arbiter
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
@@ -15,9 +15,9 @@ AGENT_NAME = 'blocked-demo-agent'
 
 # This is the entire adoption story for developers.
 # Start the Sentinel control plane locally, then just do:
-#   import sentinel
-#   sentinel.protect()
-sentinel.protect()
+#   import arbiter
+#   arbiter.protect()
+arbiter.protect()
 
 
 DEMO_BLOCK_RULES = [
@@ -63,10 +63,10 @@ def list_backups(path: str) -> list[str]:
 
 def run() -> int:
     _ensure_demo_policy()
-    print('Sentinel OSS demo: blocked action with one-line protection')
-    print('Only setup in this file: import sentinel + sentinel.protect()')
+    print('Arbiter OSS demo: blocked action with one-line protection')
+    print('Only setup in this file: import arbiter + arbiter.protect()')
     print('1) Running normal application code...')
-    with sentinel.trace_agent(AGENT_NAME, lineage={'source': 'demo-script'}):
+    with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'demo-script'}):
         print('   safe result:', list_backups('/var/lib/postgres'))
         print('2) Attempting a dangerous subprocess that policy should block before it executes...')
         try:
@@ -74,7 +74,7 @@ def run() -> int:
                 [sys.executable, '-c', "print('sentinel blocked demo')", 'delete_database', 'prod-customer-db'],
                 check=False,
             )
-        except sentinel.SentinelBlockedError as exc:
+        except arbiter.SentinelBlockedError as exc:
             print('   ✅ Sentinel blocked the subprocess as expected')
             print('   decision:', exc.decision)
             event_id = exc.decision.get('event_id')

@@ -4,8 +4,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import sentinel
-from sentinel_langchain import create_protected_agent
+import arbiter
+from arbiter_langchain import create_protected_agent
 
 
 @dataclass
@@ -23,9 +23,9 @@ class DemoTool:
 
 
 def configure_guard(app_name: str) -> None:
-    os.environ.setdefault('SENTINEL_BASE_URL', 'http://127.0.0.1:8000')
-    os.environ.setdefault('SENTINEL_API_KEY', 'admin-demo-key')
-    sentinel.protect_from_env(auto_instrument=False, app_name=app_name)
+    os.environ.setdefault('ARBITER_BASE_URL', 'http://127.0.0.1:8000')
+    os.environ.setdefault('ARBITER_API_KEY', 'admin-demo-key')
+    arbiter.protect_from_env(auto_instrument=False, app_name=app_name)
 
 
 def make_demo_bundle(*, agent_name: str, tools: list[DemoTool]):

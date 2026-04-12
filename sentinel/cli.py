@@ -32,14 +32,16 @@ def _post_json(url: str, payload: dict | None = None, api_key: str = 'admin-demo
 
 def run_demo(host: str = '127.0.0.1', port: int = 8000, open_browser: bool = True) -> int:
     env = os.environ.copy()
-    env.setdefault('SENTINEL_API_KEY', 'admin-demo-key')
+    env.setdefault('ARBITER_API_KEY', env.get('SENTINEL_API_KEY', 'admin-demo-key'))
+    env.setdefault('SENTINEL_API_KEY', env.get('ARBITER_API_KEY', 'admin-demo-key'))
     base_url = f'http://{host}:{port}'
-    env.setdefault('SENTINEL_BASE_URL', base_url)
+    env.setdefault('ARBITER_BASE_URL', env.get('SENTINEL_BASE_URL', base_url))
+    env.setdefault('SENTINEL_BASE_URL', env.get('ARBITER_BASE_URL', base_url))
     cmd = [sys.executable, '-m', 'uvicorn', 'sentinel.api:app', '--host', host, '--port', str(port)]
     proc = subprocess.Popen(cmd, env=env)
     try:
         if not _wait_for(f'{base_url}/health/live', timeout=30.0):
-            print('Sentinel demo failed to start in time.', file=sys.stderr)
+            print('Arbiter demo failed to start in time.', file=sys.stderr)
             return 1
         seeded = _post_json(f'{base_url}/demo/run')
         if open_browser:
@@ -47,7 +49,7 @@ def run_demo(host: str = '127.0.0.1', port: int = 8000, open_browser: bool = Tru
                 webbrowser.open(f'{base_url}/ui', new=2)
             except Exception:
                 pass
-        print('Sentinel demo is live.')
+        print('Arbiter demo is live.')
         print(f'UI: {base_url}/ui')
         print('Scenarios seeded:', ', '.join(f"{item['name']}={item['status']}" for item in seeded.get('scenarios', [])))
         print('Press Ctrl+C to stop.')
@@ -65,7 +67,7 @@ def run_demo(host: str = '127.0.0.1', port: int = 8000, open_browser: bool = Tru
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog='sentinel', description='Sentinel OSS command line tools')
+    parser = argparse.ArgumentParser(prog='arbiter', description='Arbiter OSS command line tools')
     sub = parser.add_subparsers(dest='command')
     demo = sub.add_parser('demo', help='Run the OSS demo stack and seed allow/warn/block traces')
     demo.add_argument('--host', default='127.0.0.1')

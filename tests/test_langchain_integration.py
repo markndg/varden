@@ -4,9 +4,9 @@ import uuid
 
 import pytest
 
-import sentinel
-from sentinel.sdk import GuardResult
-from sentinel_langchain import SentinelCallbackHandler, create_protected_agent, protect_agent, protect_tools
+import arbiter
+from arbiter.sdk import GuardResult
+from arbiter_langchain import SentinelCallbackHandler, create_protected_agent, protect_agent, protect_tools
 
 
 class FakeTool:
@@ -55,7 +55,7 @@ def test_protect_tools_blocks_and_warns():
     ], guard=guard, agent_name='agent-x')
     assert protected[0].invoke({'q': 'hello'})['tool'] == 'safe_lookup'
     assert protected[1].invoke({'url': 'https://example.com'})['tool'] == 'external_http'
-    with pytest.raises(sentinel.SentinelBlockedError):
+    with pytest.raises(arbiter.SentinelBlockedError):
         protected[2].invoke('DROP TABLE customers;')
     assert any(call['tool'] == 'external_http' and call['metadata']['execution_surface'] == 'langchain-tool' for call in guard.guard_calls)
     assert any(call['decision']['action'] == 'warn' for call in guard.result_calls)
@@ -66,7 +66,7 @@ def test_create_protected_agent_returns_tools_and_callbacks():
     assert len(bundle['tools']) == 1
     assert len(bundle['callbacks']) == 1
     assert bundle['agent_name'] == 'bundle-agent'
-    assert getattr(bundle['tools'][0], '__sentinel_langchain_protected__', False) is True
+    assert getattr(bundle['tools'][0], '__arbiter_langchain_protected__', False) is True
 
 
 def test_callback_handler_emits_workflow_events():

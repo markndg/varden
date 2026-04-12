@@ -675,15 +675,15 @@ def _patch_subprocess(guard: SentinelGuard) -> None:
 
 def protect_from_env(**overrides: Any) -> SentinelGuard:
     cfg = {
-        'base_url': os.getenv('ARBITER_BASE_URL', os.getenv('SENTINEL_BASE_URL', 'http://127.0.0.1:8000')),
-        'api_key': os.getenv('ARBITER_API_KEY', os.getenv('SENTINEL_API_KEY')),
-        'bearer_token': os.getenv('ARBITER_BEARER_TOKEN', os.getenv('SENTINEL_BEARER_TOKEN')),
-        'app_name': os.getenv('ARBITER_APP_NAME', os.getenv('SENTINEL_APP_NAME', 'python-app')),
-        'tenant': os.getenv('ARBITER_TENANT', os.getenv('SENTINEL_TENANT', 'default')),
-        'mode': os.getenv('ARBITER_MODE', os.getenv('SENTINEL_MODE', 'enforce')),
-        'auto_instrument': os.getenv('ARBITER_AUTO_INSTRUMENT', os.getenv('SENTINEL_AUTO_INSTRUMENT', 'true')).lower() == 'true',
-        'fail_mode': os.getenv('ARBITER_FAIL_MODE', os.getenv('SENTINEL_FAIL_MODE', 'open')),
-        'timeout': float(os.getenv('ARBITER_TIMEOUT', os.getenv('SENTINEL_TIMEOUT', '5.0'))),
+        'base_url': os.getenv('SENTINEL_BASE_URL', 'http://127.0.0.1:8000'),
+        'api_key': os.getenv('SENTINEL_API_KEY'),
+        'bearer_token': os.getenv('SENTINEL_BEARER_TOKEN'),
+        'app_name': os.getenv('SENTINEL_APP_NAME', 'python-app'),
+        'tenant': os.getenv('SENTINEL_TENANT', 'default'),
+        'mode': os.getenv('SENTINEL_MODE', 'enforce'),
+        'auto_instrument': os.getenv('SENTINEL_AUTO_INSTRUMENT', 'true').lower() == 'true',
+        'fail_mode': os.getenv('SENTINEL_FAIL_MODE', 'open'),
+        'timeout': float(os.getenv('SENTINEL_TIMEOUT', '5.0')),
     }
     cfg.update({k: v for k, v in overrides.items() if v is not None})
     return protect(**cfg)

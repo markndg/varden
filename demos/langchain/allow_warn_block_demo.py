@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import sentinel
-from sentinel import SentinelBlockedError
+import arbiter
+from arbiter import SentinelBlockedError
 
 from demos.langchain.common import DemoTool, configure_guard, make_demo_bundle, print_banner
 
@@ -41,7 +41,7 @@ def main() -> int:
     )
     tools = bundle['tools']
 
-    with sentinel.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
+    with arbiter.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
         print_banner('1) Allowed tool call')
         print(tools[0].invoke({'question': 'What is the current order status?'}))
 

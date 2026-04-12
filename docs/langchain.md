@@ -1,11 +1,11 @@
-# Sentinel LangChain integration
+# Arbiter LangChain integration
 
-Sentinel ships an optional LangChain integration in `sentinel_langchain`.
+Arbiter ships an optional LangChain integration in `arbiter_langchain` (alias for `sentinel_langchain`).
 
 It is designed to feel drop-in:
 
 ```python
-from sentinel_langchain import protect_tools
+from arbiter_langchain import protect_tools
 
 tools = protect_tools(tools, agent_name='research-agent')
 ```
@@ -13,7 +13,7 @@ tools = protect_tools(tools, agent_name='research-agent')
 ## What it does
 
 - wraps LangChain-style tools before they execute
-- sends pre-execution policy checks to Sentinel
+- sends pre-execution policy checks to Arbiter
 - records outcomes for traces and decision drilldown
 - adds callback events so chain and tool activity can be visualised in the dashboard
 
@@ -34,10 +34,10 @@ Return a ready-to-wire bundle with:
 ## Example
 
 ```python
-import sentinel
-from sentinel_langchain import create_protected_agent
+import arbiter
+from arbiter_langchain import create_protected_agent
 
-sentinel.protect_from_env(auto_instrument=False)
+arbiter.protect_from_env(auto_instrument=False)
 
 bundle = create_protected_agent(
     tools=tools,

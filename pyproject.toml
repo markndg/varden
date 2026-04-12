@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "sentinel-integrated-platform"
+name = "arbiter-integrated-platform"
 version = "3.0.0"
-description = "Production Sentinel platform with control plane and multi-language SDKs"
+description = "Production Arbiter platform with control plane and multi-language SDKs"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["sentinel*", "sentinel_langchain*"]
+include = ["sentinel*", "sentinel_sdk*", "sentinel_langchain*", "arbiter*", "arbiter_langchain*"]
 
 
 [tool.setuptools.package-data]
@@ -26,6 +26,7 @@ include = ["sentinel*", "sentinel_langchain*"]
 
 [project.scripts]
 sentinel = "sentinel.cli:main"
+arbiter = "sentinel.cli:main"
 
 
 [project.optional-dependencies]
