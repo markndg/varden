@@ -341,16 +341,7 @@ button { cursor: pointer; }
 .sectionHeader--tight { margin-bottom: 0; }
 .templateCard--stacked { grid-template-columns: 1fr; }
 .templateCounts { display: flex; gap: 10px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
-.templatePanelTools { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; margin-bottom: 14px; }
-.templateCard--managed { padding: 0; overflow: hidden; }
-.templateCard__mainAction { width: 100%; border: 0; background: transparent; color: inherit; text-align: left; padding: 14px; display: grid; gap: 10px; }
-.templateCard__header { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
-.templateCard__badges { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
-.templateCard__metaRow { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; }
-.templateCard__actions { display: flex; justify-content: flex-end; padding: 0 14px 14px; }
-.templateCard--managed.is-implemented { border-color: rgba(93,225,164,.45); box-shadow: inset 0 0 0 1px rgba(93,225,164,.18), 0 0 0 1px rgba(93,225,164,.08); background: linear-gradient(180deg, rgba(93,225,164,.09), rgba(255,255,255,.03)); }
-.templateCard--managed.is-partial { border-color: rgba(255,191,90,.4); box-shadow: inset 0 0 0 1px rgba(255,191,90,.14); background: linear-gradient(180deg, rgba(255,191,90,.08), rgba(255,255,255,.03)); }
-.button--tiny { padding: 8px 12px; border-radius: 12px; font-size: 12px; }
+
 .editor--compact { min-height: 320px; }
 @media (max-width: 1180px) {
   .bucketTabs, .rulesSplit, .ruleEditorGrid, .classifierGrid, .customRow { grid-template-columns: 1fr; }
@@ -1922,4 +1913,179 @@ button { cursor: pointer; }
   .coverageToolbar__search { max-width: none; width: 100%; }
   .coverageCluster__headline { flex-direction: column; }
   .coverageSummaryGrid { grid-template-columns: 1fr; }
+}
+
+
+.coverageEmptyCard {
+  min-height: 0;
+}
+
+.coverageEmptyState {
+  padding: 28px 16px;
+}
+
+.templatePanelTools {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.templatePanelTools .toggleRow {
+  justify-content: flex-end;
+}
+
+.templateCard--managed {
+  padding: 0;
+  overflow: hidden;
+  border-radius: 20px;
+}
+
+.templateCard__content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: stretch;
+  padding: 16px;
+}
+
+.templateCard__mainAction {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.templateCard__header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+}
+
+.templateCard__titleBlock {
+  min-width: 0;
+}
+
+.templateCard__titleBlock strong {
+  display: block;
+  font-size: 16px;
+  line-height: 1.2;
+  margin-bottom: 6px;
+}
+
+.templateCard__titleBlock .ruleCard__meta {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.templateCard__badges {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+
+.templateCounts {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: #c8d7fa;
+  font-size: 12px;
+}
+
+.templateCounts span {
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.03);
+  border-radius: 999px;
+  padding: 5px 9px;
+}
+
+.templateCard__metaRow {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.templateCard--managed code {
+  display: block;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(163,184,255,.1);
+  background: rgba(255,255,255,.025);
+  color: #c8d7fa;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.templateCard__actions {
+  display: grid;
+  align-content: center;
+  justify-items: end;
+  gap: 10px;
+  min-width: 132px;
+}
+
+.templateCard__actions .button {
+  min-width: 132px;
+  justify-content: center;
+}
+
+.templateCard--managed.is-implemented {
+  border-color: rgba(93,225,164,.45);
+  box-shadow: inset 0 0 0 1px rgba(93,225,164,.18), 0 0 0 1px rgba(93,225,164,.08);
+  background: linear-gradient(180deg, rgba(93,225,164,.09), rgba(255,255,255,.03));
+}
+
+.templateCard--managed.is-partial {
+  border-color: rgba(255,191,90,.4);
+  box-shadow: inset 0 0 0 1px rgba(255,191,90,.14);
+  background: linear-gradient(180deg, rgba(255,191,90,.08), rgba(255,255,255,.03));
+}
+
+.button--tiny {
+  padding: 9px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .templatePanelTools .toggleRow {
+    justify-content: flex-start;
+  }
+
+  .templateCard__content {
+    grid-template-columns: 1fr;
+  }
+
+  .templateCard__header {
+    grid-template-columns: 1fr;
+  }
+
+  .templateCard__badges {
+    justify-content: flex-start;
+  }
+
+  .templateCard__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: grid;
+    justify-items: stretch;
+    min-width: 0;
+  }
+
+  .templateCard__actions .button {
+    min-width: 0;
+    width: 100%;
+  }
 }

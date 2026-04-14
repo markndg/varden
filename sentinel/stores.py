@@ -340,7 +340,7 @@ class EventStore:
             insights.append({
                 "severity": "high",
                 "title": "Active blocking observed",
-                "message": f"Sentinel blocked {blocked_events} action{'s' if blocked_events != 1 else ''}. Review high-risk tools and matched rules.",
+                "message": f"Arbiter blocked {blocked_events} action{'s' if blocked_events != 1 else ''}. Review high-risk tools and matched rules.",
             })
         if classifier_counts:
             top_name, top_count = classifier_counts.most_common(1)[0]

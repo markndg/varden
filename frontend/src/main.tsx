@@ -573,7 +573,7 @@ function Shell() {
   useEffect(() => {
     if (!token) return;
     refreshOverview().catch((e: any) => setError(e?.message || 'Failed to refresh overview'));
-    if (page === 'rules' || page === 'coverage') refreshPolicy().catch((e: any) => setError(e?.message || 'Failed to load policy'));
+    if (page === 'rules' || page === 'coverage' || page === 'impact') refreshPolicy().catch((e: any) => setError(e?.message || 'Failed to load policy'));
     if (page === 'decision' && detailId) refreshDetail(detailId).catch((e: any) => setError(e?.message || 'Failed to load event'));
   }, [token, page, detailId]);
 
@@ -1514,6 +1514,10 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
   const [selectedRuleIndex, setSelectedRuleIndex] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [templateMode, setTemplateMode] = useState<'replace' | 'merge'>('merge');
+  const [uploadedTemplates, setUploadedTemplates] = usePersistentState<any[]>('arbiter.uploaded-policy-templates', []);
+  const [templateNotice, setTemplateNotice] = useState('');
+  const [templateError, setTemplateError] = useState('');
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const ruleRailRef = useRef<HTMLDivElement | null>(null);
   const ruleEditorPaneRef = useRef<HTMLDivElement | null>(null);
   const ruleItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -1697,7 +1701,71 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     });
   }
 
-  const templateCards = Array.isArray(templates) ? templates : [];
+  function normalizeTemplateEntry(raw: any, fallbackName = 'Imported policy pack') {
+    const templateDoc = dedupePolicyDoc(ensurePolicyDoc(raw?.template || raw || {}));
+    return {
+      name: raw?.name || raw?.title || fallbackName,
+      description: raw?.description || raw?.summary || '',
+      source: raw?.source || 'uploaded',
+      template: templateDoc,
+    };
+  }
+
+  function templateRuleStats(entry: any) {
+    const doc = ensurePolicyDoc(entry?.template || entry || {});
+    const activeFingerprints = new Set(RULE_BUCKETS.flatMap((bucket) => (workingPolicy[bucket] || []).map((rule: any) => ruleFingerprint(rule))));
+    const templateFingerprints = RULE_BUCKETS.flatMap((bucket) => doc[bucket].map((rule: any) => ruleFingerprint(rule)));
+    const matched = templateFingerprints.filter((fingerprint: string) => activeFingerprints.has(fingerprint)).length;
+    const total = templateFingerprints.length;
+    const implemented = total > 0 && matched === total;
+    const partial = matched > 0 && matched < total;
+    return { doc, total, matched, implemented, partial };
+  }
+
+  function removeUploadedTemplate(name: string) {
+    setUploadedTemplates((current) => current.filter((entry: any) => entry?.name !== name));
+    setTemplateNotice(`Removed ${name}`);
+    setTemplateError('');
+  }
+
+  async function handleTemplateUpload(files: FileList | null) {
+    if (!files?.length) return;
+    const imported: any[] = [];
+    const failures: string[] = [];
+
+    for (const file of Array.from(files)) {
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+        imported.push(normalizeTemplateEntry(parsed, file.name.replace(/\.json$/i, '')));
+      } catch (error: any) {
+        failures.push(`${file.name}: ${error?.message || 'Invalid JSON'}`);
+      }
+    }
+
+    if (imported.length) {
+      setUploadedTemplates((current) => {
+        const merged = [...current];
+        for (const entry of imported) {
+          const idx = merged.findIndex((row: any) => row?.name === entry.name);
+          if (idx >= 0) merged[idx] = entry;
+          else merged.unshift(entry);
+        }
+        return merged;
+      });
+      setTemplateNotice(`Imported ${imported.length} policy pack${imported.length === 1 ? '' : 's'}.`);
+    } else {
+      setTemplateNotice('');
+    }
+
+    setTemplateError(failures.join(' · '));
+    if (uploadInputRef.current) uploadInputRef.current.value = '';
+  }
+
+  const templateCards = [
+    ...(Array.isArray(templates) ? templates : []).map((entry: any, idx: number) => normalizeTemplateEntry({ ...entry, source: 'builtin' }, entry?.name || `Arbiter pack ${idx + 1}`)),
+    ...uploadedTemplates.map((entry: any, idx: number) => normalizeTemplateEntry({ ...entry, source: 'uploaded' }, entry?.name || `Imported pack ${idx + 1}`)),
+  ];
   const parseError = (() => { try { JSON.parse(policyText); return ''; } catch (error: any) { return error?.message || 'Invalid JSON'; } })();
 
   return (
@@ -1876,17 +1944,52 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                 <button type="button" className={classNames('segmented', templateMode === 'replace' && 'is-active')} onClick={() => setTemplateMode('replace')}>Replace</button>
               </div>
             </div>
+
+            <div className="templatePanelTools">
+              <div className="muted">Use Arbiter packs as one-click starting points, or upload your own JSON policy packs and keep them available here.</div>
+              <div className="toggleRow">
+                <input ref={uploadInputRef} type="file" accept=".json,application/json" multiple style={{ display: 'none' }} onChange={(e) => handleTemplateUpload(e.target.files)} />
+                <button type="button" className="button button--ghost" onClick={() => uploadInputRef.current?.click()}>Upload rules / policies</button>
+              </div>
+            </div>
+
+            {templateNotice ? <div className="banner banner--ok">{templateNotice}</div> : null}
+            {templateError ? <div className="banner banner--error">{templateError}</div> : null}
+
             <div className="templateList">
               {templateCards.map((template: any, idx: number) => {
-                const doc = ensurePolicyDoc(template.template || template || {});
+                const stats = templateRuleStats(template);
+                const stateLabel = stats.implemented ? 'Implemented' : stats.partial ? 'Partially implemented' : template.source === 'builtin' ? 'Ready to add' : 'Imported';
                 return (
-                  <button type="button" key={idx} className="templateCard templateCard--stacked" onClick={() => applyTemplateToBuilder(template)}>
-                    <strong>{template.name || `Template ${idx + 1}`}</strong>
-                    <div className="templateCounts">{RULE_BUCKETS.map((bucket) => <span key={bucket}>{bucket}: {doc[bucket].length}</span>)}</div>
-                    <code>{JSON.stringify(doc).slice(0, 180)}…</code>
-                  </button>
+                  <div key={`${template.source}:${template.name || idx}`} className={classNames('templateCard', 'templateCard--managed', stats.implemented && 'is-implemented', stats.partial && 'is-partial')}>
+                    <div className="templateCard__content">
+                      <button type="button" className="templateCard__mainAction" onClick={() => applyTemplateToBuilder(template)}>
+                        <div className="templateCard__header">
+                          <div className="templateCard__titleBlock">
+                            <strong>{template.name || `Template ${idx + 1}`}</strong>
+                            {template.description ? <div className="ruleCard__meta">{template.description}</div> : null}
+                          </div>
+                          <div className="templateCard__badges">
+                            <span className={classNames('badge', template.source === 'builtin' ? 'badge--ok' : 'badge--rule')}>{template.source === 'builtin' ? 'Arbiter' : 'Uploaded'}</span>
+                            <span className={classNames('badge', stats.implemented ? 'badge--ok' : stats.partial ? 'badge--warn' : 'badge--danger')}>{stateLabel}</span>
+                          </div>
+                        </div>
+                        <div className="templateCounts">{RULE_BUCKETS.map((bucket) => <span key={bucket}>{bucket}: {stats.doc[bucket].length}</span>)}</div>
+                        <div className="templateCard__metaRow">
+                          <span>{stats.matched}/{stats.total} rules already present</span>
+                          <span>{templateMode === 'replace' ? 'Replace on add' : 'Merge on add'}</span>
+                        </div>
+                        <code>{JSON.stringify(stats.doc).slice(0, 180)}…</code>
+                      </button>
+                      <div className="templateCard__actions">
+                        <button type="button" className="button button--tiny" onClick={() => applyTemplateToBuilder(template)}>Add to builder</button>
+                        {template.source === 'uploaded' ? <button type="button" className="button button--ghost button--tiny" onClick={() => removeUploadedTemplate(template.name)}>Remove</button> : null}
+                      </div>
+                    </div>
+                  </div>
                 );
               })}
+              {!templateCards.length ? <div className="emptyState emptyState--compact"><strong>No policy packs loaded.</strong><span className="muted">Upload your own JSON policy packs to start building a private template library.</span></div> : null}
             </div>
           </div>
 
@@ -2596,8 +2699,146 @@ function CoverageGapsPage({ overview, policy, onOpenDecision, onOpenRules }: any
         </div>
       </div>
 
-      <div className="coverageLayout">
-        <div className="card">
+      {visibleClusters.length ? (
+        <div className="coverageLayout">
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Gap cluster</div>
+                <h3>Top coverage gaps</h3>
+              </div>
+              <div className="muted">Observed behaviours with little or no active policy coverage.</div>
+            </div>
+
+            <div className="coverageList">
+              {visibleClusters.map((cluster: any) => (
+                <button key={cluster.id} type="button" className={classNames('coverageCluster', selectedCluster?.id === cluster.id && 'is-active')} onClick={() => setSelectedClusterId(cluster.id)}>
+                  <div className={classNames('coverageCluster__icon', `is-${clusterSeverityTone(cluster.severity)}`)} />
+                  <div className="coverageCluster__body">
+                    <div className="coverageCluster__headline">
+                      <div>
+                        <strong>{cluster.title}</strong>
+                        <p>{cluster.summary}</p>
+                      </div>
+                      <div className="coverageCluster__score">{cluster.gapScore}</div>
+                    </div>
+                    <div className="coverageCluster__meta">
+                      <span>{fmtNum(cluster.eventCount)} events</span>
+                      <span>{fmtNum(cluster.agents.length)} agents</span>
+                      <span>{cluster.lastSeen ? `Last seen ${relativeTimeLabel(cluster.lastSeen)}` : 'Last seen —'}</span>
+                    </div>
+                    <div className="coverageCluster__chips">
+                      <span className={classNames('badge', `badge--${clusterSeverityTone(cluster.severity)}`)}>{cluster.severity}</span>
+                      <span className={classNames('badge', cluster.coverageType === 'uncovered' ? 'badge--danger' : cluster.coverageType === 'weak' ? 'badge--warn' : 'badge--ok')}>
+                        {cluster.coverageType === 'near' ? 'near rule' : cluster.coverageType}
+                      </span>
+                      {cluster.tags.map((tag: string) => <span key={tag} className="badge">{truncateText(tag, 28)}</span>)}
+                    </div>
+                    <div className="coverageCluster__impact">
+                      <div className="coverageCluster__heat"><div style={{ width: `${cluster.gapScore}%` }} /></div>
+                      <span>{cluster.growthHint}</span>
+                    </div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="card coverageDetail">
+            {selectedCluster ? (
+              <>
+                <div className="coverageDetail__header">
+                  <div>
+                    <div className="coverageDetail__titleRow">
+                      <h3>{selectedCluster.title}</h3>
+                      <span className={classNames('badge', selectedCluster.coverageType === 'uncovered' ? 'badge--danger' : selectedCluster.coverageType === 'weak' ? 'badge--warn' : 'badge--ok')}>
+                        {selectedCluster.coverageType === 'near' ? 'Near existing rule' : selectedCluster.coverageType}
+                      </span>
+                    </div>
+                    <div className="traceCard__meta">
+                      First seen {fmtTs(selectedCluster.firstSeen)} · Last seen {fmtTs(selectedCluster.lastSeen)} · {fmtNum(selectedCluster.eventCount)} events · {fmtNum(selectedCluster.agents.length)} agents
+                    </div>
+                  </div>
+                  <div className="coverageDetail__scoreRing"><span>{selectedCluster.gapScore}</span></div>
+                </div>
+
+                <div className="coverageDetailGrid">
+                  <div className="coverageInfoCard">
+                    <div className="subheading">Why this is uncovered</div>
+                    <p className="muted">{selectedCluster.whyUncovered}</p>
+
+                    <div className="subheading" style={{ marginTop: 16 }}>Nearest existing rules</div>
+                    <div className="coverageNearestList">
+                      {selectedCluster.nearestRules.length ? selectedCluster.nearestRules.map((row: any) => (
+                        <div key={`${row.fingerprint}:${row.match}`} className="coverageNearestItem">
+                          <div>
+                            <strong>{row.label}</strong>
+                            <div className="traceCard__meta">{row.bucket} policy bucket</div>
+                          </div>
+                          <span className="badge">{row.match}% match</span>
+                        </div>
+                      )) : <div className="muted">No adjacent rule concepts were found.</div>}
+                    </div>
+
+                    <div className="subheading" style={{ marginTop: 16 }}>Suggested policy starting point</div>
+                    <div className="codeCard coverageCodeCard">
+                      <pre>{JSON.stringify(selectedCluster.suggestedRule, null, 2)}</pre>
+                    </div>
+
+                    <div className="coverageActionRow">
+                      <button type="button" className="button" onClick={onOpenRules}>Create draft rule</button>
+                      {selectedCluster.representative?.id ? <button type="button" className="button button--ghost" onClick={() => onOpenDecision(selectedCluster.representative.id)}>Replay with this event</button> : null}
+                    </div>
+                  </div>
+
+                  <div className="coverageInfoCard">
+                    <div className="subheading">Representative sample</div>
+                    {selectedCluster.representative ? (
+                      <div className="coverageSample">
+                        <div className="coverageSample__row"><span>Agent</span><strong>{selectedCluster.representative.agent}</strong></div>
+                        <div className="coverageSample__row"><span>Tool</span><strong>{selectedCluster.representative.tool}</strong></div>
+                        <div className="coverageSample__row"><span>Type</span><strong>{selectedCluster.representative.type}</strong></div>
+                        <div className="coverageSample__row"><span>Domain</span><strong>{selectedCluster.representative.domain || '—'}</strong></div>
+                        <div className="coverageSample__row"><span>Route</span><strong>{selectedCluster.representative.route_target || '—'}</strong></div>
+                        <div className="coverageSample__row"><span>Risk</span><strong>{fmtNum(selectedCluster.representative.risk_score)}</strong></div>
+                        <div className="coverageSample__chips">
+                          {(Object.entries(selectedCluster.representative.classifiers || {}).filter(([, value]) => !!value).map(([key]) => key)).slice(0, 6).map((key) => (
+                            <span key={key} className="badge">{key.replace(/_/g, ' ')}</span>
+                          ))}
+                        </div>
+                        <div className="coverageSummaryGrid" style={{ marginTop: 12 }}>
+                          <div className="coverageMiniCard">
+                            <div className="subheading">Top agents</div>
+                            {topPairs(selectedCluster.agents).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{row.label}</span><strong>{row.value}</strong></div>)}
+                          </div>
+                          <div className="coverageMiniCard">
+                            <div className="subheading">Top tools</div>
+                            {topPairs(selectedCluster.tools).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{row.label}</span><strong>{row.value}</strong></div>)}
+                          </div>
+                          <div className="coverageMiniCard">
+                            <div className="subheading">Top domains</div>
+                            {topPairs(selectedCluster.domains).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{truncateText(row.label, 24)}</span><strong>{row.value}</strong></div>)}
+                          </div>
+                          <div className="coverageMiniCard">
+                            <div className="subheading">Trend</div>
+                            <div className="coverageTrend__spark">
+                              {buildSparklineValues(selectedCluster.eventCount, selectedCluster.gapScore).map((value: number, idx: number) => (
+                                <span key={idx} style={{ height: `${Math.max(14, value)}px` }} />
+                              ))}
+                            </div>
+                            <div className="traceCard__meta">{selectedCluster.growthHint}</div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : <div className="muted">No sample event available.</div>}
+                  </div>
+                </div>
+              </>
+            ) : <div className="emptyState"><strong>No cluster selected.</strong><span className="muted">Choose a gap cluster from the list to inspect coverage blind spots and draft the next policy.</span></div>}
+          </div>
+        </div>
+      ) : (
+        <div className="card coverageEmptyCard">
           <div className="sectionHeader">
             <div>
               <div className="eyebrow">Gap cluster</div>
@@ -2605,134 +2846,12 @@ function CoverageGapsPage({ overview, policy, onOpenDecision, onOpenRules }: any
             </div>
             <div className="muted">Observed behaviours with little or no active policy coverage.</div>
           </div>
-
-          <div className="coverageList">
-            {visibleClusters.length ? visibleClusters.map((cluster: any) => (
-              <button key={cluster.id} type="button" className={classNames('coverageCluster', selectedCluster?.id === cluster.id && 'is-active')} onClick={() => setSelectedClusterId(cluster.id)}>
-                <div className={classNames('coverageCluster__icon', `is-${clusterSeverityTone(cluster.severity)}`)} />
-                <div className="coverageCluster__body">
-                  <div className="coverageCluster__headline">
-                    <div>
-                      <strong>{cluster.title}</strong>
-                      <p>{cluster.summary}</p>
-                    </div>
-                    <div className="coverageCluster__score">{cluster.gapScore}</div>
-                  </div>
-                  <div className="coverageCluster__meta">
-                    <span>{fmtNum(cluster.eventCount)} events</span>
-                    <span>{fmtNum(cluster.agents.length)} agents</span>
-                    <span>{cluster.lastSeen ? `Last seen ${relativeTimeLabel(cluster.lastSeen)}` : 'Last seen —'}</span>
-                  </div>
-                  <div className="coverageCluster__chips">
-                    <span className={classNames('badge', `badge--${clusterSeverityTone(cluster.severity)}`)}>{cluster.severity}</span>
-                    <span className={classNames('badge', cluster.coverageType === 'uncovered' ? 'badge--danger' : cluster.coverageType === 'weak' ? 'badge--warn' : 'badge--ok')}>
-                      {cluster.coverageType === 'near' ? 'near rule' : cluster.coverageType}
-                    </span>
-                    {cluster.tags.map((tag: string) => <span key={tag} className="badge">{truncateText(tag, 28)}</span>)}
-                  </div>
-                  <div className="coverageCluster__impact">
-                    <div className="coverageCluster__heat"><div style={{ width: `${cluster.gapScore}%` }} /></div>
-                    <span>{cluster.growthHint}</span>
-                  </div>
-                </div>
-              </button>
-            )) : <div className="emptyState"><strong>No coverage gaps in this view.</strong><span className="muted">Try widening the time window or clearing filters.</span></div>}
+          <div className="emptyState coverageEmptyState">
+            <strong>No coverage gaps in this view.</strong>
+            <span className="muted">Try widening the time window or clearing filters.</span>
           </div>
         </div>
-
-        <div className="card coverageDetail">
-          {selectedCluster ? (
-            <>
-              <div className="coverageDetail__header">
-                <div>
-                  <div className="coverageDetail__titleRow">
-                    <h3>{selectedCluster.title}</h3>
-                    <span className={classNames('badge', selectedCluster.coverageType === 'uncovered' ? 'badge--danger' : selectedCluster.coverageType === 'weak' ? 'badge--warn' : 'badge--ok')}>
-                      {selectedCluster.coverageType === 'near' ? 'Near existing rule' : selectedCluster.coverageType}
-                    </span>
-                  </div>
-                  <div className="traceCard__meta">
-                    First seen {fmtTs(selectedCluster.firstSeen)} · Last seen {fmtTs(selectedCluster.lastSeen)} · {fmtNum(selectedCluster.eventCount)} events · {fmtNum(selectedCluster.agents.length)} agents
-                  </div>
-                </div>
-                <div className="coverageDetail__scoreRing"><span>{selectedCluster.gapScore}</span></div>
-              </div>
-
-              <div className="coverageDetailGrid">
-                <div className="coverageInfoCard">
-                  <div className="subheading">Why this is uncovered</div>
-                  <p className="muted">{selectedCluster.whyUncovered}</p>
-
-                  <div className="subheading" style={{ marginTop: 16 }}>Nearest existing rules</div>
-                  <div className="coverageNearestList">
-                    {selectedCluster.nearestRules.length ? selectedCluster.nearestRules.map((row: any) => (
-                      <div key={`${row.fingerprint}:${row.match}`} className="coverageNearestItem">
-                        <div>
-                          <strong>{row.label}</strong>
-                          <div className="traceCard__meta">{row.bucket} policy bucket</div>
-                        </div>
-                        <span className="badge">{row.match}% match</span>
-                      </div>
-                    )) : <div className="muted">No adjacent rule concepts were found.</div>}
-                  </div>
-
-                  <div className="subheading" style={{ marginTop: 16 }}>Suggested policy starting point</div>
-                  <div className="codeCard coverageCodeCard">
-                    <pre>{JSON.stringify(selectedCluster.suggestedRule, null, 2)}</pre>
-                  </div>
-
-                  <div className="coverageActionRow">
-                    <button type="button" className="button" onClick={onOpenRules}>Create draft rule</button>
-                    {selectedCluster.representative?.id ? <button type="button" className="button button--ghost" onClick={() => onOpenDecision(selectedCluster.representative.id)}>Replay with this event</button> : null}
-                  </div>
-                </div>
-
-                <div className="coverageInfoCard">
-                  <div className="subheading">Representative sample</div>
-                  {selectedCluster.representative ? (
-                    <div className="coverageSample">
-                      <div className="coverageSample__row"><span>Agent</span><strong>{selectedCluster.representative.agent}</strong></div>
-                      <div className="coverageSample__row"><span>Tool</span><strong>{selectedCluster.representative.tool}</strong></div>
-                      <div className="coverageSample__row"><span>Type</span><strong>{selectedCluster.representative.type}</strong></div>
-                      <div className="coverageSample__row"><span>Domain</span><strong>{selectedCluster.representative.domain || '—'}</strong></div>
-                      <div className="coverageSample__row"><span>Route</span><strong>{selectedCluster.representative.route_target || '—'}</strong></div>
-                      <div className="coverageSample__row"><span>Risk</span><strong>{fmtNum(selectedCluster.representative.risk_score)}</strong></div>
-                      <div className="coverageSample__chips">
-                        {(Object.entries(selectedCluster.representative.classifiers || {}).filter(([, value]) => !!value).map(([key]) => key)).slice(0, 6).map((key) => (
-                          <span key={key} className="badge">{key.replace(/_/g, ' ')}</span>
-                        ))}
-                      </div>
-                      <div className="coverageSummaryGrid" style={{ marginTop: 12 }}>
-                        <div className="coverageMiniCard">
-                          <div className="subheading">Top agents</div>
-                          {topPairs(selectedCluster.agents).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{row.label}</span><strong>{row.value}</strong></div>)}
-                        </div>
-                        <div className="coverageMiniCard">
-                          <div className="subheading">Top tools</div>
-                          {topPairs(selectedCluster.tools).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{row.label}</span><strong>{row.value}</strong></div>)}
-                        </div>
-                        <div className="coverageMiniCard">
-                          <div className="subheading">Top domains</div>
-                          {topPairs(selectedCluster.domains).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{truncateText(row.label, 24)}</span><strong>{row.value}</strong></div>)}
-                        </div>
-                        <div className="coverageMiniCard">
-                          <div className="subheading">Trend</div>
-                          <div className="coverageTrend__spark">
-                            {buildSparklineValues(selectedCluster.eventCount, selectedCluster.gapScore).map((value: number, idx: number) => (
-                              <span key={idx} style={{ height: `${Math.max(14, value)}px` }} />
-                            ))}
-                          </div>
-                          <div className="traceCard__meta">{selectedCluster.growthHint}</div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : <div className="muted">No sample event available.</div>}
-                </div>
-              </div>
-            </>
-          ) : <div className="emptyState"><strong>No cluster selected.</strong><span className="muted">Choose a gap cluster from the list to inspect coverage blind spots and draft the next policy.</span></div>}
-        </div>
-      </div>
+      )}
     </section>
   );
 }

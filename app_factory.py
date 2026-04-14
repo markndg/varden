@@ -88,7 +88,7 @@ def create_app(config: AppConfig) -> FastAPI:
         finally:
             background.stop()
 
-    app = FastAPI(title="Sentinel Integrated Platform", version="3.0.0", lifespan=lifespan)
+    app = FastAPI(title="Arbiter Integrated Platform", version="3.0.0", lifespan=lifespan)
 
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "web"), name="static")
 
@@ -320,7 +320,7 @@ def create_app(config: AppConfig) -> FastAPI:
         for scenario in scenarios:
             action, decision = evaluate_action(scenario["payload"], scenario["raw"], tenant_id)
             status = "blocked" if decision.action == "block" else "warned" if decision.action == "warn" else "allowed"
-            event_id = persist_event(action=action, decision=decision, status=status, input_payload=scenario["raw"], replay_key=action.tool, error=f"[Sentinel BLOCKED] {decision.reason}" if status == "blocked" else None)
+            event_id = persist_event(action=action, decision=decision, status=status, input_payload=scenario["raw"], replay_key=action.tool, error=f"[Arbiter BLOCKED] {decision.reason}" if status == "blocked" else None)
             out.append({"name": scenario["name"], "event_id": event_id, "status": status, "trace_id": action.trace_id})
         return out
 
@@ -446,8 +446,8 @@ def create_app(config: AppConfig) -> FastAPI:
         }
         action, decision = evaluate_action(action_payload, {"args": args, "kwargs": kwargs}, tenant_id)
         if decision.action == "block":
-            persist_event(action=action, decision=decision, status="blocked", input_payload={"args": args, "kwargs": kwargs}, replay_key=tool_name, error=f"[Sentinel BLOCKED] {decision.reason}")
-            raise HTTPException(status_code=403, detail=f"[Sentinel BLOCKED] {decision.reason}")
+            persist_event(action=action, decision=decision, status="blocked", input_payload={"args": args, "kwargs": kwargs}, replay_key=tool_name, error=f"[Arbiter BLOCKED] {decision.reason}")
+            raise HTTPException(status_code=403, detail=f"[Arbiter BLOCKED] {decision.reason}")
         result = blaze.execute_local({"args": args, "kwargs": kwargs}) if action.route_target == "local_blaze" else {"status": "cloud_ok"}
         persist_event(action=action, decision=decision, status="warned" if decision.action == "warn" else "allowed", input_payload={"args": args, "kwargs": kwargs}, output_payload=result, replay_key=tool_name)
         return result
@@ -646,7 +646,7 @@ def create_app(config: AppConfig) -> FastAPI:
         raw_payload = payload.get("payload") or action_payload.get("args") or {}
         action, decision = evaluate_action(action_payload, raw_payload, record["tenant_id"])
         status = "blocked" if decision.action == "block" else "warned" if decision.action == "warn" else "allowed"
-        event_id = persist_event(action=action, decision=decision, status=status, input_payload=raw_payload, replay_key=action.tool, error=f"[Sentinel BLOCKED] {decision.reason}" if status == "blocked" else None)
+        event_id = persist_event(action=action, decision=decision, status=status, input_payload=raw_payload, replay_key=action.tool, error=f"[Arbiter BLOCKED] {decision.reason}" if status == "blocked" else None)
         response = {"event_id": event_id, "decision": decision.to_dict(), "action": action.to_dict()}
         if decision.action == "block":
             raise HTTPException(status_code=403, detail=response)
