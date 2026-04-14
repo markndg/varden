@@ -510,6 +510,14 @@ def create_app(config: AppConfig) -> FastAPI:
     def ui_decision(event_id: int):
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
+    @app.get("/ui/impact", response_class=HTMLResponse)
+    def ui_impact():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/coverage-gaps", response_class=HTMLResponse)
+    def ui_coverage_gaps():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
     @app.get("/runtime/config")
     def runtime_config(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
         require(x_api_key, authorization, "viewer", scope="read")

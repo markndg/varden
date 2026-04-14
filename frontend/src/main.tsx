@@ -74,6 +74,7 @@ type EventDetail = {
 type PolicyDoc = { block: any[]; warn: any[]; monitor: any[]; allow: any[] };
 
 function pageFromLocation(pathname: string) {
+  if (pathname.includes('/ui/coverage-gaps')) return 'coverage';
   if (pathname.includes('/ui/rules')) return 'rules';
   if (/\/ui\/decision\/\d+/.test(pathname)) return 'decision';
   return 'overview';
@@ -85,14 +86,6 @@ function ruleBucketFromSearch(search: string) {
 
 function ruleFocusTokenFromSearch(search: string) {
   return new URLSearchParams(search).get('focus') || '';
-}
-
-function bucketFromStatus(status?: string | null) {
-  if (status === 'blocked') return 'block';
-  if (status === 'warned') return 'warn';
-  if (status === 'allowed') return 'allow';
-  if (status === 'monitored') return 'monitor';
-  return '';
 }
 
 function latencyValueFromPoint(point: any): number | null {
@@ -580,7 +573,7 @@ function Shell() {
   useEffect(() => {
     if (!token) return;
     refreshOverview().catch((e: any) => setError(e?.message || 'Failed to refresh overview'));
-    if (page === 'rules') refreshPolicy().catch((e: any) => setError(e?.message || 'Failed to load policy'));
+    if (page === 'rules' || page === 'coverage') refreshPolicy().catch((e: any) => setError(e?.message || 'Failed to load policy'));
     if (page === 'decision' && detailId) refreshDetail(detailId).catch((e: any) => setError(e?.message || 'Failed to load event'));
   }, [token, page, detailId]);
 
@@ -619,14 +612,6 @@ function Shell() {
     setRuleFocus(new URLSearchParams(path.split('?')[1] || '').get('rule') || '');
     setRuleFocusBucket(ruleBucketFromSearch(search));
     setRuleFocusToken(ruleFocusTokenFromSearch(search));
-  }
-
-  function buildRuleNavigationPath(label: string, bucket?: string, matchedRule?: any) {
-    const params = new URLSearchParams();
-    params.set('rule', label);
-    if (bucket) params.set('bucket', bucket);
-    params.set('focus', matchedRule ? ruleFingerprint(matchedRule) : `${label}:${Date.now()}`);
-    return `/ui/rules?${params.toString()}`;
   }
 
   async function savePolicy() {
@@ -727,7 +712,9 @@ function Shell() {
         </div>
         <nav className="nav">
           <button className={classNames('nav__item', page === 'overview' && 'is-active')} onClick={() => navigate('overview', '/ui')}>Overview</button>
+          <button className={classNames('nav__item', page === 'impact' && 'is-active')} onClick={() => navigate('impact', '/ui/impact')}>Rule Impact</button>
           <button className={classNames('nav__item', page === 'rules' && 'is-active')} onClick={() => navigate('rules', '/ui/rules')}>Rules Workspace</button>
+          <button className={classNames('nav__item', page === 'coverage' && 'is-active')} onClick={() => navigate('coverage', '/ui/coverage-gaps')}>Coverage Gaps</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
         <div className="sidebar__section">
@@ -762,8 +749,8 @@ function Shell() {
         <header className="topbar card">
           <div>
             <div className="eyebrow">Live operations</div>
-            <h1>{page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : 'Trace and flow mission control'}</h1>
-            <p className="muted">See what the agent attempted, why Arbiter scored it the way it did, and how policy changed the outcome.</p>
+            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : 'Trace and flow mission control'}</h1>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : 'See what the agent attempted, why Arbiter scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -790,6 +777,15 @@ function Shell() {
           />
         ) : null}
 
+        {page === 'impact' && overview ? (
+          <ImpactPage
+            overview={overview}
+            policy={safeParsePolicy(policyText, policy)}
+            onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
+            onOpenRules={(bucket: string, label: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}&focus=${Date.now()}`)}
+          />
+        ) : null}
+
         {page === 'rules' ? (
           <RulesPage
             policy={policy}
@@ -812,7 +808,16 @@ function Shell() {
           <DecisionPage
             detail={detail}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
-            onOpenRule={(label: string, bucket?: string, matchedRule?: any) => navigate('rules', buildRuleNavigationPath(label, bucket, matchedRule))}
+            onOpenRule={(label: string, bucket?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}&focus=${Date.now()}`)}
+          />
+        ) : null}
+
+        {page === 'coverage' && overview ? (
+          <CoverageGapsPage
+            overview={overview}
+            policy={safeParsePolicy(policyText, policy)}
+            onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
+            onOpenRules={() => navigate('rules', '/ui/rules')}
           />
         ) : null}
       </main>
@@ -1119,16 +1124,399 @@ function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedT
 
 
 
+function ImpactPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
+  const [activeBucket, setActiveBucket] = useState<typeof RULE_BUCKETS[number]>(pickFirstNonEmptyBucket(ensurePolicyDoc(policy)));
+  const [windowMode, setWindowMode] = useState<'recent' | 'all'>('recent');
+  const [analyticsMode, setAnalyticsMode] = useState<'impact' | 'detections' | 'fp'>('impact');
+  const [selectedRuleId, setSelectedRuleId] = useState<string>('');
+
+  const policyDoc = useMemo(() => dedupePolicyDoc(ensurePolicyDoc(policy)), [policy]);
+
+  useEffect(() => {
+    const available = (policyDoc[activeBucket] || []).length > 0;
+    if (!available) setActiveBucket(pickFirstNonEmptyBucket(policyDoc));
+  }, [policyDoc, activeBucket]);
+
+  const sourceEvents = useMemo(() => {
+    const merged = new Map<number, EventRow & { matched_rule_label?: string | null; reason?: string | null }>();
+    for (const row of (overview?.recent_events || []).map(normalizeEventRow)) {
+      if (row.id) merged.set(row.id, row as any);
+    }
+    for (const trace of (overview?.recent_traces || [])) {
+      for (const row of (trace?.events || []).map(normalizeEventRow)) {
+        if (row.id) merged.set(row.id, { ...(merged.get(row.id) || {}), ...(row as any) });
+      }
+    }
+    return Array.from(merged.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  }, [overview]);
+
+  const filteredEvents = useMemo(() => {
+    if (windowMode === 'all') return sourceEvents;
+    const latestTs = Math.max(...sourceEvents.map((event) => Number(event.timestamp || 0)), 0);
+    const cutoff = latestTs ? latestTs - (24 * 60 * 60) : 0;
+    return sourceEvents.filter((event) => Number(event.timestamp || 0) >= cutoff);
+  }, [sourceEvents, windowMode]);
+
+  const ruleRows = useMemo(() => {
+    const totalEvents = Math.max(filteredEvents.length, 1);
+
+    const lower = (value: any) => String(value || '').trim().toLowerCase();
+    const toDayKey = (ts?: number | null) => {
+      if (!ts) return 'Unknown';
+      const dt = new Date(ts * 1000);
+      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    };
+    const daySeries = (() => {
+      const latestTs = Math.max(...filteredEvents.map((event) => Number(event.timestamp || 0)), 0);
+      const end = latestTs ? new Date(latestTs * 1000) : new Date();
+      const out: string[] = [];
+      for (let i = 6; i >= 0; i -= 1) {
+        const dt = new Date(end);
+        dt.setDate(end.getDate() - i);
+        out.push(`${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`);
+      }
+      return out;
+    })();
+
+    const deriveTags = (rule: any) => {
+      const tags = new Set<string>();
+      if (rule?.type) tags.add(String(rule.type));
+      if (rule?.tool) tags.add(String(rule.tool));
+      for (const [key, value] of Object.entries(rule || {})) {
+        if (String(key).startsWith('classifier:') && value) tags.add(String(key).replace('classifier:', ''));
+        if (String(key).startsWith('field:') && String(key) !== 'field:risk_score') tags.add(formatRuleFieldLabel(String(key)));
+      }
+      return Array.from(tags).slice(0, 4);
+    };
+
+    return RULE_BUCKETS.flatMap((bucket) => (policyDoc[bucket] || []).map((rule: any, index: number) => {
+      const summary = summarizeRule(rule);
+      const summaryLc = lower(summary);
+      const reasonLc = lower(rule?.description || rule?.reason || '');
+      const toolLc = lower(rule?.tool || '');
+      const tags = deriveTags(rule);
+
+      const matches = filteredEvents.filter((event: any) => {
+        const label = lower((event as any).matched_rule_label || deriveMatchedRuleLabel(event) || '');
+        const reason = lower(event?.reason || '');
+        const bucketMatches = bucket === 'allow' ? event.status === 'allowed' : bucket === 'warn' ? event.status === 'warned' : bucket === 'block' ? event.status === 'blocked' : true;
+        if (label && (label === summaryLc || label.includes(summaryLc) || summaryLc.includes(label))) return true;
+        if (reasonLc && reason.includes(reasonLc) && bucketMatches) return true;
+        if (toolLc && lower(event.tool).includes(toolLc) && bucketMatches && (event.status === 'blocked' || event.status === 'warned')) return true;
+        if (bucket === 'allow' && !label && event.status === 'allowed' && toolLc && lower(event.tool).includes(toolLc)) return true;
+        return false;
+      });
+
+      const detections = matches.length;
+      const blocked = matches.filter((event) => event.status === 'blocked').length;
+      const warned = matches.filter((event) => event.status === 'warned').length;
+      const allowed = matches.filter((event) => event.status === 'allowed').length;
+      const impactScore = blocked * 1 + warned * 0.65 + allowed * 0.2;
+      const coverage = detections ? (detections / totalEvents) * 100 : 0;
+      const lowRiskHits = matches.filter((event) => Number(event.risk_score || 0) <= 20).length;
+      const localhostHits = matches.filter((event) => String(event.domain || '').includes('localhost') || String(event.domain || '').endsWith('.local')).length;
+      const falsePositiveRate = detections ? ((lowRiskHits + localhostHits * 0.5) / detections) * 100 : 0;
+
+      const topAgents = Object.entries(matches.reduce((acc: Record<string, number>, event: any) => {
+        const key = event.agent_name || 'unknown';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
+
+      const topTools = Object.entries(matches.reduce((acc: Record<string, number>, event: any) => {
+        const key = event.tool || 'unknown';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
+
+      const topDomains = Object.entries(matches.reduce((acc: Record<string, number>, event: any) => {
+        const key = event.domain || 'local';
+        acc[key] = (acc[key] || 0) + 1;
+        return acc;
+      }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
+
+      const timelineMap = new Map<string, number>();
+      daySeries.forEach((day) => timelineMap.set(day, 0));
+      matches.forEach((event) => {
+        const key = toDayKey(event.timestamp);
+        timelineMap.set(key, (timelineMap.get(key) || 0) + 1);
+      });
+
+      const recentEvents = matches.slice(0, 6);
+      const falsePositiveCandidates = matches.filter((event: any) => Number(event.risk_score || 0) <= 20 || String(event.domain || '').includes('localhost')).slice(0, 4);
+      const id = `${bucket}:${index}:${ruleFingerprint(rule)}`;
+
+      return {
+        id,
+        bucket,
+        index,
+        rule,
+        label: summary,
+        detections,
+        blocked,
+        warned,
+        allowed,
+        impactScore,
+        coverage,
+        falsePositiveRate,
+        tags,
+        topAgents,
+        topTools,
+        topDomains,
+        timeline: Array.from(timelineMap.entries()).map(([day, count]) => ({ day, count })),
+        recentEvents,
+        falsePositiveCandidates,
+        enabled: rule?.enabled !== false,
+      };
+    }));
+  }, [policyDoc, filteredEvents]);
+
+  const bucketCounts = useMemo(() => RULE_BUCKETS.reduce((acc: Record<string, number>, bucket) => {
+    acc[bucket] = (policyDoc[bucket] || []).length;
+    return acc;
+  }, {} as Record<string, number>), [policyDoc]);
+
+  const bucketRows = useMemo(() => {
+    const rows = ruleRows.filter((row: any) => row.bucket === activeBucket);
+    const sorter = analyticsMode === 'detections'
+      ? (left: any, right: any) => right.detections - left.detections
+      : analyticsMode === 'fp'
+        ? (left: any, right: any) => right.falsePositiveRate - left.falsePositiveRate
+        : (left: any, right: any) => right.impactScore - left.impactScore;
+    return [...rows].sort(sorter);
+  }, [ruleRows, activeBucket, analyticsMode]);
+
+  useEffect(() => {
+    if (!bucketRows.length) {
+      setSelectedRuleId('');
+      return;
+    }
+    if (!bucketRows.some((row: any) => row.id === selectedRuleId)) {
+      setSelectedRuleId(bucketRows[0].id);
+    }
+  }, [bucketRows, selectedRuleId]);
+
+  const selectedRow = bucketRows.find((row: any) => row.id === selectedRuleId) || bucketRows[0] || null;
+  const maxBucketValue = Math.max(...bucketRows.map((row: any) => analyticsMode === 'detections' ? row.detections : analyticsMode === 'fp' ? row.falsePositiveRate : row.impactScore), 1);
+  const allDetections = bucketRows.reduce((sum: number, row: any) => sum + row.detections, 0);
+  const activeRules = bucketRows.filter((row: any) => row.detections > 0).length;
+  const selectedFalsePositiveRate = Math.max(0, Math.min(100, Number(selectedRow?.falsePositiveRate || 0)));
+  const donutStyle = { background: `conic-gradient(rgba(255,191,90,.95) 0 ${selectedFalsePositiveRate}%, rgba(255,255,255,.08) ${selectedFalsePositiveRate}% 100%)` };
+
+  return (
+    <div className="pageGrid impactPage">
+      <section className="layout layout--impact">
+        <div className="card impactCard">
+          <div className="sectionHeader">
+            <div>
+              <div className="eyebrow">Live policy impact</div>
+              <h3>Heatmap of live policy impact</h3>
+              <p className="muted">See which rules are carrying the heaviest load across your observed traffic. Click a rule to inspect who it affects and where it fires.</p>
+            </div>
+            <div className="toggleRow">
+              <div className="toggleRow">
+                <button type="button" className={classNames('segmented', windowMode === 'recent' && 'is-active')} onClick={() => setWindowMode('recent')}>Last 24h</button>
+                <button type="button" className={classNames('segmented', windowMode === 'all' && 'is-active')} onClick={() => setWindowMode('all')}>All loaded</button>
+              </div>
+              <div className="toggleRow">
+                <button type="button" className={classNames('segmented', analyticsMode === 'impact' && 'is-active')} onClick={() => setAnalyticsMode('impact')}>Impact</button>
+                <button type="button" className={classNames('segmented', analyticsMode === 'detections' && 'is-active')} onClick={() => setAnalyticsMode('detections')}>Detections</button>
+                <button type="button" className={classNames('segmented', analyticsMode === 'fp' && 'is-active')} onClick={() => setAnalyticsMode('fp')}>False positive</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="bucketTabs impactBucketTabs">
+            {RULE_BUCKETS.map((bucket) => (
+              <button
+                type="button"
+                key={bucket}
+                className={classNames('bucketTab', activeBucket === bucket && 'is-active')}
+                onClick={() => setActiveBucket(bucket)}
+              >
+                <span>{bucket}</span>
+                <strong>{bucketCounts[bucket] || 0}</strong>
+              </button>
+            ))}
+          </div>
+
+          <div className="impactSummaryRow">
+            <div className="bucketCard"><span>Visible rules</span><strong>{bucketRows.length}</strong></div>
+            <div className="bucketCard"><span>Active rules</span><strong>{activeRules}</strong></div>
+            <div className="bucketCard"><span>Detections</span><strong>{allDetections}</strong></div>
+            <div className="bucketCard"><span>Mode</span><strong>{analyticsMode}</strong></div>
+          </div>
+
+          <div className="impactTable">
+            <div className="impactTable__header">
+              <span>Rule</span>
+              <span>Annotations</span>
+              <span>{analyticsMode === 'impact' ? 'Impact' : analyticsMode === 'detections' ? 'Detections' : 'False positive'}</span>
+              <span>Coverage</span>
+              <span>Enabled</span>
+              <span>False positive</span>
+            </div>
+            <div className="impactTable__body">
+              {bucketRows.length ? bucketRows.map((row: any) => {
+                const heatValue = analyticsMode === 'detections' ? row.detections : analyticsMode === 'fp' ? row.falsePositiveRate : row.impactScore;
+                const heatWidth = `${Math.max(8, (heatValue / maxBucketValue) * 100)}%`;
+                return (
+                  <button key={row.id} type="button" className={classNames('impactRow', selectedRow?.id === row.id && 'is-active')} onClick={() => setSelectedRuleId(row.id)}>
+                    <div className="impactRow__rule">
+                      <span className={`badge badge--${row.bucket === 'block' ? 'danger' : row.bucket === 'warn' ? 'warn' : 'ok'}`}>{row.bucket}</span>
+                      <div>
+                        <div className="impactRow__title">{row.label}</div>
+                        <div className="impactRow__meta">{row.rule?.type || 'any type'} {row.rule?.tool ? `· ${row.rule.tool}` : ''}</div>
+                      </div>
+                    </div>
+                    <div className="impactRow__tags">
+                      {row.tags.length ? row.tags.map((tag: string) => <span key={tag} className="badge">{tag}</span>) : <span className="muted">No annotations</span>}
+                    </div>
+                    <div className="impactHeat">
+                      <div className="impactHeat__bar"><div className="impactHeat__fill" style={{ width: heatWidth }} /></div>
+                      <strong>{analyticsMode === 'fp' ? `${fmtNum(row.falsePositiveRate, 1)}%` : analyticsMode === 'impact' ? fmtNum(row.impactScore, 1) : row.detections}</strong>
+                    </div>
+                    <div className="impactRow__coverage">{fmtNum(row.coverage, 1)}%</div>
+                    <div className="impactToggleCell">{row.enabled ? <span className="toggleBadge toggleBadge--on">On</span> : <span className="toggleBadge">Off</span>}</div>
+                    <div className="impactRow__fp">{fmtNum(row.falsePositiveRate, 1)}%</div>
+                  </button>
+                );
+              }) : (
+                <div className="emptyState">
+                  <strong>No {activeBucket} rules yet</strong>
+                  <span className="muted">Create or import rules in this bucket to see impact analysis here.</span>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="card impactDrilldown">
+          {selectedRow ? (
+            <>
+              <div className="sectionHeader">
+                <div>
+                  <div className="eyebrow">Rule drilldown</div>
+                  <h3>{selectedRow.label}</h3>
+                  <p className="muted">{selectedRow.rule?.description || selectedRow.rule?.reason || 'No rule description yet.'}</p>
+                </div>
+                <div className={`badge badge--${selectedRow.bucket === 'block' ? 'danger' : selectedRow.bucket === 'warn' ? 'warn' : 'ok'}`}>{selectedRow.bucket}</div>
+              </div>
+
+              <div className="impactDrilldown__stats">
+                <div className="metricCard metricCard--danger"><div className="metricCard__title">Blocked</div><div className="metricCard__value">{selectedRow.blocked}</div><div className="metricCard__subtitle">hard stops</div></div>
+                <div className="metricCard metricCard--warn"><div className="metricCard__title">Warned</div><div className="metricCard__value">{selectedRow.warned}</div><div className="metricCard__subtitle">needs review</div></div>
+                <div className="metricCard metricCard--ok"><div className="metricCard__title">Allowed</div><div className="metricCard__value">{selectedRow.allowed}</div><div className="metricCard__subtitle">passed through</div></div>
+              </div>
+
+              <div className="impactDrilldown__donutRow">
+                <div className="impactDonut" style={donutStyle}><div className="impactDonut__inner"><strong>{fmtNum(selectedFalsePositiveRate, 0)}%</strong><span>FP proxy</span></div></div>
+                <div className="stack">
+                  <div className="subheading">What this rule is touching</div>
+                  <div className="traceSummaryBar">
+                    <span>{selectedRow.detections} detections</span>
+                    <span>{fmtNum(selectedRow.coverage, 1)}% coverage</span>
+                    <span>{fmtNum(selectedRow.impactScore, 1)} weighted impact</span>
+                  </div>
+                  <div className="impactActions">
+                    <button type="button" className="button" onClick={() => onOpenRules(selectedRow.bucket, selectedRow.label)}>Open in rules workspace</button>
+                    {selectedRow.recentEvents[0]?.id ? <button type="button" className="button button--ghost" onClick={() => onOpenDecision(selectedRow.recentEvents[0].id)}>Open latest decision</button> : null}
+                  </div>
+                </div>
+              </div>
+
+              <div className="impactTrendCard">
+                <div className="subheading">Recent trend</div>
+                <div className="impactTrend">
+                  {selectedRow.timeline.map((point: any) => {
+                    const max = Math.max(...selectedRow.timeline.map((entry: any) => entry.count), 1);
+                    const height = Math.max(10, (point.count / max) * 100);
+                    return (
+                      <div key={point.day} className="impactTrend__barWrap" title={`${point.day} · ${point.count} hits`}>
+                        <div className="impactTrend__bar" style={{ height: `${height}%` }} />
+                        <span>{point.day.slice(5)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="layout layout--impactLists">
+                <div className="impactListCard">
+                  <div className="subheading">Top agents</div>
+                  <div className="barList">
+                    {selectedRow.topAgents.map(([label, value]: any) => (
+                      <div key={label} className="barList__row">
+                        <span>{label}</span>
+                        <div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topAgents[0]?.[1] || 1, 1)) * 100}%` }} /></div>
+                        <strong>{value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="impactListCard">
+                  <div className="subheading">Top tools</div>
+                  <div className="barList">
+                    {selectedRow.topTools.map(([label, value]: any) => (
+                      <div key={label} className="barList__row">
+                        <span>{label}</span>
+                        <div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topTools[0]?.[1] || 1, 1)) * 100}%` }} /></div>
+                        <strong>{value}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="impactListCard">
+                <div className="subheading">Top domains</div>
+                <div className="barList">
+                  {selectedRow.topDomains.map(([label, value]: any) => (
+                    <div key={label} className="barList__row">
+                      <span>{label}</span>
+                      <div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topDomains[0]?.[1] || 1, 1)) * 100}%` }} /></div>
+                      <strong>{value}</strong>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="impactListCard">
+                <div className="subheading">False positive candidates</div>
+                <div className="eventRail">
+                  {selectedRow.falsePositiveCandidates.length ? selectedRow.falsePositiveCandidates.map((event: any) => (
+                    <button key={event.id} type="button" className="eventRow" onClick={() => onOpenDecision(event.id)}>
+                      <div className={classNames('eventRow__dot', `is-${statusTone(event.status)}`)} />
+                      <div className="eventRow__main">
+                        <div className="eventRow__title">{event.tool || 'event'} <span className="badge badge--warn">{event.status}</span></div>
+                        <div className="eventRow__meta">{event.agent_name || 'unknown'} · {event.domain || 'local'} · risk {event.risk_score || 0}</div>
+                      </div>
+                      <div className="eventRow__score">{event.id}</div>
+                    </button>
+                  )) : <div className="emptyState emptyState--compact"><strong>No false positive candidates surfaced</strong><span className="muted">Once operator feedback exists, this section can be upgraded from proxy to confirmed false positives.</span></div>}
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="emptyState">
+              <strong>No rule selected</strong>
+              <span className="muted">Choose a rule from the heatmap to inspect its blast radius.</span>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTemplate, onSave, loading, ruleFocus, ruleFocusBucket, ruleFocusToken }: any) {
   const [selectedBucket, setSelectedBucket] = useState<typeof RULE_BUCKETS[number]>('block');
   const [selectedRuleIndex, setSelectedRuleIndex] = useState(0);
-  const [highlightedRuleKey, setHighlightedRuleKey] = useState('');
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [templateMode, setTemplateMode] = useState<'replace' | 'merge'>('merge');
   const ruleRailRef = useRef<HTMLDivElement | null>(null);
   const ruleEditorPaneRef = useRef<HTMLDivElement | null>(null);
   const ruleItemRefs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const highlightTimerRef = useRef<number | null>(null);
 
   const workingPolicy = useMemo(() => safeParsePolicy(policyText, policy), [policyText, policy]);
   const activeRules = workingPolicy[selectedBucket] || [];
@@ -1155,16 +1543,6 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     if (ruleEditorPaneRef.current) ruleEditorPaneRef.current.scrollTop = 0;
   }
 
-  function flashRuleHighlight(bucket: string, index: number) {
-    const nextKey = ruleKey(bucket, index);
-    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
-    setHighlightedRuleKey(nextKey);
-    highlightTimerRef.current = window.setTimeout(() => {
-      setHighlightedRuleKey((current) => (current === nextKey ? '' : current));
-      highlightTimerRef.current = null;
-    }, 2600);
-  }
-
   useEffect(() => {
     requestAnimationFrame(() => {
       scrollSelectedRuleIntoView();
@@ -1172,15 +1550,10 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     });
   }, [selectedBucket, selectedRuleIndex]);
 
-  useEffect(() => () => {
-    if (highlightTimerRef.current) window.clearTimeout(highlightTimerRef.current);
-  }, []);
-
   useEffect(() => {
-    if (!ruleFocus && !ruleFocusToken) return;
-    const wanted = String(ruleFocus || '').trim().toLowerCase();
-    const wantedToken = String(ruleFocusToken || '').trim();
-    if (!wanted && !wantedToken) return;
+    if (!ruleFocus) return;
+    const wanted = String(ruleFocus).trim().toLowerCase();
+    if (!wanted) return;
 
     const orderedBuckets = [
       ...(ruleFocusBucket && RULE_BUCKETS.includes(ruleFocusBucket as any) ? [ruleFocusBucket as typeof RULE_BUCKETS[number]] : []),
@@ -1188,8 +1561,6 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     ];
 
     const findRuleIndex = (bucket: typeof RULE_BUCKETS[number]) => (workingPolicy[bucket] || []).findIndex((rule: any) => {
-      if (wantedToken && ruleFingerprint(rule) === wantedToken) return true;
-      if (!wanted) return false;
       const summary = summarizeRule(rule).toLowerCase();
       const fields = [
         rule?.title,
@@ -1209,7 +1580,6 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
         requestAnimationFrame(() => {
           scrollSelectedRuleIntoView(bucket, idx);
           resetRuleEditorScroll();
-          flashRuleHighlight(bucket, idx);
         });
         return;
       }
@@ -1372,7 +1742,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                       type="button"
                       key={idx}
                       ref={(node) => { ruleItemRefs.current[ruleKey(selectedBucket, idx)] = node; }}
-                      className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active', highlightedRuleKey === ruleKey(selectedBucket, idx) && 'is-highlighted')}
+                      className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active')}
                       onClick={() => selectRule(selectedBucket, idx)}
                     >
                       <div>
@@ -1582,7 +1952,7 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
               </div>
               <div className="ruleJumpRow">
                 {Array.from(new Set([detail.explainability?.rule_label, deriveMatchedRuleLabel(event), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[])).map((label: string) => (
-                  <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, bucketFromStatus(event.status), detail.explainability?.matched_rule || event?.decision?.matched_rule)}>Open rule · {label}</button>
+                  <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, event.status === 'blocked' ? 'block' : event.status === 'warned' ? 'warn' : event.status === 'allowed' ? 'allow' : '')}>Open rule · {label}</button>
                 ))}
               </div>
             </div>
@@ -1648,7 +2018,7 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
   );
 }
 
-function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: TraceSummary | null; onOpenDecision: (id: number) => void; onOpenRule: (label: string, bucket?: string, matchedRule?: any) => void; compact?: boolean; }) {
+function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: TraceSummary | null; onOpenDecision: (id: number) => void; onOpenRule: (label: string, bucket?: string) => void; compact?: boolean; }) {
   if (!trace?.graph?.nodes?.length) return <div className="traceEmpty">No trace selected yet.</div>;
   const nodes = trace.graph.nodes;
   const width = Math.max(920, nodes.length * 220);
@@ -1696,7 +2066,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
                   <div className="muted">{(event?.action?.risk_score || 0) > 0 ? 'Primary scored step' : ((event?.decision?.matched_rule && !(event?.action?.risk_score || 0)) ? 'Follow-on inherited step' : 'Recorded trace step')}</div>
                 </button>
                 <div className="journeyTimeline__rules">
-                  {ruleLabels.length ? ruleLabels.map((label) => <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, bucketFromStatus(step.status), event?.decision?.matched_rule)}>{label}</button>) : <span className="muted">No explicit rule hit</span>}
+                  {ruleLabels.length ? ruleLabels.map((label) => <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, step.status === 'blocked' ? 'block' : step.status === 'warned' ? 'warn' : step.status === 'allowed' ? 'allow' : '')}>{label}</button>) : <span className="muted">No explicit rule hit</span>}
                 </div>
               </div>
             );
@@ -1736,7 +2106,7 @@ function TraceGraph({ trace, onOpenDecision, onOpenRule, compact }: { trace: Tra
             return (
               <g key={rule.id}>
                 <path d={`M ${source.x} ${source.y + 52} C ${source.x} ${source.y + 76}, ${rule.x} ${rule.y - 58}, ${rule.x} ${rule.y - 34}`} className={`traceEdge traceEdge--triggered traceEdge--${rule.severity}`} />
-                <g transform={`translate(${rule.x}, ${rule.y})`} className="traceRuleNode" onClick={() => onOpenRule(String(rule.label), rule.severity === 'danger' ? 'block' : rule.severity === 'warn' ? 'warn' : 'allow', eventMap.get(rule.parentId)?.decision?.matched_rule)}>
+                <g transform={`translate(${rule.x}, ${rule.y})`} className="traceRuleNode" onClick={() => onOpenRule(String(rule.label), rule.severity === 'danger' ? 'block' : rule.severity === 'warn' ? 'warn' : 'allow')}>
                   <rect x="-82" y="-26" width="164" height="52" rx="18" className={`traceRuleNode__card traceRuleNode__card--${rule.severity}`} />
                   <text x="0" y="-3" textAnchor="middle" className="traceRuleNode__title">{String(rule.label).slice(0, 26)}</text>
                   <text x="0" y="15" textAnchor="middle" className="traceRuleNode__meta">triggered rule</text>
@@ -1900,6 +2270,534 @@ function MiniBarList({ title, items }: { title: string; items: Array<{ label: st
     </div>
   );
 }
+
+
+function CoverageGapsPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
+  const [coverageFilter, setCoverageFilter] = useState<'all' | 'uncovered' | 'weak' | 'near'>('all');
+  const [timeWindow, setTimeWindow] = useState<'24h' | '7d' | 'all'>('7d');
+  const [search, setSearch] = useState('');
+  const [eventTypeFilter, setEventTypeFilter] = useState('all');
+  const [toolFilter, setToolFilter] = useState('all');
+  const [agentFilter, setAgentFilter] = useState('all');
+  const [severityFilter, setSeverityFilter] = useState('all');
+  const [sortMode, setSortMode] = useState<'gap_score' | 'events' | 'last_seen'>('gap_score');
+  const [selectedClusterId, setSelectedClusterId] = useState<string>('');
+
+  const allRules = useMemo(() => {
+    const rows: Array<any> = [];
+    for (const bucket of RULE_BUCKETS) {
+      for (const rule of (policy?.[bucket] || [])) {
+        rows.push({ bucket, rule, label: summarizeRule(rule), fingerprint: ruleFingerprint(rule) });
+      }
+    }
+    return rows;
+  }, [policy]);
+
+  const sourceEvents = useMemo(() => {
+    const out: any[] = [];
+    const add = (row: any) => {
+      if (!row) return;
+      const action = row.action || row || {};
+      const decision = row.decision || {};
+      const normalized = normalizeEventRow(row);
+      out.push({
+        raw: row,
+        id: normalized.id,
+        timestamp: Number(row.timestamp || action.timestamp || normalized.timestamp || 0),
+        status: normalized.status,
+        tool: action.tool || normalized.tool || 'unknown',
+        agent: action.agent_name || normalized.agent_name || 'unknown-agent',
+        domain: action.domain || normalized.domain || '',
+        method: action.method || '',
+        type: action.type || row.type || 'tool_call',
+        args: action.args || {},
+        classifiers: action.classifiers || normalized.classifiers || {},
+        risk_score: Number(action.risk_score || normalized.risk_score || 0),
+        risk_reasons: action.risk_reasons || [],
+        reason: decision.reason || normalized.reason || '',
+        matched_label: deriveMatchedRuleLabel(row),
+        trace_id: row.trace_id || action.trace_id || normalized.trace_id || '',
+        route_target: decision.route_target || action.route_target || normalized.route_target || '',
+      });
+    };
+    for (const row of (overview?.recent_events || [])) add(row);
+    for (const trace of (overview?.recent_traces || [])) {
+      for (const row of (trace?.events || [])) add(row);
+    }
+    return out;
+  }, [overview]);
+
+  const filteredByWindow = useMemo(() => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    let minTs = 0;
+    if (timeWindow === '24h') minTs = nowSec - 86400;
+    else if (timeWindow === '7d') minTs = nowSec - (7 * 86400);
+    return sourceEvents.filter((event) => !minTs || (event.timestamp || 0) >= minTs);
+  }, [sourceEvents, timeWindow]);
+
+  const clusterRows = useMemo(() => {
+    const clusters = new Map<string, any>();
+
+    const classifiersToList = (classifiers: Record<string, any>) =>
+      Object.entries(classifiers || {}).filter(([, value]) => !!value).map(([key]) => key);
+
+    const nearestRulesForEvent = (event: any) => {
+      return allRules.map((entry: any) => {
+        const rule = entry.rule || {};
+        let score = 0;
+        if (rule?.type && rule.type === event.type) score += 28;
+        if (rule?.tool && rule.tool === event.tool) score += 30;
+        if (event.domain && rule?.['field:domain']) score += 15;
+        if (event.risk_score > 0 && rule?.['field:risk_score']) score += 12;
+        for (const [key, value] of Object.entries(event.classifiers || {})) {
+          if (value && rule?.[`classifier:${key}`]) score += 12;
+        }
+        if ((event.risk_reasons || []).includes('sql_privilege_change') && /sql|database|privilege/i.test(entry.label)) score += 12;
+        if ((event.risk_reasons || []).includes('contains_internal_data') && /internal|data|exfil/i.test(entry.label)) score += 10;
+        return { ...entry, match: Math.min(95, score) };
+      }).filter((row: any) => row.match > 0).sort((a: any, b: any) => b.match - a.match).slice(0, 3);
+    };
+
+    const inferCoverageType = (event: any, nearestRules: any[]) => {
+      if (event.matched_label) return 'covered';
+      const top = nearestRules[0]?.match || 0;
+      if (top >= 46) return 'near';
+      if (top >= 24 || event.risk_score >= 55) return 'weak';
+      return 'uncovered';
+    };
+
+    const titleForEvent = (event: any) => {
+      const classifierKeys = classifiersToList(event.classifiers);
+      if (event.type === 'http_request' && (event.method || '').toUpperCase() === 'POST' && event.domain && classifierKeys.includes('internal')) {
+        return 'HTTP POST to external domain with internal data markers';
+      }
+      if ((event.risk_reasons || []).includes('sql_privilege_change')) return 'SQL privilege escalation statements';
+      if ((event.risk_reasons || []).includes('sql_dangerous')) return 'Dangerous SQL statements outside active policy';
+      if (event.tool === 'subprocess' || /subprocess|shell|bash|cmd/i.test(event.tool || '')) {
+        return 'Subprocess with file deletion patterns';
+      }
+      if (event.type === 'llm_call' && classifierKeys.includes('internal')) {
+        return 'LLM prompt contains internal business data';
+      }
+      if (event.domain && !event.matched_label) {
+        return `${(event.method || 'HTTP').toUpperCase()} traffic to ${event.domain}`;
+      }
+      return `${String(event.tool || event.type || 'activity').replace(/_/g, ' ')} behaviour without active policy`;
+    };
+
+    const summaryForEvent = (event: any) => {
+      const classifierKeys = classifiersToList(event.classifiers);
+      if (event.type === 'http_request' && classifierKeys.length) return `Sensitive classifiers in request body to ${event.domain || 'external destination'} via ${(event.method || 'request').toUpperCase()}`;
+      if ((event.risk_reasons || []).includes('sql_privilege_change')) return 'GRANT / ALTER ROLE / privilege mutation patterns detected';
+      if (event.tool === 'subprocess') return 'Shell commands with rm, del, wipe, or recursive deletion signals';
+      if (event.type === 'llm_call') return 'Prompt traffic with customer, internal, or business records sent to a model route';
+      return event.reason || 'Observed traffic with no direct policy match.';
+    };
+
+    const tagsForEvent = (event: any) => {
+      const tags = new Set<string>();
+      if (event.tool) tags.add(event.tool);
+      if (event.agent) tags.add(event.agent);
+      if (event.domain) tags.add(event.domain);
+      for (const [key, value] of Object.entries(event.classifiers || {})) if (value) tags.add(key.replace(/_/g, ' '));
+      for (const reason of (event.risk_reasons || []).slice(0, 3)) tags.add(formatRiskReasonLabel(reason) || reason);
+      return Array.from(tags).slice(0, 4);
+    };
+
+    const severityForScore = (score: number) => score >= 85 ? 'critical' : score >= 70 ? 'high' : score >= 45 ? 'medium' : 'low';
+
+    const whyUncovered = (event: any, coverageType: string, nearestRules: any[]) => {
+      if (coverageType === 'near' && nearestRules.length) return 'Similar rules exist, but none currently match this exact behaviour pattern or data shape.';
+      if (coverageType === 'weak') return 'Observed risk markers are present, but active policy only covers adjacent behaviour and misses this concrete action shape.';
+      if (event.type === 'http_request' && event.domain) return 'No active rule targets this outbound HTTP pattern, destination shape, or attached classifier combination.';
+      if ((event.risk_reasons || []).includes('sql_privilege_change')) return 'Existing SQL policy appears focused on destructive writes, not privilege change or access-control mutation.';
+      return 'No active rule currently references this tool, route, or classifier combination with enough specificity to match.';
+    };
+
+    for (const event of filteredByWindow) {
+      const nearestRules = nearestRulesForEvent(event);
+      const coverageType = inferCoverageType(event, nearestRules);
+      if (coverageType === 'covered') continue;
+
+      const signature = [
+        coverageType,
+        event.type,
+        event.tool,
+        event.method,
+        event.domain ? event.domain.split('.').slice(-2).join('.') : '',
+        Object.keys(event.classifiers || {}).filter((key) => event.classifiers[key]).sort().join('|'),
+        (event.risk_reasons || []).slice().sort().join('|'),
+      ].join('::');
+
+      const baseScore = Math.min(100,
+        Math.round(
+          (event.risk_score * 0.55) +
+          (nearestRules[0]?.match || 0) * 0.18 +
+          ((event.domain && !event.matched_label) ? 12 : 0) +
+          ((event.classifiers?.internal || event.classifiers?.pii || event.classifiers?.secrets) ? 14 : 0) +
+          ((event.risk_reasons || []).includes('sql_privilege_change') ? 16 : 0)
+        )
+      );
+
+      const cluster = clusters.get(signature) || {
+        id: signature,
+        title: titleForEvent(event),
+        summary: summaryForEvent(event),
+        coverageType,
+        severity: severityForScore(baseScore),
+        gapScore: baseScore,
+        eventCount: 0,
+        agents: new Set<string>(),
+        tools: new Set<string>(),
+        domains: new Set<string>(),
+        eventTypes: new Set<string>(),
+        tags: new Set<string>(),
+        timestamps: [],
+        examples: [],
+        nearestRules,
+        whyUncovered: whyUncovered(event, coverageType, nearestRules),
+      };
+
+      cluster.eventCount += 1;
+      if (event.agent) cluster.agents.add(event.agent);
+      if (event.tool) cluster.tools.add(event.tool);
+      if (event.domain) cluster.domains.add(event.domain);
+      if (event.type) cluster.eventTypes.add(event.type);
+      for (const tag of tagsForEvent(event)) cluster.tags.add(tag);
+      if (event.timestamp) cluster.timestamps.push(event.timestamp);
+      cluster.examples.push(event);
+      cluster.gapScore = Math.min(100, Math.round(Math.max(cluster.gapScore, baseScore) + Math.min(24, cluster.eventCount * 1.8)));
+      cluster.severity = severityForScore(cluster.gapScore);
+      clusters.set(signature, cluster);
+    }
+
+    return Array.from(clusters.values()).map((cluster: any) => {
+      const lastSeen = Math.max(...cluster.timestamps, 0);
+      const firstSeen = Math.min(...cluster.timestamps, lastSeen || 0);
+      const representative = [...cluster.examples].sort((a: any, b: any) => (b.risk_score || 0) - (a.risk_score || 0))[0] || cluster.examples[0] || null;
+      const growthHint = cluster.eventCount >= 8 ? `+${Math.min(90, cluster.eventCount * 4)}% in ${timeWindow === '24h' ? '24h' : '3 days'}` : `${cluster.eventCount} recent observations`;
+      return {
+        ...cluster,
+        agents: Array.from(cluster.agents),
+        tools: Array.from(cluster.tools),
+        domains: Array.from(cluster.domains),
+        eventTypes: Array.from(cluster.eventTypes),
+        tags: Array.from(cluster.tags).slice(0, 5),
+        lastSeen,
+        firstSeen,
+        representative,
+        growthHint,
+        suggestedRule: buildSuggestedGapRule(cluster, representative),
+      };
+    });
+  }, [filteredByWindow, allRules, timeWindow]);
+
+  const visibleClusters = useMemo(() => {
+    const rows = clusterRows.filter((cluster: any) => {
+      if (coverageFilter !== 'all' && cluster.coverageType !== coverageFilter) return false;
+      if (search) {
+        const blob = JSON.stringify(cluster).toLowerCase();
+        if (!blob.includes(search.toLowerCase())) return false;
+      }
+      if (eventTypeFilter !== 'all' && !(cluster.eventTypes || []).includes(eventTypeFilter)) return false;
+      if (toolFilter !== 'all' && !(cluster.tools || []).includes(toolFilter)) return false;
+      if (agentFilter !== 'all' && !(cluster.agents || []).includes(agentFilter)) return false;
+      if (severityFilter !== 'all' && cluster.severity !== severityFilter) return false;
+      return true;
+    });
+
+    rows.sort((a: any, b: any) => {
+      if (sortMode === 'events') return b.eventCount - a.eventCount;
+      if (sortMode === 'last_seen') return (b.lastSeen || 0) - (a.lastSeen || 0);
+      return b.gapScore - a.gapScore;
+    });
+    return rows;
+  }, [clusterRows, coverageFilter, search, eventTypeFilter, toolFilter, agentFilter, severityFilter, sortMode]);
+
+  useEffect(() => {
+    if (!selectedClusterId && visibleClusters.length) setSelectedClusterId(visibleClusters[0].id);
+    if (selectedClusterId && !visibleClusters.some((cluster: any) => cluster.id === selectedClusterId)) {
+      setSelectedClusterId(visibleClusters[0]?.id || '');
+    }
+  }, [visibleClusters, selectedClusterId]);
+
+  const selectedCluster = visibleClusters.find((cluster: any) => cluster.id === selectedClusterId) || visibleClusters[0] || null;
+
+  const totals = useMemo(() => {
+    const uncoveredEvents = visibleClusters.reduce((sum: number, cluster: any) => sum + cluster.eventCount, 0);
+    const highPriority = visibleClusters.filter((cluster: any) => cluster.gapScore >= 75).length;
+    const byCoverage = {
+      uncovered: visibleClusters.filter((cluster: any) => cluster.coverageType === 'uncovered').length,
+      weak: visibleClusters.filter((cluster: any) => cluster.coverageType === 'weak').length,
+      near: visibleClusters.filter((cluster: any) => cluster.coverageType === 'near').length,
+    };
+    const fastest = [...visibleClusters].sort((a: any, b: any) => b.eventCount - a.eventCount)[0] || null;
+    const topTool = topPairs(visibleClusters.flatMap((cluster: any) => cluster.tools || []))[0] || null;
+    const topAgent = topPairs(visibleClusters.flatMap((cluster: any) => cluster.agents || []))[0] || null;
+    return { uncoveredEvents, highPriority, byCoverage, fastest, topTool, topAgent };
+  }, [visibleClusters, sourceEvents.length]);
+
+  const eventTypeOptions = useMemo(() => uniqueSorted(visibleClusters.flatMap((cluster: any) => cluster.eventTypes || [])), [visibleClusters]);
+  const toolOptions = useMemo(() => uniqueSorted(visibleClusters.flatMap((cluster: any) => cluster.tools || [])), [visibleClusters]);
+  const agentOptions = useMemo(() => uniqueSorted(visibleClusters.flatMap((cluster: any) => cluster.agents || [])), [visibleClusters]);
+
+  return (
+    <section className="pageGrid">
+      <div className="metricsRow metricsRow--six">
+        <MetricCard title="Uncovered Events" value={fmtNum(totals.uncoveredEvents)} subtitle={`${fmtNum(sourceEvents.length ? (totals.uncoveredEvents / sourceEvents.length) * 100 : 0, 1)}% of recent observed traffic`} tone="warn" />
+        <MetricCard title="Gap Clusters" value={fmtNum(visibleClusters.length)} subtitle={`${fmtNum(totals.highPriority)} high-priority clusters`} tone="accent" />
+        <MetricCard title="High-Priority Gaps" value={fmtNum(totals.highPriority)} subtitle="Require active policy attention" tone="danger" />
+        <MetricCard title="Fastest Growing" value={totals.fastest ? truncateText(totals.fastest.title, 22) : '—'} subtitle={totals.fastest ? totals.fastest.growthHint : 'No gap growth observed'} tone="warn" />
+        <MetricCard title="Most Frequent Tool" value={totals.topTool?.label || '—'} subtitle={totals.topTool ? `${totals.topTool.value} clusters` : 'No uncovered tool activity'} tone="ok" />
+        <MetricCard title="Most Exposed Agent" value={totals.topAgent?.label || '—'} subtitle={totals.topAgent ? `${totals.topAgent.value} clusters` : 'No exposed agent found'} tone="accent" />
+      </div>
+
+      <div className="card coverageToolbar">
+        <div className="coverageToolbar__left">
+          <div className="toggleRow">
+            {[
+              ['all', `All gaps ${visibleClusters.length}`],
+              ['uncovered', `Uncovered ${totals.byCoverage.uncovered}`],
+              ['weak', `Weak coverage ${totals.byCoverage.weak}`],
+              ['near', `Near existing rule ${totals.byCoverage.near}`],
+            ].map(([value, label]) => (
+              <button key={value} className={classNames('segmented', coverageFilter === value && 'is-active')} onClick={() => setCoverageFilter(value as any)}>{label}</button>
+            ))}
+          </div>
+          <input className="input coverageToolbar__search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search clusters..." />
+        </div>
+        <div className="coverageToolbar__right">
+          <select className="input input--small" value={eventTypeFilter} onChange={(e) => setEventTypeFilter(e.target.value)}>
+            <option value="all">Event Type</option>
+            {eventTypeOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select className="input input--small" value={toolFilter} onChange={(e) => setToolFilter(e.target.value)}>
+            <option value="all">Tool</option>
+            {toolOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select className="input input--small" value={agentFilter} onChange={(e) => setAgentFilter(e.target.value)}>
+            <option value="all">Agent</option>
+            {agentOptions.map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select className="input input--small" value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value)}>
+            <option value="all">Severity</option>
+            {['critical', 'high', 'medium', 'low'].map((value) => <option key={value} value={value}>{value}</option>)}
+          </select>
+          <select className="input input--small" value={sortMode} onChange={(e) => setSortMode(e.target.value as any)}>
+            <option value="gap_score">Sort: Gap score</option>
+            <option value="events">Sort: Events</option>
+            <option value="last_seen">Sort: Last seen</option>
+          </select>
+          <select className="input input--small" value={timeWindow} onChange={(e) => setTimeWindow(e.target.value as any)}>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+            <option value="all">All recent data</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="coverageLayout">
+        <div className="card">
+          <div className="sectionHeader">
+            <div>
+              <div className="eyebrow">Gap cluster</div>
+              <h3>Top coverage gaps</h3>
+            </div>
+            <div className="muted">Observed behaviours with little or no active policy coverage.</div>
+          </div>
+
+          <div className="coverageList">
+            {visibleClusters.length ? visibleClusters.map((cluster: any) => (
+              <button key={cluster.id} type="button" className={classNames('coverageCluster', selectedCluster?.id === cluster.id && 'is-active')} onClick={() => setSelectedClusterId(cluster.id)}>
+                <div className={classNames('coverageCluster__icon', `is-${clusterSeverityTone(cluster.severity)}`)} />
+                <div className="coverageCluster__body">
+                  <div className="coverageCluster__headline">
+                    <div>
+                      <strong>{cluster.title}</strong>
+                      <p>{cluster.summary}</p>
+                    </div>
+                    <div className="coverageCluster__score">{cluster.gapScore}</div>
+                  </div>
+                  <div className="coverageCluster__meta">
+                    <span>{fmtNum(cluster.eventCount)} events</span>
+                    <span>{fmtNum(cluster.agents.length)} agents</span>
+                    <span>{cluster.lastSeen ? `Last seen ${relativeTimeLabel(cluster.lastSeen)}` : 'Last seen —'}</span>
+                  </div>
+                  <div className="coverageCluster__chips">
+                    <span className={classNames('badge', `badge--${clusterSeverityTone(cluster.severity)}`)}>{cluster.severity}</span>
+                    <span className={classNames('badge', cluster.coverageType === 'uncovered' ? 'badge--danger' : cluster.coverageType === 'weak' ? 'badge--warn' : 'badge--ok')}>
+                      {cluster.coverageType === 'near' ? 'near rule' : cluster.coverageType}
+                    </span>
+                    {cluster.tags.map((tag: string) => <span key={tag} className="badge">{truncateText(tag, 28)}</span>)}
+                  </div>
+                  <div className="coverageCluster__impact">
+                    <div className="coverageCluster__heat"><div style={{ width: `${cluster.gapScore}%` }} /></div>
+                    <span>{cluster.growthHint}</span>
+                  </div>
+                </div>
+              </button>
+            )) : <div className="emptyState"><strong>No coverage gaps in this view.</strong><span className="muted">Try widening the time window or clearing filters.</span></div>}
+          </div>
+        </div>
+
+        <div className="card coverageDetail">
+          {selectedCluster ? (
+            <>
+              <div className="coverageDetail__header">
+                <div>
+                  <div className="coverageDetail__titleRow">
+                    <h3>{selectedCluster.title}</h3>
+                    <span className={classNames('badge', selectedCluster.coverageType === 'uncovered' ? 'badge--danger' : selectedCluster.coverageType === 'weak' ? 'badge--warn' : 'badge--ok')}>
+                      {selectedCluster.coverageType === 'near' ? 'Near existing rule' : selectedCluster.coverageType}
+                    </span>
+                  </div>
+                  <div className="traceCard__meta">
+                    First seen {fmtTs(selectedCluster.firstSeen)} · Last seen {fmtTs(selectedCluster.lastSeen)} · {fmtNum(selectedCluster.eventCount)} events · {fmtNum(selectedCluster.agents.length)} agents
+                  </div>
+                </div>
+                <div className="coverageDetail__scoreRing"><span>{selectedCluster.gapScore}</span></div>
+              </div>
+
+              <div className="coverageDetailGrid">
+                <div className="coverageInfoCard">
+                  <div className="subheading">Why this is uncovered</div>
+                  <p className="muted">{selectedCluster.whyUncovered}</p>
+
+                  <div className="subheading" style={{ marginTop: 16 }}>Nearest existing rules</div>
+                  <div className="coverageNearestList">
+                    {selectedCluster.nearestRules.length ? selectedCluster.nearestRules.map((row: any) => (
+                      <div key={`${row.fingerprint}:${row.match}`} className="coverageNearestItem">
+                        <div>
+                          <strong>{row.label}</strong>
+                          <div className="traceCard__meta">{row.bucket} policy bucket</div>
+                        </div>
+                        <span className="badge">{row.match}% match</span>
+                      </div>
+                    )) : <div className="muted">No adjacent rule concepts were found.</div>}
+                  </div>
+
+                  <div className="subheading" style={{ marginTop: 16 }}>Suggested policy starting point</div>
+                  <div className="codeCard coverageCodeCard">
+                    <pre>{JSON.stringify(selectedCluster.suggestedRule, null, 2)}</pre>
+                  </div>
+
+                  <div className="coverageActionRow">
+                    <button type="button" className="button" onClick={onOpenRules}>Create draft rule</button>
+                    {selectedCluster.representative?.id ? <button type="button" className="button button--ghost" onClick={() => onOpenDecision(selectedCluster.representative.id)}>Replay with this event</button> : null}
+                  </div>
+                </div>
+
+                <div className="coverageInfoCard">
+                  <div className="subheading">Representative sample</div>
+                  {selectedCluster.representative ? (
+                    <div className="coverageSample">
+                      <div className="coverageSample__row"><span>Agent</span><strong>{selectedCluster.representative.agent}</strong></div>
+                      <div className="coverageSample__row"><span>Tool</span><strong>{selectedCluster.representative.tool}</strong></div>
+                      <div className="coverageSample__row"><span>Type</span><strong>{selectedCluster.representative.type}</strong></div>
+                      <div className="coverageSample__row"><span>Domain</span><strong>{selectedCluster.representative.domain || '—'}</strong></div>
+                      <div className="coverageSample__row"><span>Route</span><strong>{selectedCluster.representative.route_target || '—'}</strong></div>
+                      <div className="coverageSample__row"><span>Risk</span><strong>{fmtNum(selectedCluster.representative.risk_score)}</strong></div>
+                      <div className="coverageSample__chips">
+                        {(Object.entries(selectedCluster.representative.classifiers || {}).filter(([, value]) => !!value).map(([key]) => key)).slice(0, 6).map((key) => (
+                          <span key={key} className="badge">{key.replace(/_/g, ' ')}</span>
+                        ))}
+                      </div>
+                      <div className="coverageSummaryGrid" style={{ marginTop: 12 }}>
+                        <div className="coverageMiniCard">
+                          <div className="subheading">Top agents</div>
+                          {topPairs(selectedCluster.agents).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{row.label}</span><strong>{row.value}</strong></div>)}
+                        </div>
+                        <div className="coverageMiniCard">
+                          <div className="subheading">Top tools</div>
+                          {topPairs(selectedCluster.tools).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{row.label}</span><strong>{row.value}</strong></div>)}
+                        </div>
+                        <div className="coverageMiniCard">
+                          <div className="subheading">Top domains</div>
+                          {topPairs(selectedCluster.domains).slice(0, 4).map((row: any) => <div key={row.label} className="coverageMiniCard__row"><span>{truncateText(row.label, 24)}</span><strong>{row.value}</strong></div>)}
+                        </div>
+                        <div className="coverageMiniCard">
+                          <div className="subheading">Trend</div>
+                          <div className="coverageTrend__spark">
+                            {buildSparklineValues(selectedCluster.eventCount, selectedCluster.gapScore).map((value: number, idx: number) => (
+                              <span key={idx} style={{ height: `${Math.max(14, value)}px` }} />
+                            ))}
+                          </div>
+                          <div className="traceCard__meta">{selectedCluster.growthHint}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : <div className="muted">No sample event available.</div>}
+                </div>
+              </div>
+            </>
+          ) : <div className="emptyState"><strong>No cluster selected.</strong><span className="muted">Choose a gap cluster from the list to inspect coverage blind spots and draft the next policy.</span></div>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function topPairs(values: string[]) {
+  const counts = new Map<string, number>();
+  for (const value of values || []) {
+    if (!value) continue;
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([label, value]) => ({ label, value }));
+}
+
+function uniqueSorted(values: string[]) {
+  return Array.from(new Set((values || []).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+}
+
+function clusterSeverityTone(severity?: string) {
+  if (severity === 'critical' || severity === 'high') return 'danger';
+  if (severity === 'medium') return 'warn';
+  return 'ok';
+}
+
+function relativeTimeLabel(ts?: number | null) {
+  if (!ts) return 'recently';
+  const diff = Math.max(0, Math.floor(Date.now() / 1000) - ts);
+  if (diff < 3600) return `${Math.max(1, Math.floor(diff / 60))}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function truncateText(value: string, limit = 24) {
+  const text = String(value || '');
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+function buildSparklineValues(eventCount: number, gapScore: number) {
+  const base = Math.max(10, Math.min(48, Math.round(gapScore / 2)));
+  return [base * 0.46, base * 0.62, base * 0.57, base * 0.76, base * 0.68, base * 0.9, base].map((value, idx) =>
+    Math.round(value + Math.min(16, eventCount * (0.45 + idx * 0.04)))
+  );
+}
+
+function buildSuggestedGapRule(cluster: any, event: any) {
+  const starter: any = {
+    title: truncateText(cluster?.title || 'coverage_gap_rule', 60),
+    description: `Drafted from coverage gap: ${cluster?.title || 'uncovered behaviour'}`,
+  };
+  if (event?.type) starter.type = event.type;
+  if (event?.tool) starter.tool = event.tool;
+  if (event?.domain) starter['field:domain'] = { contains: event.domain.split('.').slice(-2).join('.') };
+  if (event?.risk_score) starter['field:risk_score'] = { gte: Math.max(40, Math.min(85, Math.round(event.risk_score))) };
+  for (const [key, value] of Object.entries(event?.classifiers || {})) {
+    if (value) starter[`classifier:${key}`] = true;
+  }
+  if ((event?.method || '').toUpperCase()) starter['field:method'] = { eq: String(event.method).toUpperCase() };
+  if ((cluster?.coverageType || '') === 'uncovered' && (event?.classifiers?.internal || event?.classifiers?.pii || event?.classifiers?.secrets)) {
+    return { warn: [starter], block: [], monitor: [], allow: [] };
+  }
+  if ((cluster?.severity || '') === 'critical') {
+    return { block: [starter], warn: [], monitor: [], allow: [] };
+  }
+  return { monitor: [starter], warn: [], block: [], allow: [] };
+}
+
 
 function MetricCard({ title, value, subtitle, tone, onClick }: any) {
   const Tag: any = onClick ? 'button' : 'div';
