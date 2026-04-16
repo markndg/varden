@@ -85,7 +85,12 @@ function ruleBucketFromSearch(search: string) {
 }
 
 function ruleFocusTokenFromSearch(search: string) {
-  return new URLSearchParams(search).get('focus') || '';
+  const params = new URLSearchParams(search);
+  return params.get('token') || params.get('focus') || '';
+}
+
+function ruleReturnToFromSearch(search: string) {
+  return new URLSearchParams(search).get('returnTo') || '';
 }
 
 function latencyValueFromPoint(point: any): number | null {
@@ -464,6 +469,35 @@ function summarizeRule(rule: any) {
   return rule.title || rule.name || rule.description || rule.reason || [rule.type, rule.tool, Object.keys(rule).find((key) => String(key).startsWith('classifier:'))?.replace('classifier:', '')].filter(Boolean).join(' · ') || 'Untitled rule';
 }
 
+function semanticRuleFingerprint(rule: any): string {
+  if (!rule || typeof rule !== 'object') return stableStringify(rule);
+  const clone: any = {};
+  for (const [key, value] of Object.entries(rule || {})) {
+    if (['enabled', 'priority', 'description', 'reason', 'title', 'name'].includes(key)) continue;
+    clone[key] = value;
+  }
+  return stableStringify(clone);
+}
+
+function summarizeRuleConditions(rule: any, max = 4) {
+  const parts: string[] = [];
+  if (rule?.tool) parts.push(`tool → ${rule.tool}`);
+  if (rule?.type) parts.push(`type → ${String(rule.type).replace(/_/g, ' ')}`);
+  for (const [key, value] of Object.entries(rule || {})) {
+    if (['enabled', 'priority', 'description', 'reason', 'title', 'name', 'type', 'tool'].includes(String(key))) continue;
+    if (String(key).startsWith('classifier:') && value) {
+      parts.push(`classifier → ${String(key).replace('classifier:', '').replace(/_/g, ' ')}`);
+      continue;
+    }
+    if (String(key).startsWith('field:')) {
+      const operator = value && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value as any)[0] : 'eq';
+      const expected = value && typeof value === 'object' && !Array.isArray(value) ? (value as any)[operator] : value;
+      parts.push(describeMatchedField({ field: key, operator, expected }));
+    }
+  }
+  return parts.slice(0, max);
+}
+
 function customRuleEntries(rule: any) {
   const dedicated = new Set([
     'enabled', 'priority', 'description', 'reason', 'title', 'name', 'type', 'tool',
@@ -488,6 +522,7 @@ function Shell() {
   const [ruleFocus, setRuleFocus] = useState<string>(new URLSearchParams(location.search).get('rule') || '');
   const [ruleFocusBucket, setRuleFocusBucket] = useState<string>(ruleBucketFromSearch(location.search));
   const [ruleFocusToken, setRuleFocusToken] = useState<string>(ruleFocusTokenFromSearch(location.search));
+  const [ruleReturnTo, setRuleReturnTo] = useState<string>(ruleReturnToFromSearch(location.search));
   const [filters, setFilters] = usePersistentState('sentinel.filters', { search: '', status: 'all', from: '', to: '' });
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -500,6 +535,7 @@ function Shell() {
       setRuleFocus(new URLSearchParams(location.search).get('rule') || '');
       setRuleFocusBucket(ruleBucketFromSearch(location.search));
       setRuleFocusToken(ruleFocusTokenFromSearch(location.search));
+      setRuleReturnTo(ruleReturnToFromSearch(location.search));
     };
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
@@ -612,6 +648,7 @@ function Shell() {
     setRuleFocus(new URLSearchParams(path.split('?')[1] || '').get('rule') || '');
     setRuleFocusBucket(ruleBucketFromSearch(search));
     setRuleFocusToken(ruleFocusTokenFromSearch(search));
+    setRuleReturnTo(ruleReturnToFromSearch(search));
   }
 
   async function savePolicy() {
@@ -782,7 +819,7 @@ function Shell() {
             overview={overview}
             policy={safeParsePolicy(policyText, policy)}
             onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
-            onOpenRules={(bucket: string, label: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}&focus=${Date.now()}`)}
+            onOpenRules={(bucket: string, label: string, token?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}${token ? `&token=${encodeURIComponent(token)}` : ''}&focus=${Date.now()}`)}
           />
         ) : null}
 
@@ -801,6 +838,8 @@ function Shell() {
             ruleFocus={ruleFocus}
             ruleFocusBucket={ruleFocusBucket}
             ruleFocusToken={ruleFocusToken}
+            ruleReturnTo={ruleReturnTo}
+            onBackToDecision={(path: string) => navigate('decision', path)}
           />
         ) : null}
 
@@ -808,7 +847,7 @@ function Shell() {
           <DecisionPage
             detail={detail}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
-            onOpenRule={(label: string, bucket?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}&focus=${Date.now()}`)}
+            onOpenRule={(label: string, bucket?: string, token?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}${token ? `&token=${encodeURIComponent(token)}` : ''}&returnTo=${encodeURIComponent(`/ui/decision/${detailId}`)}&focus=${Date.now()}`)}
           />
         ) : null}
 
@@ -1195,6 +1234,7 @@ function ImpactPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
       const reasonLc = lower(rule?.description || rule?.reason || '');
       const toolLc = lower(rule?.tool || '');
       const tags = deriveTags(rule);
+      const conditionSummary = summarizeRuleConditions(rule, 3);
 
       const matches = filteredEvents.filter((event: any) => {
         const label = lower((event as any).matched_rule_label || deriveMatchedRuleLabel(event) || '');
@@ -1244,7 +1284,8 @@ function ImpactPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
 
       const recentEvents = matches.slice(0, 6);
       const falsePositiveCandidates = matches.filter((event: any) => Number(event.risk_score || 0) <= 20 || String(event.domain || '').includes('localhost')).slice(0, 4);
-      const id = `${bucket}:${index}:${ruleFingerprint(rule)}`;
+      const id = `${bucket}:${index}:${semanticRuleFingerprint(rule)}`;
+      const exactToken = semanticRuleFingerprint(rule);
 
       return {
         id,
@@ -1260,6 +1301,8 @@ function ImpactPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
         coverage,
         falsePositiveRate,
         tags,
+        conditionSummary,
+        exactToken,
         topAgents,
         topTools,
         topDomains,
@@ -1367,6 +1410,7 @@ function ImpactPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
                       <div>
                         <div className="impactRow__title">{row.label}</div>
                         <div className="impactRow__meta">{row.rule?.type || 'any type'} {row.rule?.tool ? `· ${row.rule.tool}` : ''}</div>
+                        {row.conditionSummary?.length ? <div className="impactRow__detail">{row.conditionSummary.join(' · ')}</div> : null}
                       </div>
                     </div>
                     <div className="impactRow__tags">
@@ -1419,7 +1463,7 @@ function ImpactPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
                     <span>{fmtNum(selectedRow.impactScore, 1)} weighted impact</span>
                   </div>
                   <div className="impactActions">
-                    <button type="button" className="button" onClick={() => onOpenRules(selectedRow.bucket, selectedRow.label)}>Open in rules workspace</button>
+                    <button type="button" className="button" onClick={() => onOpenRules(selectedRow.bucket, selectedRow.label, selectedRow.exactToken)}>Open in rules workspace</button>
                     {selectedRow.recentEvents[0]?.id ? <button type="button" className="button button--ghost" onClick={() => onOpenDecision(selectedRow.recentEvents[0].id)}>Open latest decision</button> : null}
                   </div>
                 </div>
@@ -1509,7 +1553,7 @@ function ImpactPage({ overview, policy, onOpenDecision, onOpenRules }: any) {
   );
 }
 
-function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTemplate, onSave, loading, ruleFocus, ruleFocusBucket, ruleFocusToken }: any) {
+function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTemplate, onSave, loading, ruleFocus, ruleFocusBucket, ruleFocusToken, ruleReturnTo, onBackToDecision }: any) {
   const [selectedBucket, setSelectedBucket] = useState<typeof RULE_BUCKETS[number]>('block');
   const [selectedRuleIndex, setSelectedRuleIndex] = useState(0);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -1517,6 +1561,8 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
   const [uploadedTemplates, setUploadedTemplates] = usePersistentState<any[]>('arbiter.uploaded-policy-templates', []);
   const [templateNotice, setTemplateNotice] = useState('');
   const [templateError, setTemplateError] = useState('');
+  const [highlightedRuleKey, setHighlightedRuleKey] = useState('');
+  const [highlightedFields, setHighlightedFields] = useState<string[]>([]);
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
   const ruleRailRef = useRef<HTMLDivElement | null>(null);
   const ruleEditorPaneRef = useRef<HTMLDivElement | null>(null);
@@ -1525,6 +1571,26 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
   const workingPolicy = useMemo(() => safeParsePolicy(policyText, policy), [policyText, policy]);
   const activeRules = workingPolicy[selectedBucket] || [];
   const activeRule = activeRules[selectedRuleIndex] || null;
+
+  function activeRuleDefinedFields(rule: any) {
+    if (!rule) return [];
+    const fields: string[] = [];
+    if (rule.type) fields.push('type');
+    if (rule.tool) fields.push('tool');
+    if (rule.priority !== undefined) fields.push('priority');
+    if (rule.title || rule.name) fields.push('title');
+    if (rule.description || rule.reason) fields.push('description');
+    if (rule.enabled !== undefined) fields.push('enabled');
+    for (const key of Object.keys(rule || {})) {
+      if (String(key).startsWith('classifier:') || String(key).startsWith('field:')) fields.push(String(key));
+    }
+    for (const [key] of customRuleEntries(rule)) fields.push(String(key));
+    return Array.from(new Set(fields));
+  }
+
+  function fieldClass(fieldKey: string, extra?: string) {
+    return classNames(extra, highlightedFields.includes(fieldKey) && 'ruleField--matched');
+  }
 
   useEffect(() => {
     if (selectedRuleIndex > Math.max(0, activeRules.length - 1)) {
@@ -1551,13 +1617,23 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     requestAnimationFrame(() => {
       scrollSelectedRuleIntoView();
       resetRuleEditorScroll();
+      setHighlightedRuleKey(ruleKey(selectedBucket, selectedRuleIndex));
+      window.setTimeout(() => setHighlightedRuleKey(''), 1800);
     });
   }, [selectedBucket, selectedRuleIndex]);
 
   useEffect(() => {
-    if (!ruleFocus) return;
-    const wanted = String(ruleFocus).trim().toLowerCase();
-    if (!wanted) return;
+    if (ruleFocus || ruleFocusToken) {
+      setHighlightedFields(activeRuleDefinedFields(activeRule));
+    } else {
+      setHighlightedFields([]);
+    }
+  }, [ruleFocus, ruleFocusToken, activeRule]);
+
+  useEffect(() => {
+    const wantedToken = String(ruleFocusToken || '').trim();
+    const wanted = String(ruleFocus || '').trim().toLowerCase();
+    if (!wantedToken && !wanted) return;
 
     const orderedBuckets = [
       ...(ruleFocusBucket && RULE_BUCKETS.includes(ruleFocusBucket as any) ? [ruleFocusBucket as typeof RULE_BUCKETS[number]] : []),
@@ -1565,6 +1641,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     ];
 
     const findRuleIndex = (bucket: typeof RULE_BUCKETS[number]) => (workingPolicy[bucket] || []).findIndex((rule: any) => {
+      if (wantedToken && semanticRuleFingerprint(rule) === wantedToken) return true;
       const summary = summarizeRule(rule).toLowerCase();
       const fields = [
         rule?.title,
@@ -1572,8 +1649,9 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
         rule?.description,
         rule?.reason,
         summary,
+        ...summarizeRuleConditions(rule, 4),
       ].filter(Boolean).map((value: any) => String(value).toLowerCase());
-      return fields.some((value: string) => value === wanted || value.includes(wanted) || wanted.includes(value));
+      return wanted ? fields.some((value: string) => value === wanted || value.includes(wanted) || wanted.includes(value)) : false;
     });
 
     for (const bucket of orderedBuckets) {
@@ -1615,10 +1693,25 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
     const nextBucket = pickFirstNonEmptyBucket(focusDoc);
     const targetRule = focusDoc[nextBucket]?.[0] || nextDoc[nextBucket]?.[0] || null;
     const nextIndex = targetRule
-      ? Math.max(0, nextDoc[nextBucket].findIndex((rule: any) => ruleFingerprint(rule) === ruleFingerprint(targetRule)))
+      ? Math.max(0, nextDoc[nextBucket].findIndex((rule: any) => semanticRuleFingerprint(rule) === semanticRuleFingerprint(targetRule)))
       : 0;
 
     selectRule(nextBucket, nextIndex);
+  }
+
+  function removeTemplateFromBuilder(template: any) {
+    const templateDoc = dedupePolicyDoc(ensurePolicyDoc(template?.template || template || {}));
+    const removeSet = new Set(RULE_BUCKETS.flatMap((bucket) => (templateDoc[bucket] || []).map((rule: any) => semanticRuleFingerprint(rule))));
+    const nextDoc = ensurePolicyDoc({
+      block: (workingPolicy.block || []).filter((rule: any) => !removeSet.has(semanticRuleFingerprint(rule))),
+      warn: (workingPolicy.warn || []).filter((rule: any) => !removeSet.has(semanticRuleFingerprint(rule))),
+      monitor: (workingPolicy.monitor || []).filter((rule: any) => !removeSet.has(semanticRuleFingerprint(rule))),
+      allow: (workingPolicy.allow || []).filter((rule: any) => !removeSet.has(semanticRuleFingerprint(rule))),
+    });
+    setPolicyText(JSON.stringify(nextDoc, null, 2));
+    setTemplateNotice(`Removed rules from ${template.name || 'template'} out of builder`);
+    const nextBucket = pickFirstNonEmptyBucket(nextDoc);
+    selectRule(nextBucket, 0);
   }
 
   function mutateRule(mutator: (rule: any) => any) {
@@ -1713,13 +1806,17 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
 
   function templateRuleStats(entry: any) {
     const doc = ensurePolicyDoc(entry?.template || entry || {});
-    const activeFingerprints = new Set(RULE_BUCKETS.flatMap((bucket) => (workingPolicy[bucket] || []).map((rule: any) => ruleFingerprint(rule))));
-    const templateFingerprints = RULE_BUCKETS.flatMap((bucket) => doc[bucket].map((rule: any) => ruleFingerprint(rule)));
+    const activeFingerprints = new Set(RULE_BUCKETS.flatMap((bucket) => (workingPolicy[bucket] || []).map((rule: any) => semanticRuleFingerprint(rule))));
+    const templateFingerprints = RULE_BUCKETS.flatMap((bucket) => doc[bucket].map((rule: any) => semanticRuleFingerprint(rule)));
     const matched = templateFingerprints.filter((fingerprint: string) => activeFingerprints.has(fingerprint)).length;
     const total = templateFingerprints.length;
     const implemented = total > 0 && matched === total;
     const partial = matched > 0 && matched < total;
-    return { doc, total, matched, implemented, partial };
+    const previews = RULE_BUCKETS.flatMap((bucket) => doc[bucket].map((rule: any) => ({
+      bucket,
+      text: summarizeRuleConditions(rule, 4).join(' → ') || summarizeRule(rule),
+    }))).slice(0, 5);
+    return { doc, total, matched, implemented, partial, previews };
   }
 
   function removeUploadedTemplate(name: string) {
@@ -1810,7 +1907,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                       type="button"
                       key={idx}
                       ref={(node) => { ruleItemRefs.current[ruleKey(selectedBucket, idx)] = node; }}
-                      className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active')}
+                      className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active', highlightedRuleKey === ruleKey(selectedBucket, idx) && 'is-highlighted')}
                       onClick={() => selectRule(selectedBucket, idx)}
                     >
                       <div>
@@ -1842,6 +1939,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                         <h4>{summarizeRule(activeRule)}</h4>
                       </div>
                       <div className="toggleRow">
+                        {ruleReturnTo ? <button type="button" className="button button--ghost" onClick={() => onBackToDecision?.(ruleReturnTo)}>← Back to decision</button> : null}
                         <button type="button" className="button button--ghost" onClick={() => moveRule(-1)} disabled={selectedRuleIndex === 0}>Up</button>
                         <button type="button" className="button button--ghost" onClick={() => moveRule(1)} disabled={selectedRuleIndex === activeRules.length - 1}>Down</button>
                         <button type="button" className="button button--ghost" onClick={duplicateRule}>Duplicate</button>
@@ -1851,13 +1949,13 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
 
                     <div className="ruleEditorGrid">
                       <label className="formField"><span>Rule name</span><input className="input" value={String(activeRule.title || activeRule.name || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'title', e.target.value), 'name', ''))} /></label>
-                      <label className="formField"><span>Action type</span><input className="input" value={String(activeRule.type || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'type', e.target.value))} placeholder="http_request, process_spawn, sql_query" /></label>
-                      <label className="formField"><span>Tool name</span><input className="input" value={String(activeRule.tool || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'tool', e.target.value))} placeholder="requests.get" /></label>
-                      <label className="formField"><span>Priority</span><input className="input" type="number" value={String(activeRule.priority ?? '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'priority', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
-                      <label className="formField formField--wide"><span>Description</span><textarea className="input textarea" value={String(activeRule.description || activeRule.reason || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'description', e.target.value), 'reason', ''))} /></label>
+                      <label className={fieldClass('type', "formField")}><span>Action type</span><input className="input" value={String(activeRule.type || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'type', e.target.value))} placeholder="http_request, process_spawn, sql_query" /></label>
+                      <label className={fieldClass('tool', "formField")}><span>Tool name</span><input className="input" value={String(activeRule.tool || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'tool', e.target.value))} placeholder="requests.get" /></label>
+                      <label className={fieldClass('priority', "formField")}><span>Priority</span><input className="input" type="number" value={String(activeRule.priority ?? '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'priority', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                      <label className={fieldClass('description', "formField formField--wide")}><span>Description</span><textarea className="input textarea" value={String(activeRule.description || activeRule.reason || '')} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(setRuleSimpleValue(rule, 'description', e.target.value), 'reason', ''))} /></label>
                     </div>
 
-                    <label className="switchRow"><input type="checkbox" checked={activeRule.enabled !== false} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'enabled', e.target.checked ? true : false))} /> Enabled</label>
+                    <label className={fieldClass('enabled', "switchRow")}><input type="checkbox" checked={activeRule.enabled !== false} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, 'enabled', e.target.checked ? true : false))} /> Enabled</label>
 
                     <div className="logicBuilder">
                       <div className="subheading">Rule logic builder</div>
@@ -1874,15 +1972,15 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                       <div className="subheading">Common matches</div>
                       <div className="ruleEditorGrid">
                         {ADVANCED_FIELDS.map((field) => field.valueType === 'boolean' ? (
-                          <label key={field.key} className="switchRow switchRow--card">
+                          <label key={field.key} className={fieldClass(field.key, "switchRow switchRow--card")}>
                             <input type="checkbox" checked={Boolean(getRuleValue(activeRule, field.key))} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, field.key, field.operator, e.target.checked))} />
                             <span>{field.label}</span>
                           </label>
                         ) : (
-                          <label key={field.key} className="formField"><span>{field.label}</span><input className="input" placeholder={field.placeholder || ''} value={String(getRuleValue(activeRule, field.key) || '')} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, field.key, field.operator, e.target.value))} /></label>
+                          <label key={field.key} className={fieldClass(field.key, "formField")}><span>{field.label}</span><input className="input" placeholder={field.placeholder || ''} value={String(getRuleValue(activeRule, field.key) || '')} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, field.key, field.operator, e.target.value))} /></label>
                         ))}
-                        <label className="formField"><span>Risk score at least</span><input className="input" type="number" value={getRuleOperator(activeRule, 'field:risk_score') === 'gte' ? String(getRuleValue(activeRule, 'field:risk_score') || '') : ''} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, 'field:risk_score', 'gte', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
-                        <label className="formField"><span>Risk score at most</span><input className="input" type="number" value={getRuleOperator(activeRule, 'field:risk_score') === 'lte' ? String(getRuleValue(activeRule, 'field:risk_score') || '') : ''} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, 'field:risk_score', 'lte', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                        <label className={fieldClass('field:risk_score', "formField")}><span>Risk score at least</span><input className="input" type="number" value={getRuleOperator(activeRule, 'field:risk_score') === 'gte' ? String(getRuleValue(activeRule, 'field:risk_score') || '') : ''} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, 'field:risk_score', 'gte', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
+                        <label className={fieldClass('field:risk_score', "formField")}><span>Risk score at most</span><input className="input" type="number" value={getRuleOperator(activeRule, 'field:risk_score') === 'lte' ? String(getRuleValue(activeRule, 'field:risk_score') || '') : ''} onChange={(e) => mutateRule((rule) => setRuleOperatorValue(rule, 'field:risk_score', 'lte', e.target.value === '' ? '' : Number(e.target.value)))} /></label>
                       </div>
                     </div>
 
@@ -1890,7 +1988,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                       <div className="subheading">Classifier hits</div>
                       <div className="classifierGrid">
                         {CLASSIFIER_KEYS.map((classifier) => (
-                          <label key={classifier} className="switchRow switchRow--card">
+                          <label key={classifier} className={fieldClass(`classifier:${classifier}`, "switchRow switchRow--card")}>
                             <input type="checkbox" checked={Boolean(activeRule[`classifier:${classifier}`])} onChange={(e) => mutateRule((rule) => setRuleSimpleValue(rule, `classifier:${classifier}`, e.target.checked ? true : ''))} />
                             <span>{classifier.replace(/_/g, ' ')}</span>
                           </label>
@@ -1913,7 +2011,7 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                           const rawValue = getRuleValue(entryRule, key);
                           const valueMode = Array.isArray(rawValue) ? 'list' : typeof rawValue === 'number' ? 'number' : typeof rawValue === 'boolean' ? 'boolean' : 'text';
                           return (
-                            <div key={`${key}-${idx}`} className="customRow">
+                            <div key={`${key}-${idx}`} className={fieldClass(key, "customRow")}>
                               <input className="input" value={key} onChange={(e) => updateCustomEntry(idx, { key: e.target.value })} placeholder="field:route_target" />
                               <select className="input input--small" value={operator} onChange={(e) => updateCustomEntry(idx, { operator: e.target.value })}>{OPERATOR_OPTIONS.map((op) => <option key={op} value={op}>{op}</option>)}</select>
                               <input className="input" value={Array.isArray(rawValue) ? rawValue.join(', ') : String(rawValue ?? '')} onChange={(e) => updateCustomEntry(idx, { value: e.target.value, mode: valueMode })} placeholder="value" />
@@ -1979,11 +2077,19 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
                           <span>{stats.matched}/{stats.total} rules already present</span>
                           <span>{templateMode === 'replace' ? 'Replace on add' : 'Merge on add'}</span>
                         </div>
-                        <code>{JSON.stringify(stats.doc).slice(0, 180)}…</code>
+                        <div className="templatePreviewList">
+                          {stats.previews.length ? stats.previews.map((preview: any, previewIdx: number) => (
+                            <div key={`${preview.bucket}:${previewIdx}`} className="templatePreviewLine">
+                              <span className={classNames('badge', preview.bucket === 'block' ? 'badge--danger' : preview.bucket === 'warn' ? 'badge--warn' : 'badge--ok')}>{preview.bucket}</span>
+                              <span>{preview.text}</span>
+                            </div>
+                          )) : <div className="muted">No readable rule summary available.</div>}
+                        </div>
                       </button>
                       <div className="templateCard__actions">
                         <button type="button" className="button button--tiny" onClick={() => applyTemplateToBuilder(template)}>Add to builder</button>
-                        {template.source === 'uploaded' ? <button type="button" className="button button--ghost button--tiny" onClick={() => removeUploadedTemplate(template.name)}>Remove</button> : null}
+                        <button type="button" className="button button--ghost button--tiny" onClick={() => removeTemplateFromBuilder(template)}>Remove from builder</button>
+                        {template.source === 'uploaded' ? <button type="button" className="button button--ghost button--tiny" onClick={() => removeUploadedTemplate(template.name)}>Remove pack</button> : null}
                       </div>
                     </div>
                   </div>
@@ -2055,7 +2161,7 @@ function DecisionPage({ detail, onOpenDecision, onOpenRule }: any) {
               </div>
               <div className="ruleJumpRow">
                 {Array.from(new Set([detail.explainability?.rule_label, deriveMatchedRuleLabel(event), event?.decision?.rule_name, event?.decision?.triggered_rule].filter(Boolean) as string[])).map((label: string) => (
-                  <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, event.status === 'blocked' ? 'block' : event.status === 'warned' ? 'warn' : event.status === 'allowed' ? 'allow' : '')}>Open rule · {label}</button>
+                  <button key={label} className="badge badge--rule badge--clickable" onClick={() => onOpenRule(label, event.status === 'blocked' ? 'block' : event.status === 'warned' ? 'warn' : event.status === 'allowed' ? 'allow' : '', event?.decision?.matched_rule ? semanticRuleFingerprint(event.decision.matched_rule) : '')}>Open rule · {label}</button>
                 ))}
               </div>
             </div>

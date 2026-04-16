@@ -2089,3 +2089,57 @@ button { cursor: pointer; }
     width: 100%;
   }
 }
+
+
+.ruleField--matched .input,
+.ruleField--matched.switchRow,
+.ruleField--matched.switchRow--card,
+.ruleField--matched.customRow {
+  border-color: rgba(76,224,181,.44) !important;
+  box-shadow: 0 0 0 3px rgba(76,224,181,.08);
+  background: linear-gradient(180deg, rgba(76,224,181,.08), rgba(255,255,255,.03));
+}
+
+.ruleField--matched span:first-child,
+.ruleField--matched.switchRow span {
+  color: #bff7e7;
+}
+
+.templatePreviewList {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.templatePreviewLine {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: #dce6ff;
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255,255,255,.025);
+  border: 1px solid rgba(163,184,255,.08);
+}
+
+.templatePreviewLine .badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+}
+
+.templateCard__actions {
+  justify-items: end;
+}
+
+.templateCard__actions .button {
+  width: 100%;
+}
+
+.impactRow__detail {
+  color: #bfd0f4;
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 4px;
+}
