@@ -2028,6 +2028,19 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
               </div>
             </div>
           </div>
+
+          <div className="card">
+            <div className="sectionHeader">
+              <div>
+                <div className="eyebrow">Advanced</div>
+                <h3>Raw policy document</h3>
+              </div>
+              <button type="button" className="button button--ghost" onClick={() => setShowAdvanced((v) => !v)}>{showAdvanced ? 'Hide JSON' : 'Show JSON'}</button>
+            </div>
+            <p className="muted">The visual builder writes straight back to the real OSS policy file, so advanced users can still inspect or hand-edit the underlying JSON.</p>
+            {parseError ? <div className="banner banner--error">JSON error: {parseError}</div> : null}
+            {showAdvanced ? <textarea className="editor editor--compact" value={policyText} onChange={(e) => setPolicyText(e.target.value)} spellCheck={false} /> : null}
+          </div>
         </div>
 
         <div className="stack">
@@ -2097,19 +2110,6 @@ function RulesPage({ policy, policyText, setPolicyText, templates, onApplyTempla
               })}
               {!templateCards.length ? <div className="emptyState emptyState--compact"><strong>No policy packs loaded.</strong><span className="muted">Upload your own JSON policy packs to start building a private template library.</span></div> : null}
             </div>
-          </div>
-
-          <div className="card">
-            <div className="sectionHeader">
-              <div>
-                <div className="eyebrow">Advanced</div>
-                <h3>Raw policy document</h3>
-              </div>
-              <button type="button" className="button button--ghost" onClick={() => setShowAdvanced((v) => !v)}>{showAdvanced ? 'Hide JSON' : 'Show JSON'}</button>
-            </div>
-            <p className="muted">The visual builder writes straight back to the real OSS policy file, so advanced users can still inspect or hand-edit the underlying JSON.</p>
-            {parseError ? <div className="banner banner--error">JSON error: {parseError}</div> : null}
-            {showAdvanced ? <textarea className="editor editor--compact" value={policyText} onChange={(e) => setPolicyText(e.target.value)} spellCheck={false} /> : null}
           </div>
         </div>
       </section>

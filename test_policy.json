@@ -1,0 +1,260 @@
+{
+  "version": "1.0",
+  "pack_name": "Arbiter OSS Starter Policies",
+  "description": "Default demonstration rules for Arbiter showing tool governance, SQL protection, exfiltration prevention, file access controls, and approval workflows.",
+  "rules": [
+    {
+      "id": "block_destructive_shell",
+      "name": "Block Destructive Shell Commands",
+      "enabled": true,
+      "priority": 100,
+      "action": "block",
+      "severity": "critical",
+      "match": {
+        "tool": [
+          "subprocess.*",
+          "os.system",
+          "*.run",
+          "*.exec",
+          "*.execute"
+        ],
+        "args_any_contains": [
+          "rm -rf",
+          "del /s /q",
+          "format ",
+          "mkfs",
+          "diskpart clean",
+          "Remove-Item -Recurse -Force"
+        ]
+      },
+      "message": "Blocked destructive shell command.",
+      "tags": ["shell", "destructive", "filesystem"]
+    },
+    {
+      "id": "approval_privileged_shell",
+      "name": "Require Approval for Privileged Commands",
+      "enabled": true,
+      "priority": 95,
+      "action": "require_approval",
+      "severity": "high",
+      "match": {
+        "tool": [
+          "subprocess.*",
+          "os.system",
+          "*.run"
+        ],
+        "args_any_contains": [
+          "sudo ",
+          " su ",
+          "runas ",
+          "Start-Process -Verb RunAs"
+        ]
+      },
+      "message": "Privileged command requires approval.",
+      "tags": ["shell", "privilege", "approval"]
+    },
+    {
+      "id": "block_drop_database",
+      "name": "Block DROP DATABASE",
+      "enabled": true,
+      "priority": 100,
+      "action": "block",
+      "severity": "critical",
+      "match": {
+        "tool": "*.execute",
+        "args_any_contains": [
+          "DROP DATABASE"
+        ]
+      },
+      "message": "Blocked SQL containing DROP DATABASE.",
+      "tags": ["sql", "database", "destructive"]
+    },
+    {
+      "id": "block_drop_table",
+      "name": "Block DROP TABLE",
+      "enabled": true,
+      "priority": 100,
+      "action": "block",
+      "severity": "critical",
+      "match": {
+        "tool": "*.execute",
+        "args_any_contains": [
+          "DROP TABLE"
+        ]
+      },
+      "message": "Blocked SQL containing DROP TABLE.",
+      "tags": ["sql", "database", "destructive"]
+    },
+    {
+      "id": "block_truncate",
+      "name": "Block TRUNCATE",
+      "enabled": true,
+      "priority": 100,
+      "action": "block",
+      "severity": "critical",
+      "match": {
+        "tool": "*.execute",
+        "args_any_contains": [
+          "TRUNCATE "
+        ]
+      },
+      "message": "Blocked SQL containing TRUNCATE.",
+      "tags": ["sql", "database", "destructive"]
+    },
+    {
+      "id": "warn_delete_without_where",
+      "name": "Warn DELETE Without WHERE",
+      "enabled": true,
+      "priority": 80,
+      "action": "warn",
+      "severity": "high",
+      "match": {
+        "tool": "*.execute",
+        "args_regex": "(?i)delete\\s+from\\s+[a-zA-Z0-9_\\.]+\\s*;?$"
+      },
+      "message": "DELETE statement without WHERE clause detected.",
+      "tags": ["sql", "unsafe"]
+    },
+    {
+      "id": "warn_update_without_where",
+      "name": "Warn UPDATE Without WHERE",
+      "enabled": true,
+      "priority": 80,
+      "action": "warn",
+      "severity": "high",
+      "match": {
+        "tool": "*.execute",
+        "args_regex": "(?i)update\\s+[a-zA-Z0-9_\\.]+\\s+set\\s+.+;$"
+      },
+      "exclude": {
+        "args_contains": "WHERE"
+      },
+      "message": "UPDATE statement without WHERE clause detected.",
+      "tags": ["sql", "unsafe"]
+    },
+    {
+      "id": "block_secret_exfiltration",
+      "name": "Block Secrets Sent to Untrusted Domains",
+      "enabled": true,
+      "priority": 100,
+      "action": "block",
+      "severity": "critical",
+      "match": {
+        "tool": [
+          "requests.*",
+          "httpx.*",
+          "axios.*",
+          "fetch",
+          "*.post"
+        ],
+        "destination_not_in": [
+          "internal.company.com",
+          "api.company.com",
+          "localhost",
+          "127.0.0.1"
+        ],
+        "args_any_regex": [
+          "(?i)api[_-]?key",
+          "(?i)secret",
+          "(?i)password",
+          "(?i)token",
+          "AKIA[0-9A-Z]{16}"
+        ]
+      },
+      "message": "Blocked outbound request containing likely secrets.",
+      "tags": ["network", "exfiltration", "secrets"]
+    },
+    {
+      "id": "warn_unknown_domain",
+      "name": "Warn Unknown Outbound Domain",
+      "enabled": true,
+      "priority": 70,
+      "action": "warn",
+      "severity": "medium",
+      "match": {
+        "tool": [
+          "requests.*",
+          "httpx.*",
+          "axios.*",
+          "fetch"
+        ],
+        "destination_not_in": [
+          "internal.company.com",
+          "api.company.com",
+          "localhost",
+          "127.0.0.1"
+        ]
+      },
+      "message": "Outbound request to non-allowlisted domain.",
+      "tags": ["network", "egress"]
+    },
+    {
+      "id": "block_private_keys",
+      "name": "Block Private Key Access",
+      "enabled": true,
+      "priority": 95,
+      "action": "block",
+      "severity": "critical",
+      "match": {
+        "tool": [
+          "open",
+          "read_file",
+          "*.read",
+          "*.load"
+        ],
+        "args_any_contains": [
+          "id_rsa",
+          "id_ed25519",
+          ".pem",
+          ".pfx",
+          ".key"
+        ]
+      },
+      "message": "Blocked access to private key material.",
+      "tags": ["files", "secrets", "keys"]
+    },
+    {
+      "id": "warn_env_files",
+      "name": "Warn Credential File Access",
+      "enabled": true,
+      "priority": 75,
+      "action": "warn",
+      "severity": "medium",
+      "match": {
+        "tool": [
+          "open",
+          "read_file",
+          "*.read",
+          "*.load"
+        ],
+        "args_any_contains": [
+          ".env",
+          ".npmrc",
+          ".pypirc",
+          "credentials",
+          "config.json"
+        ]
+      },
+      "message": "Sensitive credential/config file access detected.",
+      "tags": ["files", "credentials"]
+    },
+    {
+      "id": "approval_bulk_export",
+      "name": "Require Approval for Bulk Export / Upload",
+      "enabled": true,
+      "priority": 85,
+      "action": "require_approval",
+      "severity": "high",
+      "match": {
+        "tool": [
+          "*.export",
+          "*.dump",
+          "*.upload",
+          "*.archive"
+        ]
+      },
+      "message": "Bulk export or upload action requires approval.",
+      "tags": ["data", "approval", "export"]
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Arbiter OSS
 
-![Arbiter logo](sentinel/web/assets/sentinel-logo.png)
+![Arbiter logo](sentinel/web/assets/sentinel-icon.png)
 
 **Arbiter OSS is a self-hosted runtime firewall for AI agents.**
 It sits between agent reasoning and action execution so teams can allow, warn, or block tool calls, HTTP requests, LLM calls, and workflow steps from infrastructure they run themselves.
