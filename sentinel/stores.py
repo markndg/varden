@@ -308,12 +308,16 @@ class EventStore:
             matched_rule_label = matched_rule if isinstance(matched_rule, str) else (matched_rule or {}).get("title") or (matched_rule or {}).get("name") or (matched_rule or {}).get("description") or (matched_rule or {}).get("reason")
             if not matched_rule_label and e.get("status") in {"blocked", "warned"}:
                 matched_rule_label = decision.get("reason") or f"{e.get('status')} policy"
+            if not matched_rule_label and decision.get("action") == "monitor":
+                matched_rule_label = decision.get("reason") or "monitor policy"
             recent_events.append({
                 "id": e["id"],
                 "timestamp": e["timestamp"],
                 "tool": action.get("tool"),
                 "agent_name": action.get("agent_name"),
                 "status": e["status"],
+                "decision_action": decision.get("action"),
+                "effective_action": decision.get("effective_action") or decision.get("action"),
                 "risk_score": action.get("risk_score", 0),
                 "route_target": decision.get("route_target") or action.get("route_target") or "cloud",
                 "reason": decision.get("reason"),

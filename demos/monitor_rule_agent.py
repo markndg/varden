@@ -5,12 +5,11 @@ from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import httpx
 import arbiter
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
-AGENT_NAME = 'allowed-demo-agent'
+AGENT_NAME = 'monitor-demo-agent'
 
 # This is the entire adoption story for developers.
 # Start the Sentinel control plane locally, then just do:
@@ -18,10 +17,17 @@ AGENT_NAME = 'allowed-demo-agent'
 #   arbiter.protect()
 arbiter.protect()
 
-DEMO_ALLOWED_POLICY = {
+
+DEMO_MONITOR_POLICY = {
     'block': [],
     'warn': [],
-    'monitor': [],
+    'monitor': [
+        {
+            'title': 'Monitor SQL query tool',
+            'type': 'tool_call',
+            'tool': 'sql.query',
+        },
+    ],
     'allow': [],
 }
 
@@ -49,25 +55,26 @@ def latest_event_detail() -> dict[str, Any]:
     return _json_request(f'/events/{event_id}') if event_id else {}
 
 
-def run() -> int:
-    previous_policy = _json_request('/policy')
-    _json_request('/policy', method='PUT', payload=DEMO_ALLOWED_POLICY)
-    print('Arbiter OSS demo: allowed action with one-line protection')
-    print('Only setup in this file: import arbiter + arbiter.protect()')
-    safe_payload = {
-        'title': 'public status heartbeat',
-        'notes': 'availability green and latency normal',
-        'target': 'public-health-endpoint',
+@arbiter.tool('sql.query')
+def run_sql(statement: str) -> dict[str, Any]:
+    return {
+        'rows': [{'id': 42, 'email': 'ops@example.com'}],
+        'statement': statement,
+        'database': 'app',
     }
 
+
+def run() -> int:
+    previous_policy = _json_request('/policy')
+    _json_request('/policy', method='PUT', payload=DEMO_MONITOR_POLICY)
+    print('Arbiter OSS demo: monitor rule with one-line protection')
+    print('Only setup in this file: import arbiter + arbiter.protect()')
+
     try:
-        with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'public-status'}):
-            print('1) Sending a benign report that policy should allow...')
-            try:
-                httpx.post('https://example.com/health', json=safe_payload, timeout=2.0)
-            except Exception as exc:
-                print('   network result:', exc.__class__.__name__)
-                print('   Sentinel already recorded the allow decision before the outbound call completed.')
+        with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'reporting-db'}):
+            print('1) Running a normal SQL tool call that policy should monitor but still allow...')
+            result = run_sql('select id, email from users limit 1')
+            print('   query rows:', result['rows'])
 
         detail = latest_event_detail()
         latest = detail.get('event') or {}
@@ -76,10 +83,10 @@ def run() -> int:
         decision_action = decision.get('action')
         print('   latest event status:', status)
         print('   latest decision action:', decision_action)
-        print('   latest classifiers:', ((latest.get('action') or {}).get('classifiers')))
-        print('   Open the dashboard at / and refresh to see the allow event and trace flow.')
-        if status != 'allowed' or decision_action not in (None, 'allow'):
-            print('   [FAIL] demo check failed: expected status=allowed and decision action=allow')
+        print('   matched rule:', detail.get('rule_label') or (decision.get('matched_rule') or {}).get('title'))
+        print('   Open the dashboard at / and refresh to see the monitored SQL event in the trace flow.')
+        if status != 'allowed' or decision_action != 'monitor':
+            print('   [FAIL] demo check failed: expected status=allowed and decision action=monitor')
             return 1
         return 0
     finally:

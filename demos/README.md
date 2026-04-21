@@ -45,6 +45,17 @@ What it proves:
 - Arbiter records the event, trace, and allow decision
 - the command center can now show blocked, warned, and allowed flows side by side
 
+## Monitor demo
+
+```bash
+python demos/monitor_rule_agent.py
+```
+
+What it proves:
+- one-line protection can monitor a tool call without blocking normal work
+- the event still lands as allowed, while the decision action shows `monitor`
+- the rules page and trace view show which monitor rule matched
+
 
 ## LangChain demos
 
