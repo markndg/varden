@@ -6,7 +6,7 @@ export default defineConfig({
   base: "/static/app/",
   plugins: [react()],
   build: {
-    outDir: resolve(__dirname, '../sentinel/web/app'),
+    outDir: resolve(__dirname, '../varden/web/app'),
     emptyOutDir: true,
     assetsDir: 'assets',
     rollupOptions: {

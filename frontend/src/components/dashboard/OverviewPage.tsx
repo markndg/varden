@@ -1,0 +1,143 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { MetricCard, Stat } from '../ui/Cards';
+import { TraceGraph } from './TraceGraph';
+import { SankeyPanel } from './SankeyPanel';
+import { MiniTimeline } from './MiniTimeline';
+import { MiniBarList } from './MiniBarList';
+
+type OverviewPageProps = {
+  overview: any;
+  filteredEvents: any[];
+  filters: any;
+  setFilters: (filters: any) => void;
+  selectedTrace: any;
+  setSelectedTraceId: (traceId: string) => void;
+  onOpenDecision: (id: number) => void;
+  onOpenRule: (label: string, bucket?: string) => void;
+  token: string;
+  onRunDemo: () => void;
+  traceCandidates: any[];
+  helpers: any;
+};
+
+export function OverviewPage({ overview, filteredEvents, filters, setFilters, selectedTrace, setSelectedTraceId, onOpenDecision, onOpenRule, token, onRunDemo, traceCandidates, helpers }: OverviewPageProps) {
+  const { normalizeEventRow, eventOutcomeStatus, fromDateTimeLocalValue, toDateTimeLocalValue, statusTone, classNames, latencyValueFromPoint, fmtTs, fmtNum, deriveMatchedRuleLabel, averageLatencyFromPoints, ensurePolicyDoc, api, deriveRuleLabelFromRuleObject, eventRuleBucket, displayValue } = helpers;
+  const [signalView, setSignalView] = useState<'timeline' | 'sankey'>('sankey');
+  const [selectedBucketTs, setSelectedBucketTs] = useState<number | null>(null);
+  const [selectedAlertMode, setSelectedAlertMode] = useState<'all' | 'open'>('all');
+  const [focusedEventIds, setFocusedEventIds] = useState<number[] | null>(null);
+  const [focusLabel, setFocusLabel] = useState<string>('');
+  const [replayIndex, setReplayIndex] = useState<number>(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [sankeyMode, setSankeyMode] = useState<'agent_tool_outcome' | 'agent_rule_outcome' | 'tool_rule_outcome'>('agent_tool_outcome');
+  const [simulationDraft, setSimulationDraft] = useState<string>(JSON.stringify({ warn: [{ 'field:risk_score': { gte: 50 } }], block: [], monitor: [], allow: [] }, null, 2));
+  const [simulationResult, setSimulationResult] = useState<any>(null);
+  const [simulationError, setSimulationError] = useState<string>('');
+  const [simulating, setSimulating] = useState(false);
+  const activityRef = useRef<HTMLElement | null>(null);
+  const alertsRef = useRef<HTMLElement | null>(null);
+
+  const sourceEvents = useMemo(() => {
+    const merged = new Map<number, any>();
+    for (const row of ((filteredEvents || []).map(normalizeEventRow) as any[])) if (row.id) merged.set(row.id, row);
+    for (const row of (overview.recent_events || []).map(normalizeEventRow)) if (row.id) merged.set(row.id, row);
+    for (const trace of (overview.recent_traces || [])) for (const row of (trace.events || []).map(normalizeEventRow)) if (row.id) merged.set(row.id, { ...(merged.get(row.id) || {}), ...row });
+    return Array.from(merged.values()).sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  }, [filteredEvents, overview.recent_traces, overview.recent_events, normalizeEventRow]);
+
+  const replayEvents = useMemo(() => ((selectedTrace?.events || []).map(normalizeEventRow).sort((a: any, b: any) => (a.timestamp || 0) - (b.timestamp || 0))), [selectedTrace, normalizeEventRow]);
+  useEffect(() => {
+    if (!isPlaying || !replayEvents.length) return;
+    const handle = window.setInterval(() => setReplayIndex((current) => { if (current >= replayEvents.length - 1) { setIsPlaying(false); return current; } return current + 1; }), 900);
+    return () => window.clearInterval(handle);
+  }, [isPlaying, replayEvents.length]);
+  useEffect(() => { setReplayIndex(0); setIsPlaying(false); }, [selectedTrace?.trace_id]);
+
+  const visibleReplayEvents = useMemo(() => replayEvents.slice(0, Math.max(1, replayIndex + 1)), [replayEvents, replayIndex]);
+  const timelinePoints = useMemo(() => {
+    const buckets = new Map<number, any>();
+    for (const event of sourceEvents) {
+      const bucketStart = Math.floor(Number(event.timestamp || 0) / 60) * 60;
+      const bucket = buckets.get(bucketStart) || { timestamp: bucketStart, blocked: 0, warned: 0, monitor: 0, allowed: 0, eventIds: [], latencyValues: [], avg_latency_ms: null };
+      const outcome = event.outcome || eventOutcomeStatus(event);
+      if (outcome === 'blocked') bucket.blocked += 1; else if (outcome === 'warned') bucket.warned += 1; else if (outcome === 'monitor') bucket.monitor += 1; else bucket.allowed += 1;
+      bucket.eventIds.push(event.id);
+      const latency = Number((event as any).decision_latency_ms || 0);
+      if (Number.isFinite(latency) && latency > 0) bucket.latencyValues.push(latency);
+      buckets.set(bucketStart, bucket);
+    }
+    const externalLatency = new Map<number, number>();
+    for (const point of (overview?.decision_latency_points || [])) {
+      const ts = Math.floor(Number(point?.timestamp || 0) / 60) * 60;
+      const latency = latencyValueFromPoint(point);
+      if (ts && latency !== null) externalLatency.set(ts, latency);
+    }
+    return Array.from(buckets.values()).map((bucket) => ({ ...bucket, avg_latency_ms: bucket.latencyValues.length ? bucket.latencyValues.reduce((sum: number, value: number) => sum + value, 0) / bucket.latencyValues.length : (externalLatency.get(bucket.timestamp) ?? null) })).sort((a: any, b: any) => a.timestamp - b.timestamp);
+  }, [sourceEvents, overview?.decision_latency_points, eventOutcomeStatus, latencyValueFromPoint]);
+
+  const scopedEvents = useMemo(() => {
+    let rows = sourceEvents;
+    const fromTs = fromDateTimeLocalValue(filters.from);
+    const toTs = fromDateTimeLocalValue(filters.to);
+    if (fromTs) rows = rows.filter((event: any) => Number(event.timestamp || 0) >= fromTs);
+    if (toTs) rows = rows.filter((event: any) => Number(event.timestamp || 0) <= toTs);
+    if (selectedBucketTs) { const bucketStart = Math.floor(selectedBucketTs / 60) * 60; rows = rows.filter((event: any) => Math.floor((event.timestamp || 0) / 60) * 60 === bucketStart); }
+    if (focusedEventIds?.length) { const idSet = new Set(focusedEventIds); rows = rows.filter((event: any) => idSet.has(event.id)); }
+    if (filters.status !== 'all') rows = rows.filter((row: any) => (row.outcome || eventOutcomeStatus(row)) === filters.status);
+    if (filters.search) { const term = filters.search.toLowerCase(); rows = rows.filter((row: any) => JSON.stringify(row).toLowerCase().includes(term)); }
+    return rows.sort((a: any, b: any) => (b.timestamp || 0) - (a.timestamp || 0));
+  }, [sourceEvents, selectedBucketTs, focusedEventIds, filters, fromDateTimeLocalValue, toDateTimeLocalValue, eventOutcomeStatus]);
+
+  const visibleAlerts = useMemo(() => {
+    const items = overview.alerts?.items || overview.recent_alerts || [];
+    return selectedAlertMode === 'open' ? items.filter((alert: any) => !alert.acknowledged) : items;
+  }, [overview.alerts, overview.recent_alerts, selectedAlertMode]);
+  const selectedBucket = useMemo(() => timelinePoints.find((point: any) => point.timestamp === selectedBucketTs) || null, [timelinePoints, selectedBucketTs]);
+  const riskStories = useMemo(() => {
+    const stories: Array<{ title: string; message: string; severity: string; eventIds: number[] }> = [];
+    const byAgent = new Map<string, any[]>();
+    const byRule = new Map<string, any[]>();
+    for (const event of sourceEvents) {
+      const agent = event.agent_name || 'unknown';
+      byAgent.set(agent, [...(byAgent.get(agent) || []), event]);
+      if ((event as any).matched_rule_label) byRule.set((event as any).matched_rule_label as string, [...(byRule.get((event as any).matched_rule_label as string) || []), event]);
+    }
+    for (const [agent, rows] of byAgent.entries()) { const warned = rows.filter((row) => row.status === 'warned'); if (warned.length >= 2) stories.push({ title: `Repeated warn pattern · ${agent}`, message: `${warned.length} warned actions from the same agent in the current window.`, severity: warned.length >= 3 ? 'high' : 'medium', eventIds: warned.map((row) => row.id) }); }
+    for (const [rule, rows] of byRule.entries()) if (rows.length >= 2) stories.push({ title: `Rule firing repeatedly · ${rule}`, message: `${rows.length} actions triggered the same rule, which may justify a more explicit policy or route.`, severity: rows.some((row) => row.status === 'blocked') ? 'high' : 'medium', eventIds: rows.map((row) => row.id) });
+    const risky = sourceEvents.filter((row) => (row.risk_score || 0) >= 70);
+    if (risky.length) stories.push({ title: 'High-severity chain activity', message: `${risky.length} actions are currently above risk score 70.`, severity: 'high', eventIds: risky.map((row) => row.id) });
+    return stories.slice(0, 4);
+  }, [sourceEvents]);
+  const traceCatalogue = useMemo(() => {
+    const rows: any[] = []; const seen = new Set<string>();
+    for (const trace of ([...(overview.trace_catalogue || []), ...(overview.recent_traces || []), ...(selectedTrace ? [selectedTrace] : [])] as any[])) if (trace?.trace_id && !seen.has(trace.trace_id)) { seen.add(trace.trace_id); rows.push(trace); }
+    return rows;
+  }, [overview.trace_catalogue, overview.recent_traces, selectedTrace]);
+  const hasTraceData = !!(traceCandidates?.length || traceCatalogue.length || selectedTrace?.trace_id);
+  function focusActivity(nextStatus: string, nextSearch = '', eventIds: number[] | null = null, label = '') { setFilters({ ...filters, status: nextStatus, search: nextSearch }); setSelectedBucketTs(null); setFocusedEventIds(eventIds && eventIds.length ? Array.from(new Set(eventIds)) : null); setFocusLabel(label); }
+  function focusAlerts(mode: 'all' | 'open' = 'open') { setSelectedAlertMode(mode); }
+  function clearFocus() { setSelectedBucketTs(null); setFocusedEventIds(null); setFocusLabel(''); setFilters({ ...filters, search: '', status: 'all', from: '', to: '' }); }
+  async function runSimulation() { if (!token || !selectedTrace?.trace_id) return; setSimulating(true); setSimulationError(''); try { const candidate = ensurePolicyDoc(JSON.parse(simulationDraft)); const result = await api(`/policy/simulate?trace_id=${encodeURIComponent(selectedTrace.trace_id)}`, { method: 'POST', body: JSON.stringify(candidate) }, token); setSimulationResult(result); } catch (error: any) { setSimulationResult(null); setSimulationError(error?.message || 'Simulation failed. Check policy JSON and trace selection.'); } finally { setSimulating(false); } }
+
+  const replayTrace = selectedTrace ? { ...selectedTrace, events: (selectedTrace.events || []).filter((evt: any) => visibleReplayEvents.some((row: any) => row.id === evt.id)), graph: { ...selectedTrace.graph, nodes: (selectedTrace.graph?.nodes || []).filter((node: any) => visibleReplayEvents.some((row: any) => row.id === node.id)), edges: (selectedTrace.graph?.edges || []).filter((edge: any) => visibleReplayEvents.some((row: any) => row.id === edge.source) && visibleReplayEvents.some((row: any) => row.id === edge.target)) } } : selectedTrace;
+
+  const simulationStatusTone = (status: string) => {
+    if (status === 'warn' || status === 'warned') return 'warned';
+    if (status === 'block' || status === 'blocked') return 'blocked';
+    if (status === 'monitor') return 'monitor';
+    return 'allowed';
+  };
+
+  return <div className="pageGrid">{/* kept same layout/behavior, extracted from main */}
+    <section className="metricsRow">
+      <MetricCard title="Blocked" value={sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'blocked').length} subtitle="Current activity window" tone="danger" onClick={() => focusActivity('blocked', '', sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'blocked').map((event: any) => event.id), 'Blocked events')} />
+      <MetricCard title="Warned" value={sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'warned').length} subtitle="Current activity window" tone="warn" onClick={() => focusActivity('warned', '', sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'warned').map((event: any) => event.id), 'Warned events')} />
+      <MetricCard title="Monitor" value={sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'monitor').length} subtitle="Current activity window" tone="monitor" onClick={() => focusActivity('monitor', '', sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'monitor').map((event: any) => event.id), 'Monitor events')} />
+      <MetricCard title="Allowed" value={sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'allowed').length} subtitle="Current activity window" tone="ok" onClick={() => focusActivity('allowed', '', sourceEvents.filter((event: any) => (event.outcome || eventOutcomeStatus(event)) === 'allowed').map((event: any) => event.id), 'Allowed events')} />
+      <MetricCard title="Avg latency" value={`${fmtNum(overview.metrics?.avg_decision_latency_ms ?? averageLatencyFromPoints(overview.decision_latency_points || []), 1)} ms`} subtitle="Decision average in current window" onClick={() => setSignalView('timeline')} />
+    </section>
+    <section className="layout layout--topOverview"><div className="card card--signalHero"><div className="sectionHeader"><div><div className="eyebrow">Signal trends</div><h3>Risk and timeline</h3></div><div className="toggleRow"><button className={classNames('segmented', signalView === 'timeline' && 'is-active')} onClick={() => setSignalView('timeline')}>Timeline</button><button className={classNames('segmented', signalView === 'sankey' && 'is-active')} onClick={() => setSignalView('sankey')}>Sankey</button></div></div>{signalView === 'timeline' ? <><MiniTimeline data={timelinePoints} selectedTimestamp={selectedBucketTs} sourceEvents={sourceEvents} onSelectBucket={(ts: number | null, eventIds?: number[]) => { setSelectedBucketTs((current) => current === ts ? null : ts); setFocusedEventIds(eventIds && eventIds.length ? eventIds : null); setFocusLabel(ts ? `Timeline focus · ${eventIds?.length || 0} linked events` : ''); }} helpers={{ normalizeEventRow, classNames, fmtTs, fmtNum }} /><div className="signalLegend"><span><i className="legendSwatch legendSwatch--danger" />Blocked</span><span><i className="legendSwatch legendSwatch--warn" />Warned</span><span><i className="legendSwatch legendSwatch--monitor" />Monitor</span><span><i className="legendSwatch legendSwatch--ok" />Allowed</span><span><i className="legendSwatch legendSwatch--severity" />Severity-weighted height</span><span><i className="legendSwatch legendSwatch--latency" />Latency marker</span></div>{selectedBucket ? <div className="focusSummary"><strong>{fmtTs(selectedBucket.timestamp)}</strong><span>{selectedBucket.blocked || 0} blocked · {selectedBucket.warned || 0} warned · {selectedBucket.monitor || 0} monitor · {selectedBucket.allowed || 0} allowed · {scopedEvents.length} linked events{selectedBucket.avg_latency_ms ? ` · avg latency ${fmtNum(selectedBucket.avg_latency_ms, 1)} ms` : ''}</span></div> : null}</> : <><div className="toggleRow sankeyModes"><button className={classNames('segmented', sankeyMode === 'agent_tool_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_tool_outcome')}>Agent → Tool → Outcome</button><button className={classNames('segmented', sankeyMode === 'agent_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('agent_rule_outcome')}>Agent → Rule → Outcome</button><button className={classNames('segmented', sankeyMode === 'tool_rule_outcome' && 'is-active')} onClick={() => setSankeyMode('tool_rule_outcome')}>Tool → Rule → Outcome</button></div><SankeyPanel overview={overview} sourceEvents={sourceEvents} mode={sankeyMode} onFocus={(opts: any) => focusActivity(opts.status || 'all', opts.search || '', opts.eventIds || null, opts.label || 'Sankey focus')} helpers={{ normalizeEventRow, eventOutcomeStatus, deriveMatchedRuleLabel }} /></>}<div className="twoColStats"><MiniBarList title="Top tools" items={(overview.top_tools || []).map((item: any) => ({ label: item.tool, value: item.count }))} /><MiniBarList title="Classifier hits" items={(overview.classifier_hits || []).map((item: any) => ({ label: item.classifier, value: item.count }))} /></div></div><div className="card card--riskPanel"><div className="sectionHeader"><div><div className="eyebrow">Risk story</div><h3>Top risk patterns</h3></div></div><div className="insightList scrollPanel scrollPanel--medium scrollPanel--fill">{riskStories.map((story, idx) => (<button key={idx} className={classNames('insight', story.severity === 'high' && 'is-danger', story.severity === 'medium' && 'is-warn')} onClick={() => focusActivity('all', '', story.eventIds, story.title)}><strong>{story.title}</strong><div className="muted">{story.message}</div></button>))}{!riskStories.length ? <div className="emptyState"><strong>No notable risk stories yet.</strong><span className="muted">Run the OSS demo to seed a full allow / warn / block flow.</span></div> : null}</div></div></section>
+    <section className="layout layout--equalCols"><div className="card card--stretch card--matchedScroll" ref={activityRef as any}><div className="sectionHeader"><div><div className="eyebrow">Live rail</div><h3>Recent activity</h3></div><div className="filters filters--wrap"><select className="input input--small" aria-label="Outcome filter" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="all">All outcomes</option><option value="blocked">Blocked</option><option value="warned">Warned</option><option value="monitor">Monitor</option><option value="allowed">Allowed</option></select><input className="input input--small" aria-label="Search events" placeholder="Search events" value={filters.search} onChange={(e) => setFilters({ ...filters, search: e.target.value })} /><label className="muted">From<input className="input input--small" type="datetime-local" aria-label="From date/time" value={filters.from || ''} onChange={(e) => setFilters({ ...filters, from: e.target.value })} /></label><label className="muted">To<input className="input input--small" type="datetime-local" aria-label="To date/time" value={filters.to || ''} onChange={(e) => setFilters({ ...filters, to: e.target.value })} /></label></div></div>{(selectedBucket || filters.status !== 'all' || filters.search || filters.from || filters.to || focusedEventIds?.length || focusLabel) ? <div className="activeFilterBar"><div className="traceSummaryBar">{selectedBucket ? <span>Focused minute: {fmtTs(selectedBucket.timestamp)}</span> : null}{focusLabel ? <span>{focusLabel}</span> : null}<span>{scopedEvents.length} events in current focus</span></div><button className="button button--ghost" onClick={clearFocus}>Clear focus</button></div> : null}<div className="eventRail scrollPanel scrollPanel--rail">{scopedEvents.length ? scopedEvents.map((event: any) => (<button key={event.id} className="eventRow" onClick={() => { if (event.trace_id) setSelectedTraceId(event.trace_id); onOpenDecision(event.id); }}><div className={classNames('eventRow__dot', `is-${statusTone(event.outcome || eventOutcomeStatus(event))}`)} /><div className="eventRow__main"><div className="eventRow__title">{event.tool || 'unknown'} <span className={`badge badge--${statusTone(event.outcome || eventOutcomeStatus(event))}`}>{event.outcome || eventOutcomeStatus(event)}</span>{event.matched_rule_label ? <span className="badge badge--rule">{event.matched_rule_label}</span> : null}</div><div className="eventRow__meta">{event.agent_name || 'unknown agent'} · {event.domain || event.route_target || 'no route'} · {fmtTs(event.timestamp)}</div></div><div className="eventRow__score">{Math.round(event.risk_score || 0)}</div></button>)) : <div className="emptyState"><strong>No events match the current focus.</strong><span className="muted">Try clearing the timeline focus or using a broader status filter.</span></div>}</div></div><div className="card card--stretch card--matchedScroll" ref={alertsRef as any}><div className="sectionHeader"><div><div className="eyebrow">Response</div><h3>Insights and alerts</h3></div><div className="toggleRow"><button className={classNames('segmented', selectedAlertMode === 'all' && 'is-active')} onClick={() => focusAlerts('all')}>All alerts</button><button className={classNames('segmented', selectedAlertMode === 'open' && 'is-active')} onClick={() => focusAlerts('open')}>Open only</button></div></div><div className="insightList scrollPanel scrollPanel--rail scrollPanel--fill">{(overview.insights || []).map((insight: any, idx: number) => (<div key={idx} className={classNames('insight', insight.severity === 'high' && 'is-danger', insight.severity === 'medium' && 'is-warn')}><strong>{insight.title}</strong><div className="muted">{insight.message}</div></div>))}{visibleAlerts.map((alert: any, idx: number) => (<button key={alert.id || idx} className={classNames('alertItem', !alert.acknowledged && 'alertItem--open')} onClick={() => alert.event_id ? onOpenDecision(alert.event_id) : undefined}><div><div className="alertItem__title">{alert.title || 'Alert'}</div><div className="alertItem__meta">{alert.message || 'No message'} · {alert.severity || 'info'}</div></div><div className={`badge badge--${alert.severity === 'high' ? 'danger' : alert.severity === 'medium' ? 'warn' : 'ok'}`}>{alert.acknowledged ? 'acknowledged' : 'open'}</div></button>))}</div></div></section>
+    <section className="stack"><section className="card card--hero"><div className="hero__left"><div className="eyebrow">Command view</div><h2>Execution flow explorer</h2><p className="muted">Run the built-in OSS demo, replay a trace, and inspect the exact rule fields that fired.</p>{!hasTraceData ? <div className="emptyState"><strong>No trace data yet.</strong><span className="muted">Run the OSS demo to generate traces and unlock the replay explorer.</span></div> : null}<div className="commandTracePicker"><div className="sidebar__label">Trace focus</div><select className="input" value={selectedTrace?.trace_id || ''} onChange={(e) => setSelectedTraceId(e.target.value)} disabled={!traceCandidates.length}><option value="">{traceCandidates.length ? 'Select recent trace' : 'No traces yet'}</option>{traceCandidates.map((trace: any) => <option key={trace.trace_id} value={trace.trace_id}>{trace.label}</option>)}</select></div><div className="hero__stats"><Stat label="Trace events" value={selectedTrace?.summary?.event_count || 0} /><Stat label="Agents" value={Object.keys(selectedTrace?.summary?.agents || {}).length} /><Stat label="Tools" value={Object.keys(selectedTrace?.summary?.tools || {}).length} /><Stat label="Duration" value={selectedTrace?.summary ? `${Math.max(0, Math.round((selectedTrace.summary.end_timestamp - selectedTrace.summary.start_timestamp) * 1000))} ms` : '—'} /></div><div className="toggleRow replayToolbar"><button className="button" onClick={onRunDemo}>Run OSS demo</button><button className="button button--ghost" onClick={() => setIsPlaying((v) => !v)} disabled={!replayEvents.length}>{isPlaying ? 'Pause replay' : 'Play replay'}</button><button className="button button--ghost" onClick={() => { setReplayIndex(0); setIsPlaying(false); }} disabled={!replayEvents.length}>Reset</button></div><div className="replayScrubber"><input type="range" min={0} max={Math.max(0, replayEvents.length - 1)} value={Math.min(replayIndex, Math.max(0, replayEvents.length - 1))} onChange={(e) => { setReplayIndex(Number(e.target.value)); setIsPlaying(false); }} disabled={!replayEvents.length} /><div className="traceSummaryBar"><span>Replay step {replayEvents.length ? replayIndex + 1 : 0} / {replayEvents.length}</span><span>{visibleReplayEvents.at(-1)?.tool || 'Select a trace'}</span><span>{visibleReplayEvents.at(-1)?.matched_rule_label ? `Rule: ${visibleReplayEvents.at(-1)?.matched_rule_label}` : 'No rule highlighted yet'}</span></div></div></div><div className="hero__right"><TraceGraph trace={replayTrace as any} onOpenDecision={onOpenDecision} compact={false} onOpenRule={onOpenRule} helpers={{ eventOutcomeStatus, statusTone, deriveMatchedRuleLabel, deriveRuleLabelFromRuleObject, normalizeEventRow, eventRuleBucket, fmtTs, displayValue }} /></div></section><section className="layout layout--equalCols layout--bottomSupport"><div className="card"><div className="sectionHeader"><div><div className="eyebrow">Trace catalogue</div><h3>Recent traces</h3></div></div><div className="traceList scrollPanel scrollPanel--medium">{traceCatalogue.length ? (traceCatalogue.map((trace: any) => (<button key={trace.trace_id} className="traceCard" onClick={() => setSelectedTraceId(trace.trace_id)}><div><div className="traceCard__title">{trace.trace_id}</div><div className="traceCard__meta">{trace.summary?.event_count || 0} events · {Object.keys(trace.summary?.statuses || {}).join(', ') || 'no statuses'}</div></div><div className={`traceCard__status badge badge--${statusTone(Object.entries(trace.summary?.statuses || {}).sort((a: any, b: any) => b[1] - a[1])[0]?.[0] || 'allowed')}`}>{Object.entries(trace.summary?.statuses || {}).sort((a: any, b: any) => b[1] - a[1])[0]?.[0] || 'allowed'}</div></button>))) : <div className="emptyState"><strong>No traces available yet.</strong><span className="muted">Use the Run OSS demo button to seed a complete allow / warn / block trace set.</span></div>}</div></div><div className="card"><div className="sectionHeader"><div><div className="eyebrow">Scenario simulation</div><h3>What changes if policy changes?</h3></div><button className="button" onClick={runSimulation} disabled={!selectedTrace?.trace_id || simulating}>{simulating ? 'Simulating…' : 'Run simulation'}</button></div><p className="muted">Paste a candidate policy fragment, replay it across the selected trace, and compare original versus simulated outcomes before changing production policy.</p><textarea className="editor editor--compact" value={simulationDraft} onChange={(e) => { setSimulationDraft(e.target.value); if (simulationError) setSimulationError(''); }} spellCheck={false} />{simulationError ? <div className="banner banner--error">{simulationError}</div> : null}{simulationResult ? <div className="simulationPanel"><div className="traceSummaryBar"><span>Allow {simulationResult.summary?.allow || 0}</span><span>Monitor {simulationResult.summary?.monitor || 0}</span><span>Warn {simulationResult.summary?.warn || 0}</span><span>Block {simulationResult.summary?.block || 0}</span></div><div className="eventRail scrollPanel scrollPanel--medium">{(simulationResult.results || []).slice(0, 6).map((row: any) => (<button key={row.event_id} className="eventRow" onClick={() => onOpenDecision(row.event_id)}><div className={classNames('eventRow__dot', `is-${statusTone(simulationStatusTone(row.simulated_status))}`)} /><div className="eventRow__main"><div className="eventRow__title">Event {row.event_id} {row.changed ? <span className="badge badge--warn">changed</span> : <span className="badge badge--ok">same</span>}</div><div className="eventRow__meta">Original: {row.original_status} · Simulated: {row.simulated_status}</div></div><div className="eventRow__score">{row.explanations?.length || 0}</div></button>))}</div></div> : null}</div></section></section>
+  </div>;
+}

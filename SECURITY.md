@@ -1,6 +1,6 @@
 # Security Policy
 
-If you believe you have found a security issue in Sentinel, please report it privately
+If you believe you have found a security issue in Varden, please report it privately
 to the project owner before public disclosure.
 
 Include:

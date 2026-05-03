@@ -11,5 +11,5 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e .
-      - run: python -m compileall sentinel
-      - run: python -m pytest -q || true
+      - run: python -m compileall varden
+      - run: python -m pytest -q

@@ -3,9 +3,9 @@ from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 
-import arbiter
-from sentinel.app_factory import create_app
-from sentinel.config import AppConfig
+import varden
+from varden.app_factory import create_app
+from varden.config import AppConfig
 
 
 def make_client(tmpdir: str):
@@ -13,8 +13,8 @@ def make_client(tmpdir: str):
     policy_path.write_text('{"block":[{"type":"tool_call","tool":"delete_database"}],"warn":[{"classifier:internal":true}],"monitor":[],"allow":[]}', encoding='utf-8')
     cfg = AppConfig(
         env='dev',
-        db_path=str(Path(tmpdir) / 'sentinel.db'),
-        auth_db_path=str(Path(tmpdir) / 'sentinel_auth.db'),
+        db_path=str(Path(tmpdir) / 'varden.db'),
+        auth_db_path=str(Path(tmpdir) / 'varden_auth.db'),
         policy_file=str(policy_path),
         signing_secret='dev-secret',
         rate_limit_per_minute=1000,
@@ -40,24 +40,24 @@ def test_sdk_guard_endpoint_allows_and_logs():
 
 
 def test_python_sdk_exports_protect():
-    assert hasattr(arbiter, 'protect')
-    assert hasattr(arbiter, 'tool')
-    assert hasattr(arbiter, 'trace_agent')
+    assert hasattr(varden, 'protect')
+    assert hasattr(varden, 'tool')
+    assert hasattr(varden, 'trace_agent')
 
 
 def test_sdk_bootstrap_credentials_can_be_auto_loaded(monkeypatch):
-    from arbiter.sdk import SentinelClient
+    from varden.sdk import VardenClient
     calls = {"bootstrap": 0}
 
     def fake_bootstrap(self):
         calls["bootstrap"] += 1
         return {"bootstrap_api_key": "auto-key", "base_url": "http://bootstrap"}
 
-    monkeypatch.setattr(SentinelClient, "bootstrap", fake_bootstrap)
-    guard = arbiter.protect(base_url="http://placeholder", auto_instrument=False)
+    monkeypatch.setattr(VardenClient, "bootstrap", fake_bootstrap)
+    guard = varden.protect(base_url="http://placeholder", auto_instrument=False)
     assert guard.client.api_key == "auto-key"
     assert guard.client.base_url == "http://bootstrap"
-    arbiter.unpatch_runtime()
+    varden.unpatch_runtime()
 
 
 def test_rules_page_exists():

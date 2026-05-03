@@ -1,20 +1,20 @@
-# Sentinel Rust SDK
+# Varden Rust SDK
 
-Sentinel for Rust keeps startup to a single line:
+Varden for Rust keeps startup to a single line:
 
 ```rust
-sentinel::protect()?;
+varden::protect()?;
 ```
 
 After that, use the built-in wrappers for the common action surfaces:
 
-- `sentinel::http::Client` for outbound HTTP (`reqwest` blocking client)
-- `sentinel::process::Command` for subprocesses
-- `sentinel::guard(...)` for arbitrary tool calls
+- `varden::http::Client` for outbound HTTP (`reqwest` blocking client)
+- `varden::process::Command` for subprocesses
+- `varden::guard(...)` for arbitrary tool calls
 
 Environment variables:
-- `SENTINEL_BASE_URL` default `http://127.0.0.1:8000`
-- `SENTINEL_API_KEY` optional; auto-bootstrap is attempted when omitted
-- `SENTINEL_APP_NAME` default `rust-app`
-- `SENTINEL_MODE` default `enforce`
-- `SENTINEL_FAIL_MODE` default `open`
+- `VARDEN_BASE_URL` default `http://127.0.0.1:8000`
+- `VARDEN_API_KEY` optional; auto-bootstrap is attempted when omitted
+- `VARDEN_APP_NAME` default `rust-app`
+- `VARDEN_MODE` default `enforce`
+- `VARDEN_FAIL_MODE` default `open`

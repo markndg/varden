@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import arbiter
-from arbiter import SentinelBlockedError
+import varden
+from varden import VardenBlockedError
 
-from demos.langchain.common import DemoTool, configure_guard, make_demo_bundle, print_banner
+from demos.langchain.common import configure_guard, make_langchain_tool, print_banner, protect_demo_tools
 
 
 def safe_lookup(payload):
@@ -31,17 +31,17 @@ def destructive_sql(payload):
 
 def main() -> int:
     configure_guard('langchain-allow-warn-block-demo')
-    bundle = make_demo_bundle(
+    bundle = protect_demo_tools(
         agent_name='langchain-demo-agent',
         tools=[
-            DemoTool('safe_lookup', 'Read a safe internal knowledge snippet', safe_lookup),
-            DemoTool('external_http', 'Send customer data to an external API', outbound_sync),
-            DemoTool('dangerous_sql', 'Execute SQL against the production database', destructive_sql),
+            make_langchain_tool('safe_lookup', 'Read a safe internal knowledge snippet', safe_lookup),
+            make_langchain_tool('external_http', 'Send customer data to an external API', outbound_sync),
+            make_langchain_tool('dangerous_sql', 'Execute SQL against the production database', destructive_sql),
         ],
     )
     tools = bundle['tools']
 
-    with arbiter.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
+    with varden.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
         print_banner('1) Allowed tool call')
         print(tools[0].invoke({'question': 'What is the current order status?'}))
 
@@ -59,8 +59,8 @@ def main() -> int:
         print_banner('3) Blocked tool call')
         try:
             print(tools[2].invoke('DROP TABLE customers;'))
-        except SentinelBlockedError as exc:
-            print(f'Blocked by Sentinel: {exc}')
+        except VardenBlockedError as exc:
+            print(f'Blocked by Varden: {exc}')
 
     print('\nOpen the dashboard to inspect the LangChain trace, rules, and decisions.')
     return 0

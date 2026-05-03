@@ -1,21 +1,27 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import arbiter
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import varden
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
 AGENT_NAME = 'monitor-demo-agent'
 
 # This is the entire adoption story for developers.
-# Start the Sentinel control plane locally, then just do:
-#   import arbiter
-#   arbiter.protect()
-arbiter.protect()
+# Start the Varden control plane locally, then just do:
+#   import varden
+#   varden.protect()
+varden.protect()
 
 
 DEMO_MONITOR_POLICY = {
@@ -55,7 +61,7 @@ def latest_event_detail() -> dict[str, Any]:
     return _json_request(f'/events/{event_id}') if event_id else {}
 
 
-@arbiter.tool('sql.query')
+@varden.tool('sql.query')
 def run_sql(statement: str) -> dict[str, Any]:
     return {
         'rows': [{'id': 42, 'email': 'ops@example.com'}],
@@ -67,11 +73,11 @@ def run_sql(statement: str) -> dict[str, Any]:
 def run() -> int:
     previous_policy = _json_request('/policy')
     _json_request('/policy', method='PUT', payload=DEMO_MONITOR_POLICY)
-    print('Arbiter OSS demo: monitor rule with one-line protection')
-    print('Only setup in this file: import arbiter + arbiter.protect()')
+    print('Varden OSS demo: monitor rule with one-line protection')
+    print('Only setup in this file: import varden + varden.protect()')
 
     try:
-        with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'reporting-db'}):
+        with varden.trace_agent(AGENT_NAME, lineage={'source': 'reporting-db'}):
             print('1) Running a normal SQL tool call that policy should monitor but still allow...')
             result = run_sql('select id, email from users limit 1')
             print('   query rows:', result['rows'])

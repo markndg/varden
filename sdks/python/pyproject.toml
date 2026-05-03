@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "varden"
+version = "3.0.0"
+description = "Varden Python SDK for runtime guardrails"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [
+  { name = "Varden OSS Maintainers" }
+]
+dependencies = [
+  "httpx>=0.27"
+]
+keywords = ["ai", "security", "sdk", "guardrails", "agents"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["varden", "varden_sdk"]

@@ -1,11 +1,11 @@
-# Arbiter LangChain integration
+# Varden LangChain integration
 
-Arbiter ships an optional LangChain integration in `arbiter_langchain` (alias for `sentinel_langchain`).
+Varden ships an optional LangChain integration in `varden_langchain`.
 
 It is designed to feel drop-in:
 
 ```python
-from arbiter_langchain import protect_tools
+from varden_langchain import protect_tools
 
 tools = protect_tools(tools, agent_name='research-agent')
 ```
@@ -13,7 +13,7 @@ tools = protect_tools(tools, agent_name='research-agent')
 ## What it does
 
 - wraps LangChain-style tools before they execute
-- sends pre-execution policy checks to Arbiter
+- sends pre-execution policy checks to Varden
 - records outcomes for traces and decision drilldown
 - adds callback events so chain and tool activity can be visualised in the dashboard
 
@@ -34,10 +34,10 @@ Return a ready-to-wire bundle with:
 ## Example
 
 ```python
-import arbiter
-from arbiter_langchain import create_protected_agent
+import varden
+from varden_langchain import create_protected_agent
 
-arbiter.protect_from_env(auto_instrument=False)
+varden.protect_from_env(auto_instrument=False)
 
 bundle = create_protected_agent(
     tools=tools,
@@ -56,7 +56,7 @@ See:
 - `demos/langchain/sql_guard_demo.py`
 - `demos/langchain/exfiltration_demo.py`
 
-These are intended to give users walkthrough of:
+These are intended to give users a walkthrough of:
 - allowed execution
 - warned external data movement
 - blocked dangerous SQL

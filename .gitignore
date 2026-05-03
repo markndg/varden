@@ -41,4 +41,5 @@ Thumbs.db
 .vscode/
 .idea/
 frontend/package-lock.json
-sentinel_alerts.jsonl
+varden_alerts.jsonl
+TODO-OSS.md

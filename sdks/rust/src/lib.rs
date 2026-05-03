@@ -6,10 +6,10 @@ use std::collections::HashMap;
 use std::process::{Child, Command as StdCommand};
 use std::sync::Arc;
 
-static GLOBAL: OnceCell<Arc<SentinelGuard>> = OnceCell::new();
+static GLOBAL: OnceCell<Arc<VardenGuard>> = OnceCell::new();
 
 #[derive(Debug, Clone)]
-pub struct SentinelConfig {
+pub struct VardenConfig {
     pub base_url: String,
     pub api_key: Option<String>,
     pub app_name: String,
@@ -19,16 +19,16 @@ pub struct SentinelConfig {
     pub timeout_secs: u64,
 }
 
-impl Default for SentinelConfig {
+impl Default for VardenConfig {
     fn default() -> Self {
         Self {
-            base_url: std::env::var("SENTINEL_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string()),
-            api_key: std::env::var("SENTINEL_API_KEY").ok(),
-            app_name: std::env::var("SENTINEL_APP_NAME").unwrap_or_else(|_| "rust-app".to_string()),
+            base_url: std::env::var("VARDEN_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string()),
+            api_key: std::env::var("VARDEN_API_KEY").ok(),
+            app_name: std::env::var("VARDEN_APP_NAME").unwrap_or_else(|_| "rust-app".to_string()),
             tenant: "default".to_string(),
-            mode: std::env::var("SENTINEL_MODE").unwrap_or_else(|_| "enforce".to_string()),
-            fail_mode: std::env::var("SENTINEL_FAIL_MODE").unwrap_or_else(|_| "open".to_string()),
-            timeout_secs: std::env::var("SENTINEL_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(5),
+            mode: std::env::var("VARDEN_MODE").unwrap_or_else(|_| "enforce".to_string()),
+            fail_mode: std::env::var("VARDEN_FAIL_MODE").unwrap_or_else(|_| "open".to_string()),
+            timeout_secs: std::env::var("VARDEN_TIMEOUT_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(5),
         }
     }
 }
@@ -41,9 +41,9 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("sentinel blocked action")]
+    #[error("varden blocked action")]
     Blocked(GuardResult),
-    #[error("sentinel not initialized")]
+    #[error("varden not initialized")]
     NotInitialized,
 }
 
@@ -63,13 +63,13 @@ pub struct GuardResult {
 }
 
 #[derive(Debug)]
-pub struct SentinelGuard {
-    cfg: SentinelConfig,
+pub struct VardenGuard {
+    cfg: VardenConfig,
     http: reqwest_blocking::Client,
 }
 
-impl SentinelGuard {
-    pub fn new(mut cfg: SentinelConfig) -> Result<Self, Error> {
+impl VardenGuard {
+    pub fn new(mut cfg: VardenConfig) -> Result<Self, Error> {
         let http = reqwest_blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(cfg.timeout_secs))
             .build()?;
@@ -116,16 +116,16 @@ impl SentinelGuard {
 }
 
 pub fn protect() -> Result<(), Error> {
-    protect_with(SentinelConfig::default())
+    protect_with(VardenConfig::default())
 }
 
-pub fn protect_with(cfg: SentinelConfig) -> Result<(), Error> {
-    let guard = Arc::new(SentinelGuard::new(cfg)?);
+pub fn protect_with(cfg: VardenConfig) -> Result<(), Error> {
+    let guard = Arc::new(VardenGuard::new(cfg)?);
     let _ = GLOBAL.set(guard);
     Ok(())
 }
 
-pub fn current() -> Result<Arc<SentinelGuard>, Error> {
+pub fn current() -> Result<Arc<VardenGuard>, Error> {
     GLOBAL.get().cloned().ok_or(Error::NotInitialized)
 }
 
@@ -133,15 +133,15 @@ pub fn guard<T, F>(tool: &str, payload: Value, action: F) -> Result<T, Error>
 where
     F: FnOnce() -> Result<T, Error>,
 {
-    let sentinel = current()?;
-    sentinel.action("tool_call", tool, payload.clone(), json!({"execution_surface": "rust-guard"}), payload)?;
+    let varden = current()?;
+    varden.action("tool_call", tool, payload.clone(), json!({"execution_surface": "rust-guard"}), payload)?;
     action()
 }
 
 #[macro_export]
 macro_rules! guard {
     ($tool:expr, $payload:expr, $body:block) => {{
-        sentinel::guard($tool, $payload, || $body)
+        varden::guard($tool, $payload, || $body)
     }};
 }
 
@@ -150,19 +150,19 @@ pub mod http {
 
     pub struct Client {
         inner: reqwest_blocking::Client,
-        sentinel: Arc<SentinelGuard>,
+        varden: Arc<VardenGuard>,
     }
 
     impl Client {
         pub fn new() -> Result<Self, Error> {
             Ok(Self {
                 inner: reqwest_blocking::Client::new(),
-                sentinel: current()?,
+                varden: current()?,
             })
         }
 
         pub fn get(&self, url: &str) -> Result<reqwest_blocking::Response, Error> {
-            self.sentinel.action(
+            self.varden.action(
                 "http_request",
                 "reqwest::blocking::Client",
                 json!({"method": "GET", "url": url}),
@@ -173,7 +173,7 @@ pub mod http {
         }
 
         pub fn post_json(&self, url: &str, body: Value) -> Result<reqwest_blocking::Response, Error> {
-            self.sentinel.action(
+            self.varden.action(
                 "http_request",
                 "reqwest::blocking::Client",
                 json!({"method": "POST", "url": url, "body": body}),
@@ -191,7 +191,7 @@ pub mod process {
     pub struct Command {
         inner: StdCommand,
         original: Vec<String>,
-        sentinel: Arc<SentinelGuard>,
+        varden: Arc<VardenGuard>,
     }
 
     impl Command {
@@ -200,7 +200,7 @@ pub mod process {
             Ok(Self {
                 inner: StdCommand::new(&program),
                 original: vec![program],
-                sentinel: current()?,
+                varden: current()?,
             })
         }
 
@@ -212,7 +212,7 @@ pub mod process {
         }
 
         pub fn spawn(mut self) -> Result<Child, Error> {
-            self.sentinel.action(
+            self.varden.action(
                 "tool_call",
                 "std::process::Command",
                 json!({"command": self.original}),

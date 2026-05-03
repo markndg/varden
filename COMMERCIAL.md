@@ -1,6 +1,6 @@
-# Sentinel Commercial Licensing
+# Varden Commercial Licensing
 
-Sentinel uses a split-license model designed to maximize adoption of the SDKs while protecting the
+Varden uses a split-license model designed to maximize adoption of the SDKs while protecting the
 control plane, policy engine, and dashboard.
 
 ## Open-source licenses
@@ -12,7 +12,7 @@ control plane, policy engine, and dashboard.
 
 A commercial license is required if you:
 
-- offer Sentinel or a modified version of Sentinel as a hosted or managed service
+- offer Varden or a modified version of Varden as a hosted or managed service
 - embed the AGPL-covered core platform into a proprietary product or service
 - want to keep modifications to the AGPL-covered components closed source
 - want contractual support, warranty, or commercial terms beyond the open-source licenses

@@ -1,0 +1,172 @@
+{
+  "name": "database-safety",
+  "description": "Blocks destructive database operations and warns on risky reads, schema enumeration, sensitive tables, SQL injection indicators, and unbounded access.",
+  "template": {
+    "block": [
+      {
+        "title": "Block destructive SQL",
+        "name": "block_destructive_sql",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:sql_dangerous": true,
+        "description": "Blocks SQL classified as destructive, including DROP, TRUNCATE, and dangerous file operations."
+      },
+      {
+        "title": "Block unbounded SQL writes",
+        "name": "block_unbounded_sql_writes",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:sql_unbounded_write": true,
+        "description": "Blocks UPDATE or DELETE statements without a WHERE clause."
+      },
+      {
+        "title": "Block SQL privilege changes",
+        "name": "block_sql_privilege_changes",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:sql_privilege_change": true,
+        "description": "Blocks GRANT, REVOKE, role, and user privilege changes."
+      },
+      {
+        "title": "Block SQL multi-statement chains",
+        "name": "block_sql_multi_statement_chains",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "classifier:sql_multi_statement": true,
+        "description": "Blocks multi-statement SQL chains that increase blast radius."
+      },
+      {
+        "title": "Block xp_cmdshell usage",
+        "name": "block_xp_cmdshell_usage",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "xp_cmdshell"
+        },
+        "description": "Blocks SQL Server command execution through xp_cmdshell."
+      },
+      {
+        "title": "Block database file reads",
+        "name": "block_database_file_reads",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "pg_read_file"
+        },
+        "description": "Blocks attempts to read server files through database functions."
+      },
+      {
+        "title": "Block SQL outfile exfiltration",
+        "name": "block_sql_outfile_exfiltration",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "into outfile"
+        },
+        "description": "Blocks SQL patterns that write query results to server-side files."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on SQL schema enumeration",
+        "name": "warn_sql_schema_enumeration",
+        "enabled": true,
+        "priority": 78,
+        "type": "tool_call",
+        "classifier:sql_schema_enumeration": true,
+        "description": "Warns when queries enumerate schemas or metadata tables."
+      },
+      {
+        "title": "Warn on sensitive table access",
+        "name": "warn_sql_sensitive_table_access",
+        "enabled": true,
+        "priority": 82,
+        "type": "tool_call",
+        "classifier:sql_sensitive_table": true,
+        "description": "Warns when queries touch sensitive tables such as users, payments, secrets, tokens, payroll, or employees."
+      },
+      {
+        "title": "Warn on UNION-based SQL access",
+        "name": "warn_sql_union_access",
+        "enabled": true,
+        "priority": 76,
+        "type": "tool_call",
+        "classifier:sql_union_access": true,
+        "description": "Warns on UNION SELECT patterns commonly associated with extraction and injection."
+      },
+      {
+        "title": "Warn on SELECT star",
+        "name": "warn_sql_select_star",
+        "enabled": true,
+        "priority": 65,
+        "type": "tool_call",
+        "classifier:sql_select_star": true,
+        "description": "Warns on broad SELECT * reads."
+      },
+      {
+        "title": "Warn on missing LIMIT",
+        "name": "warn_sql_missing_limit",
+        "enabled": true,
+        "priority": 68,
+        "type": "tool_call",
+        "classifier:sql_missing_limit": true,
+        "description": "Warns on potentially unbounded reads."
+      },
+      {
+        "title": "Warn on SQL comment obfuscation",
+        "name": "warn_sql_comment_obfuscation",
+        "enabled": true,
+        "priority": 76,
+        "type": "tool_call",
+        "classifier:sql_comment_obfuscation": true,
+        "description": "Warns on SQL comment markers that may indicate obfuscation."
+      },
+      {
+        "title": "Warn on suspect SQL",
+        "name": "warn_sql_suspect",
+        "enabled": true,
+        "priority": 74,
+        "type": "tool_call",
+        "classifier:sql_suspect": true,
+        "description": "Warns on aggregate SQL suspicion signals."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor SQL tools",
+        "name": "monitor_sql_tools",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "field:tool": {
+          "in": [
+            "sql.query",
+            "sql.execute",
+            "db.query",
+            "db.execute",
+            "database.query",
+            "database.execute",
+            "postgres.query",
+            "postgres.execute",
+            "mysql.query",
+            "mysql.execute",
+            "sqlite.query",
+            "sqlite.execute",
+            "psycopg.execute",
+            "cursor.execute",
+            "sqlalchemy.execute"
+          ]
+        },
+        "description": "Captures SQL tool usage for audit and replay."
+      }
+    ],
+    "allow": []
+  }
+}

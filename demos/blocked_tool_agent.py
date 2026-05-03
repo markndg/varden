@@ -3,21 +3,26 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
-import arbiter
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import varden
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
 AGENT_NAME = 'blocked-demo-agent'
 
 # This is the entire adoption story for developers.
-# Start the Sentinel control plane locally, then just do:
-#   import arbiter
-#   arbiter.protect()
-arbiter.protect()
+# Start the Varden control plane locally, then just do:
+#   import varden
+#   varden.protect()
+varden.protect()
 
 
 DEMO_BLOCK_RULES = [
@@ -63,19 +68,19 @@ def list_backups(path: str) -> list[str]:
 
 def run() -> int:
     _ensure_demo_policy()
-    print('Arbiter OSS demo: blocked action with one-line protection')
-    print('Only setup in this file: import arbiter + arbiter.protect()')
+    print('Varden OSS demo: blocked action with one-line protection')
+    print('Only setup in this file: import varden + varden.protect()')
     print('1) Running normal application code...')
-    with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'demo-script'}):
+    with varden.trace_agent(AGENT_NAME, lineage={'source': 'demo-script'}):
         print('   safe result:', list_backups('/var/lib/postgres'))
         print('2) Attempting a dangerous subprocess that policy should block before it executes...')
         try:
             subprocess.run(
-                [sys.executable, '-c', "print('sentinel blocked demo')", 'delete_database', 'prod-customer-db'],
+                [sys.executable, '-c', "print('varden blocked demo')", 'delete_database', 'prod-customer-db'],
                 check=False,
             )
-        except arbiter.SentinelBlockedError as exc:
-            print('   ✅ Sentinel blocked the subprocess as expected')
+        except varden.VardenBlockedError as exc:
+            print('   ✅ Varden blocked the subprocess as expected')
             print('   decision:', exc.decision)
             event_id = exc.decision.get('event_id')
             latest = {}

@@ -1,7 +1,7 @@
 {
   "version": "1.0",
-  "pack_name": "Arbiter OSS Starter Policies",
-  "description": "Default demonstration rules for Arbiter showing tool governance, SQL protection, exfiltration prevention, file access controls, and approval workflows.",
+  "pack_name": "Varden OSS Starter Policies",
+  "description": "Default demonstration rules for Varden showing tool governance, SQL protection, exfiltration prevention, file access controls, and approval workflows.",
   "rules": [
     {
       "id": "block_destructive_shell",

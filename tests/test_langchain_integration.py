@@ -4,9 +4,9 @@ import uuid
 
 import pytest
 
-import arbiter
-from arbiter.sdk import GuardResult
-from arbiter_langchain import SentinelCallbackHandler, create_protected_agent, protect_agent, protect_tools
+import varden
+from varden.sdk import GuardResult
+from varden_langchain import VardenCallbackHandler, create_protected_agent, protect_agent, protect_tools
 
 
 class FakeTool:
@@ -55,7 +55,7 @@ def test_protect_tools_blocks_and_warns():
     ], guard=guard, agent_name='agent-x')
     assert protected[0].invoke({'q': 'hello'})['tool'] == 'safe_lookup'
     assert protected[1].invoke({'url': 'https://example.com'})['tool'] == 'external_http'
-    with pytest.raises(arbiter.SentinelBlockedError):
+    with pytest.raises(varden.VardenBlockedError):
         protected[2].invoke('DROP TABLE customers;')
     assert any(call['tool'] == 'external_http' and call['metadata']['execution_surface'] == 'langchain-tool' for call in guard.guard_calls)
     assert any(call['decision']['action'] == 'warn' for call in guard.result_calls)
@@ -66,12 +66,12 @@ def test_create_protected_agent_returns_tools_and_callbacks():
     assert len(bundle['tools']) == 1
     assert len(bundle['callbacks']) == 1
     assert bundle['agent_name'] == 'bundle-agent'
-    assert getattr(bundle['tools'][0], '__arbiter_langchain_protected__', False) is True
+    assert getattr(bundle['tools'][0], '__varden_langchain_protected__', False) is True
 
 
 def test_callback_handler_emits_workflow_events():
     guard = DummyGuard()
-    handler = SentinelCallbackHandler(guard=guard, agent_name='lc-agent', workflow_id='wf-test')
+    handler = VardenCallbackHandler(guard=guard, agent_name='lc-agent', workflow_id='wf-test')
     run_id = uuid.uuid4()
     handler.on_chain_start({'name': 'agent-executor'}, {'input': 'hello'}, run_id=run_id)
     handler.on_tool_start({'name': 'external_http'}, 'fetch me', run_id=uuid.uuid4(), parent_run_id=run_id)

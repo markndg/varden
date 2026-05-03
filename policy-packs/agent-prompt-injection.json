@@ -1,0 +1,156 @@
+{
+  "name": "agent-prompt-injection",
+  "description": "Detects direct and indirect prompt injection patterns in LLM calls, tool payloads, retrieved content, and agent workflow traces.",
+  "template": {
+    "block": [
+      {
+        "title": "Block prompt-injected secret exfiltration over HTTP",
+        "name": "block_prompt_injection_secret_exfil_http",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:args.args": {
+          "contains": "ignore previous"
+        },
+        "description": "Blocks outbound requests that combine secret material with instruction-override language."
+      },
+      {
+        "title": "Block prompt-injected internal data exfiltration over HTTP",
+        "name": "block_prompt_injection_internal_exfil_http",
+        "enabled": true,
+        "priority": 98,
+        "type": "http_request",
+        "classifier:internal": true,
+        "field:args.args": {
+          "contains": "send"
+        },
+        "description": "Blocks outbound sends of internal material when the payload resembles an injected instruction."
+      },
+      {
+        "title": "Block tool output requesting credential disclosure",
+        "name": "block_tool_result_credential_disclosure",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "send the token"
+        },
+        "description": "Blocks tool calls carrying injected instructions to send tokens or credentials."
+      },
+      {
+        "title": "Block prompt-injected public repository write",
+        "name": "block_prompt_injected_public_repo_write",
+        "enabled": true,
+        "priority": 95,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "create a public pull request"
+        },
+        "description": "Blocks a known indirect-injection pattern where private data is redirected into a public PR."
+      },
+      {
+        "title": "Block injected email forwarding instruction",
+        "name": "block_injected_email_forwarding",
+        "enabled": true,
+        "priority": 95,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "forward all"
+        },
+        "description": "Blocks injected instructions that ask an agent to forward accessible content."
+      },
+      {
+        "title": "Block system prompt disclosure request",
+        "name": "block_system_prompt_disclosure_request",
+        "enabled": true,
+        "priority": 90,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "reveal your system prompt"
+        },
+        "description": "Blocks attempts to reveal hidden system or policy instructions."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on instruction override language",
+        "name": "warn_instruction_override_language",
+        "enabled": true,
+        "priority": 80,
+        "field:args.args": {
+          "contains": "ignore previous instructions"
+        },
+        "description": "Warns when payloads contain common prompt injection override language."
+      },
+      {
+        "title": "Warn on developer instruction override",
+        "name": "warn_developer_instruction_override",
+        "enabled": true,
+        "priority": 80,
+        "field:args.args": {
+          "contains": "ignore the developer"
+        },
+        "description": "Warns when payloads try to override developer or system instructions."
+      },
+      {
+        "title": "Warn on tool-result command injection wording",
+        "name": "warn_tool_result_command_injection_wording",
+        "enabled": true,
+        "priority": 78,
+        "field:args.args": {
+          "contains": "new instructions"
+        },
+        "description": "Warns when external content appears to provide new instructions to the agent."
+      },
+      {
+        "title": "Warn on data exfiltration wording",
+        "name": "warn_data_exfiltration_wording",
+        "enabled": true,
+        "priority": 82,
+        "field:args.args": {
+          "contains": "exfiltrate"
+        },
+        "description": "Warns on explicit exfiltration wording in agent inputs or tool results."
+      },
+      {
+        "title": "Warn on jailbreak roleplay language",
+        "name": "warn_jailbreak_roleplay_language",
+        "enabled": true,
+        "priority": 70,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "developer mode"
+        },
+        "description": "Warns on common jailbreak framing in LLM calls."
+      },
+      {
+        "title": "Warn on suspicious injected workflow sequence",
+        "name": "warn_suspicious_injected_workflow_sequence",
+        "enabled": true,
+        "priority": 85,
+        "field:metadata.behavior.suspicious_sequence": true,
+        "description": "Warns when trace context indicates suspicious cross-tool or cross-domain behavior."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor all LLM calls for injection triage",
+        "name": "monitor_llm_calls_for_injection",
+        "enabled": true,
+        "priority": 10,
+        "type": "llm_call",
+        "description": "Captures LLM calls so injection attempts have audit coverage."
+      },
+      {
+        "title": "Monitor all tool calls for injection triage",
+        "name": "monitor_tool_calls_for_injection",
+        "enabled": true,
+        "priority": 10,
+        "type": "tool_call",
+        "description": "Captures tool calls that may have been influenced by untrusted content."
+      }
+    ],
+    "allow": []
+  }
+}

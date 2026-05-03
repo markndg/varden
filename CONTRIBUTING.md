@@ -1,6 +1,6 @@
-# Contributing to Sentinel
+# Contributing to Varden
 
-Thanks for your interest in improving Sentinel.
+Thanks for your interest in improving Varden.
 
 ## Ground rules
 - Open an issue before large feature work.

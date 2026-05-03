@@ -1,0 +1,169 @@
+{
+  "name": "sensitive-data-exfiltration",
+  "description": "Blocks or warns on secrets, PII, financial data, internal data, and source-internal material leaving through HTTP or LLM paths.",
+  "template": {
+    "block": [
+      {
+        "title": "Block secrets sent over HTTP",
+        "name": "block_http_secrets_exfiltration",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Blocks outbound HTTP requests containing likely secrets or credentials."
+      },
+      {
+        "title": "Block credit card data sent over HTTP",
+        "name": "block_http_credit_card_exfiltration",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "classifier:credit_card": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Blocks outbound HTTP requests containing cardholder data."
+      },
+      {
+        "title": "Block financial data sent over HTTP",
+        "name": "block_http_financial_exfiltration",
+        "enabled": true,
+        "priority": 98,
+        "type": "http_request",
+        "classifier:financial": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Blocks outbound HTTP requests containing financial data."
+      },
+      {
+        "title": "Block internal source material sent over HTTP",
+        "name": "block_http_source_internal_exfiltration",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "classifier:source_internal": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Blocks outbound requests containing internally sourced repository, storage, CRM, or document data."
+      },
+      {
+        "title": "Block secrets in LLM calls",
+        "name": "block_llm_secrets_disclosure",
+        "enabled": true,
+        "priority": 98,
+        "type": "llm_call",
+        "classifier:secrets": true,
+        "description": "Blocks likely secrets from being sent to an LLM."
+      },
+      {
+        "title": "Block credit card data in LLM calls",
+        "name": "block_llm_credit_card_disclosure",
+        "enabled": true,
+        "priority": 98,
+        "type": "llm_call",
+        "classifier:credit_card": true,
+        "description": "Blocks cardholder data from being sent to an LLM."
+      },
+      {
+        "title": "Block pastebin sensitive upload",
+        "name": "block_pastebin_sensitive_upload",
+        "enabled": true,
+        "priority": 96,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "pastebin"
+        },
+        "classifier:internal": true,
+        "description": "Blocks internal content being sent to pastebin-like destinations."
+      },
+      {
+        "title": "Block tunnel sensitive upload",
+        "name": "block_tunnel_sensitive_upload",
+        "enabled": true,
+        "priority": 96,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "ngrok"
+        },
+        "classifier:internal": true,
+        "description": "Blocks internal content being sent to tunnel endpoints."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on PII",
+        "name": "warn_pii_content",
+        "enabled": true,
+        "priority": 78,
+        "classifier:pii": true,
+        "description": "Warns on personally identifiable information."
+      },
+      {
+        "title": "Warn on internal content",
+        "name": "warn_internal_content",
+        "enabled": true,
+        "priority": 72,
+        "classifier:internal": true,
+        "description": "Warns on internal or confidential content."
+      },
+      {
+        "title": "Warn on source-internal material",
+        "name": "warn_source_internal_content",
+        "enabled": true,
+        "priority": 76,
+        "classifier:source_internal": true,
+        "description": "Warns when content appears to come from internal repositories, storage, or enterprise systems."
+      },
+      {
+        "title": "Warn on financial content",
+        "name": "warn_financial_content",
+        "enabled": true,
+        "priority": 80,
+        "classifier:financial": true,
+        "description": "Warns on financial data that may require review."
+      },
+      {
+        "title": "Warn on internal content sent to model provider",
+        "name": "warn_internal_to_model_provider",
+        "enabled": true,
+        "priority": 85,
+        "type": "http_request",
+        "classifier:internal": true,
+        "field:domain": {
+          "in": [
+            "api.openai.com",
+            "openai.com",
+            "api.anthropic.com",
+            "anthropic.com",
+            "generativelanguage.googleapis.com"
+          ]
+        },
+        "description": "Warns when internal content is sent to common model provider endpoints."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor outbound HTTP for data movement",
+        "name": "monitor_http_data_movement",
+        "enabled": true,
+        "priority": 10,
+        "type": "http_request",
+        "description": "Captures outbound HTTP for data movement audit."
+      },
+      {
+        "title": "Monitor LLM calls for sensitive data review",
+        "name": "monitor_llm_sensitive_data_review",
+        "enabled": true,
+        "priority": 10,
+        "type": "llm_call",
+        "description": "Captures LLM calls for sensitive data review."
+      }
+    ],
+    "allow": []
+  }
+}

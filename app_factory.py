@@ -67,7 +67,7 @@ def create_app(config: AppConfig) -> FastAPI:
     blaze = BlazeRuntime(config.blaze_command)
     metrics = MetricsExporter(event_store)
     health = HealthChecks(config.db_path, config.auth_db_path)
-    alerts = AlertEngine([ConsoleSink(), FileSink("sentinel_alerts.jsonl")])
+    alerts = AlertEngine([ConsoleSink(), FileSink("varden_alerts.jsonl")])
     background = BackgroundWorker(event_store, alerts, poll_interval=config.worker_poll_interval)
     limiter = RateLimiter(
         default=BucketConfig(rate_per_window=config.rate_limit_per_minute, window_seconds=60, burst_multiplier=2.0),
@@ -88,7 +88,7 @@ def create_app(config: AppConfig) -> FastAPI:
         finally:
             background.stop()
 
-    app = FastAPI(title="Arbiter Integrated Platform", version="3.0.0", lifespan=lifespan)
+    app = FastAPI(title="Varden Integrated Platform", version="3.0.0", lifespan=lifespan)
 
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "web"), name="static")
 
@@ -319,10 +319,20 @@ def create_app(config: AppConfig) -> FastAPI:
         out = []
         for scenario in scenarios:
             action, decision = evaluate_action(scenario["payload"], scenario["raw"], tenant_id)
-            status = "blocked" if decision.action == "block" else "warned" if decision.action == "warn" else "allowed"
-            event_id = persist_event(action=action, decision=decision, status=status, input_payload=scenario["raw"], replay_key=action.tool, error=f"[Arbiter BLOCKED] {decision.reason}" if status == "blocked" else None)
+            status = status_from_decision(decision.action)
+            event_id = persist_event(action=action, decision=decision, status=status, input_payload=scenario["raw"], replay_key=action.tool, error=f"[Varden BLOCKED] {decision.reason}" if status == "blocked" else None)
             out.append({"name": scenario["name"], "event_id": event_id, "status": status, "trace_id": action.trace_id})
         return out
+
+    def status_from_decision(action: str | None) -> str:
+        text = str(action or "").strip().lower()
+        if text in {"block", "blocked"}:
+            return "blocked"
+        if text in {"warn", "warned"}:
+            return "warned"
+        if text == "monitor":
+            return "monitor"
+        return "allowed"
 
     def require(x_api_key=None, authorization=None, role="viewer", scope: str = "read"):
         token = None
@@ -446,10 +456,10 @@ def create_app(config: AppConfig) -> FastAPI:
         }
         action, decision = evaluate_action(action_payload, {"args": args, "kwargs": kwargs}, tenant_id)
         if decision.action == "block":
-            persist_event(action=action, decision=decision, status="blocked", input_payload={"args": args, "kwargs": kwargs}, replay_key=tool_name, error=f"[Arbiter BLOCKED] {decision.reason}")
-            raise HTTPException(status_code=403, detail=f"[Arbiter BLOCKED] {decision.reason}")
+            persist_event(action=action, decision=decision, status="blocked", input_payload={"args": args, "kwargs": kwargs}, replay_key=tool_name, error=f"[Varden BLOCKED] {decision.reason}")
+            raise HTTPException(status_code=403, detail=f"[Varden BLOCKED] {decision.reason}")
         result = blaze.execute_local({"args": args, "kwargs": kwargs}) if action.route_target == "local_blaze" else {"status": "cloud_ok"}
-        persist_event(action=action, decision=decision, status="warned" if decision.action == "warn" else "allowed", input_payload={"args": args, "kwargs": kwargs}, output_payload=result, replay_key=tool_name)
+        persist_event(action=action, decision=decision, status=status_from_decision(decision.action), input_payload={"args": args, "kwargs": kwargs}, output_payload=result, replay_key=tool_name)
         return result
 
     @app.get("/")
@@ -645,8 +655,8 @@ def create_app(config: AppConfig) -> FastAPI:
         action_payload = payload.get("action") or {}
         raw_payload = payload.get("payload") or action_payload.get("args") or {}
         action, decision = evaluate_action(action_payload, raw_payload, record["tenant_id"])
-        status = "blocked" if decision.action == "block" else "warned" if decision.action == "warn" else "allowed"
-        event_id = persist_event(action=action, decision=decision, status=status, input_payload=raw_payload, replay_key=action.tool, error=f"[Arbiter BLOCKED] {decision.reason}" if status == "blocked" else None)
+        status = status_from_decision(decision.action)
+        event_id = persist_event(action=action, decision=decision, status=status, input_payload=raw_payload, replay_key=action.tool, error=f"[Varden BLOCKED] {decision.reason}" if status == "blocked" else None)
         response = {"event_id": event_id, "decision": decision.to_dict(), "action": action.to_dict()}
         if decision.action == "block":
             raise HTTPException(status_code=403, detail=response)
@@ -659,7 +669,7 @@ def create_app(config: AppConfig) -> FastAPI:
         action_payload = payload.get("action") or {}
         decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log"}
         action = normalize_action(action_payload, record["tenant_id"])
-        status = payload.get("status") or ("blocked" if decision_payload.get("action") == "block" else "warned" if decision_payload.get("action") == "warn" else "allowed")
+        status = payload.get("status") or status_from_decision(decision_payload.get("action"))
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
         return {"logged": True, "event_id": event_id}
 

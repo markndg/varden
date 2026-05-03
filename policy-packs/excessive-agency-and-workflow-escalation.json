@@ -1,0 +1,141 @@
+{
+  "name": "excessive-agency-and-workflow-escalation",
+  "description": "Detects excessive autonomy, risky chains, previous warning/block context, high risk scores, and unauthorized external writes.",
+  "template": {
+    "block": [
+      {
+        "title": "Block action after previous blocked trace step",
+        "name": "block_after_previous_blocked_trace_step",
+        "enabled": true,
+        "priority": 98,
+        "field:metadata.behavior.previous_blocked": true,
+        "description": "Blocks follow-on actions in a trace after a prior step was blocked."
+      },
+      {
+        "title": "Block very high risk action",
+        "name": "block_very_high_risk_action",
+        "enabled": true,
+        "priority": 96,
+        "field:risk_score": {
+          "gte": 90
+        },
+        "description": "Blocks actions whose enriched risk score is very high."
+      },
+      {
+        "title": "Block suspicious sequence with outbound request",
+        "name": "block_suspicious_sequence_outbound_request",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "field:metadata.behavior.suspicious_sequence": true,
+        "description": "Blocks outbound requests when trace behavior is suspicious."
+      },
+      {
+        "title": "Block secrets in cross-domain trace",
+        "name": "block_secrets_cross_domain_trace",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:metadata.behavior.cross_domain": true,
+        "description": "Blocks secret-bearing outbound requests in cross-domain traces."
+      },
+      {
+        "title": "Block autonomous public write instruction",
+        "name": "block_autonomous_public_write_instruction",
+        "enabled": true,
+        "priority": 92,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "make public"
+        },
+        "description": "Blocks autonomous actions attempting to make private content public."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn after previous warned trace step",
+        "name": "warn_after_previous_warned_trace_step",
+        "enabled": true,
+        "priority": 82,
+        "field:metadata.behavior.previous_warned": true,
+        "description": "Warns when a trace continues after a prior warning."
+      },
+      {
+        "title": "Warn on suspicious sequence",
+        "name": "warn_suspicious_sequence",
+        "enabled": true,
+        "priority": 85,
+        "field:metadata.behavior.suspicious_sequence": true,
+        "description": "Warns when trace behavior indicates cross-tool, cross-domain, or prior-warning escalation."
+      },
+      {
+        "title": "Warn on cross-tool trace",
+        "name": "warn_cross_tool_trace",
+        "enabled": true,
+        "priority": 70,
+        "field:metadata.behavior.cross_tool": true,
+        "description": "Warns when a trace spans multiple tool families."
+      },
+      {
+        "title": "Warn on cross-domain trace",
+        "name": "warn_cross_domain_trace",
+        "enabled": true,
+        "priority": 70,
+        "field:metadata.behavior.cross_domain": true,
+        "description": "Warns when a trace spans multiple outbound domains."
+      },
+      {
+        "title": "Warn on high risk action",
+        "name": "warn_high_risk_action",
+        "enabled": true,
+        "priority": 75,
+        "field:risk_score": {
+          "gte": 70
+        },
+        "description": "Warns when enriched risk is high but below the hard block threshold."
+      },
+      {
+        "title": "Warn on autonomous external send",
+        "name": "warn_autonomous_external_send",
+        "enabled": true,
+        "priority": 76,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "send email"
+        },
+        "description": "Warns on autonomous email send instructions."
+      },
+      {
+        "title": "Warn on repository write operation",
+        "name": "warn_repository_write_operation",
+        "enabled": true,
+        "priority": 74,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "create pull request"
+        },
+        "description": "Warns on repository write operations that may need approval."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor workflow activity",
+        "name": "monitor_workflow_activity",
+        "enabled": true,
+        "priority": 10,
+        "type": "tool_call",
+        "description": "Captures tool calls for workflow-level escalation analysis."
+      },
+      {
+        "title": "Monitor outbound workflow activity",
+        "name": "monitor_outbound_workflow_activity",
+        "enabled": true,
+        "priority": 10,
+        "type": "http_request",
+        "description": "Captures outbound requests for workflow-level escalation analysis."
+      }
+    ],
+    "allow": []
+  }
+}

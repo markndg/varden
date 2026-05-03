@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 set -e
-python -m sentinel.worker_service --config examples/dev.env
+python -m varden.worker_service --config examples/dev.env

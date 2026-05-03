@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import httpx
-import arbiter
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import varden
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
 AGENT_NAME = 'flagged-demo-agent'
 
 # This is the entire adoption story for developers.
-# Start the Sentinel control plane locally, then just do:
-#   import arbiter
-#   arbiter.protect()
-arbiter.protect()
+# Start the Varden control plane locally, then just do:
+#   import varden
+#   varden.protect()
+varden.protect()
 
 
 DEMO_WARN_RULES = [
@@ -68,15 +75,15 @@ def run() -> int:
         'classification': 'confidential',
     }
 
-    print('Arbiter OSS demo: warn but allow with one-line protection')
-    print('Only setup in this file: import arbiter + arbiter.protect()')
-    with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'internal_db'}):
+    print('Varden OSS demo: warn but allow with one-line protection')
+    print('Only setup in this file: import varden + varden.protect()')
+    with varden.trace_agent(AGENT_NAME, lineage={'source': 'internal_db'}):
         print('1) Sending a report with sensitive markers that policy should WARN on...')
         try:
             httpx.post('https://partner.example/api/report', json=confidential_payload, timeout=2.0)
         except Exception as exc:
             print('   network result:', exc.__class__.__name__)
-            print('   Sentinel already recorded the decision before the outbound call completed.')
+            print('   Varden already recorded the decision before the outbound call completed.')
 
     detail = latest_event_detail()
     latest = detail.get('event') or {}

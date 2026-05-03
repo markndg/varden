@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import arbiter
+import varden
 
-from demos.langchain.common import DemoTool, configure_guard, make_demo_bundle, print_banner
+from demos.langchain.common import configure_guard, make_langchain_tool, print_banner, protect_demo_tools
 
 
 def export_customer_data(payload):
@@ -15,13 +15,13 @@ def export_customer_data(payload):
 
 def main() -> int:
     configure_guard('langchain-exfiltration-demo')
-    bundle = make_demo_bundle(
+    bundle = protect_demo_tools(
         agent_name='langchain-exfiltration-agent',
-        tools=[DemoTool('external_http', 'Send structured data to a third-party endpoint', export_customer_data)],
+        tools=[make_langchain_tool('external_http', 'Send structured data to a third-party endpoint', export_customer_data)],
     )
     export_tool = bundle['tools'][0]
 
-    with arbiter.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
+    with varden.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
         print_banner('External data movement demo')
         print(
             export_tool.invoke(
@@ -34,7 +34,7 @@ def main() -> int:
             )
         )
 
-    print('\nThis demo should generate a warned event and a clear external-data trace in Sentinel.')
+    print('\nThis demo should generate a warned event and a clear external-data trace in Varden.')
     return 0
 
 

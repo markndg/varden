@@ -1,9 +1,9 @@
-# Arbiter Landing Page Messaging
+# Varden Landing Page Messaging
 
 ## Hero
 **Control what your AI agents actually do**
 
-Arbiter is a runtime control plane for AI agents. It enforces policy on tool calls, API requests,
+Varden is a runtime control plane for AI agents. It enforces policy on tool calls, API requests,
 LLM usage, subprocess execution, and workflow actions — not just prompts and responses.
 
 Primary CTA: **Get started in 5 minutes**
@@ -21,31 +21,31 @@ Real risk happens when agents take action:
 - chaining unsafe workflow steps
 
 ## Solution
-### Arbiter secures agent behaviour in real time
+### Varden secures agent behaviour in real time
 - intercepts actions automatically
 - applies allow, warn, block, and monitor policies
 - surfaces risk, evidence, and history in a live dashboard
 - runs self-hosted in your environment
 
 ## How it works
-1. Add Arbiter to the application1
-2. Arbiter observes outbound actions
+1. Add Varden to the application1
+2. Varden observes outbound actions
 3. Policy evaluates the action and context
-4. Arbiter allows, warns, blocks, or monitors the action
+4. Varden allows, warns, blocks, or monitors the action
 5. Teams investigate decisions in the dashboard
 
 ## Developer wedge
 ### Start fast
 Python:
-import arbiter
-arbiter.protect()
+import varden
+varden.protect()
 
 Rust and Java:
-Use the Arbiter SDK wrappers for HTTP, process execution, and guarded actions.
+Use the Varden SDK wrappers for HTTP, process execution, and guarded actions.
 
 ## Differentiation
 ### Not another AI filter
-Arbiter is not just a prompt filter, model gateway, or observability add-on.
+Varden is not just a prompt filter, model gateway, or observability add-on.
 It is a runtime enforcement layer for agent actions.
 
 Positioning line:

@@ -1,0 +1,455 @@
+{
+  "name": "baseline-operational-safety",
+  "description": "One-click operational safety baseline covering prompt injection, data exfiltration, destructive tools, SQL abuse, unsafe egress, excessive agency, and monitoring.",
+  "template": {
+    "block": [
+      {
+        "title": "Block prompt-injected secret exfiltration over HTTP",
+        "name": "baseline_block_prompt_injection_secret_exfil_http",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:args.args": {
+          "contains": "ignore previous"
+        },
+        "description": "Blocks outbound requests that combine secret material with instruction-override language."
+      },
+      {
+        "title": "Block tool output requesting credential disclosure",
+        "name": "baseline_block_tool_result_credential_disclosure",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "send the token"
+        },
+        "description": "Blocks tool calls carrying injected instructions to send tokens or credentials."
+      },
+      {
+        "title": "Block system prompt disclosure request",
+        "name": "baseline_block_system_prompt_disclosure_request",
+        "enabled": true,
+        "priority": 90,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "reveal your system prompt"
+        },
+        "description": "Blocks attempts to reveal hidden system or policy instructions."
+      },
+      {
+        "title": "Block secrets sent over HTTP",
+        "name": "baseline_block_http_secrets_exfiltration",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Blocks outbound HTTP requests containing likely secrets or credentials."
+      },
+      {
+        "title": "Block credit card data sent over HTTP",
+        "name": "baseline_block_http_credit_card_exfiltration",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "classifier:credit_card": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Blocks outbound HTTP requests containing cardholder data."
+      },
+      {
+        "title": "Block secrets in LLM calls",
+        "name": "baseline_block_llm_secrets_disclosure",
+        "enabled": true,
+        "priority": 98,
+        "type": "llm_call",
+        "classifier:secrets": true,
+        "description": "Blocks likely secrets from being sent to an LLM."
+      },
+      {
+        "title": "Block direct database deletion tool",
+        "name": "baseline_block_delete_database_tool",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "delete_database",
+        "description": "Blocks direct database deletion tools."
+      },
+      {
+        "title": "Block recursive filesystem deletion",
+        "name": "baseline_block_recursive_filesystem_deletion",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "rm -rf"
+        },
+        "description": "Blocks recursive delete commands."
+      },
+      {
+        "title": "Block Terraform destroy",
+        "name": "baseline_block_terraform_destroy",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "terraform destroy"
+        },
+        "description": "Blocks destructive infrastructure teardown."
+      },
+      {
+        "title": "Block kubectl delete",
+        "name": "baseline_block_kubectl_delete",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "kubectl delete"
+        },
+        "description": "Blocks Kubernetes resource deletion."
+      },
+      {
+        "title": "Block cloud instance termination",
+        "name": "baseline_block_cloud_instance_termination",
+        "enabled": true,
+        "priority": 94,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "terminate-instances"
+        },
+        "description": "Blocks cloud compute termination commands."
+      },
+      {
+        "title": "Block package unpublish",
+        "name": "baseline_block_package_unpublish",
+        "enabled": true,
+        "priority": 90,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "npm unpublish"
+        },
+        "description": "Blocks package unpublish operations."
+      },
+      {
+        "title": "Block destructive SQL",
+        "name": "baseline_block_destructive_sql",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:sql_dangerous": true,
+        "description": "Blocks SQL classified as destructive."
+      },
+      {
+        "title": "Block unbounded SQL writes",
+        "name": "baseline_block_unbounded_sql_writes",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:sql_unbounded_write": true,
+        "description": "Blocks UPDATE or DELETE statements without a WHERE clause."
+      },
+      {
+        "title": "Block SQL privilege changes",
+        "name": "baseline_block_sql_privilege_changes",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:sql_privilege_change": true,
+        "description": "Blocks GRANT, REVOKE, role, and user privilege changes."
+      },
+      {
+        "title": "Block SQL multi-statement chains",
+        "name": "baseline_block_sql_multi_statement_chains",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "classifier:sql_multi_statement": true,
+        "description": "Blocks multi-statement SQL chains."
+      },
+      {
+        "title": "Block AWS instance metadata endpoint",
+        "name": "baseline_block_aws_instance_metadata",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "field:url": {
+          "contains": "169.254.169.254"
+        },
+        "description": "Blocks access to AWS instance metadata credentials."
+      },
+      {
+        "title": "Block GCP metadata endpoint",
+        "name": "baseline_block_gcp_instance_metadata",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "field:url": {
+          "contains": "metadata.google.internal"
+        },
+        "description": "Blocks access to GCP metadata credentials."
+      },
+      {
+        "title": "Block pastebin egress",
+        "name": "baseline_block_pastebin_egress",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "pastebin"
+        },
+        "description": "Blocks pastebin-like destinations commonly used for exfiltration."
+      },
+      {
+        "title": "Block ngrok tunnel egress",
+        "name": "baseline_block_ngrok_tunnel_egress",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "ngrok"
+        },
+        "description": "Blocks ngrok tunnel destinations."
+      },
+      {
+        "title": "Block action after previous blocked trace step",
+        "name": "baseline_block_after_previous_blocked_trace_step",
+        "enabled": true,
+        "priority": 98,
+        "field:metadata.behavior.previous_blocked": true,
+        "description": "Blocks follow-on actions in a trace after a prior step was blocked."
+      },
+      {
+        "title": "Block very high risk action",
+        "name": "baseline_block_very_high_risk_action",
+        "enabled": true,
+        "priority": 96,
+        "field:risk_score": {
+          "gte": 90
+        },
+        "description": "Blocks actions whose enriched risk score is very high."
+      },
+      {
+        "title": "Block suspicious sequence with outbound request",
+        "name": "baseline_block_suspicious_sequence_outbound_request",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "field:metadata.behavior.suspicious_sequence": true,
+        "description": "Blocks outbound requests when trace behavior is suspicious."
+      },
+      {
+        "title": "Block local environment secret file access",
+        "name": "baseline_block_env_file_access",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": ".env"
+        },
+        "description": "Blocks direct access to environment files that commonly store credentials."
+      },
+      {
+        "title": "Block GitHub token extraction command",
+        "name": "baseline_block_github_token_extraction",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "gh auth token"
+        },
+        "description": "Blocks extraction of GitHub CLI auth tokens."
+      },
+      {
+        "title": "Block remote script pipe execution",
+        "name": "baseline_block_remote_script_pipe_execution",
+        "enabled": true,
+        "priority": 97,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "| sh"
+        },
+        "description": "Blocks command patterns that execute fetched remote scripts."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on instruction override language",
+        "name": "baseline_warn_instruction_override_language",
+        "enabled": true,
+        "priority": 80,
+        "field:args.args": {
+          "contains": "ignore previous instructions"
+        },
+        "description": "Warns when payloads contain common prompt injection override language."
+      },
+      {
+        "title": "Warn on data exfiltration wording",
+        "name": "baseline_warn_data_exfiltration_wording",
+        "enabled": true,
+        "priority": 82,
+        "field:args.args": {
+          "contains": "exfiltrate"
+        },
+        "description": "Warns on explicit exfiltration wording in agent inputs or tool results."
+      },
+      {
+        "title": "Warn on PII",
+        "name": "baseline_warn_pii_content",
+        "enabled": true,
+        "priority": 78,
+        "classifier:pii": true,
+        "description": "Warns on personally identifiable information."
+      },
+      {
+        "title": "Warn on internal content",
+        "name": "baseline_warn_internal_content",
+        "enabled": true,
+        "priority": 72,
+        "classifier:internal": true,
+        "description": "Warns on internal or confidential content."
+      },
+      {
+        "title": "Warn on shell execution",
+        "name": "baseline_warn_shell_execution",
+        "enabled": true,
+        "priority": 65,
+        "type": "tool_call",
+        "field:tool": {
+          "in": [
+            "subprocess.run",
+            "subprocess.Popen",
+            "exec_shell",
+            "shell.run",
+            "powershell",
+            "bash"
+          ]
+        },
+        "description": "Warns on shell-capable tools even when no destructive command is detected."
+      },
+      {
+        "title": "Warn on SQL schema enumeration",
+        "name": "baseline_warn_sql_schema_enumeration",
+        "enabled": true,
+        "priority": 78,
+        "type": "tool_call",
+        "classifier:sql_schema_enumeration": true,
+        "description": "Warns when queries enumerate schemas or metadata tables."
+      },
+      {
+        "title": "Warn on sensitive table access",
+        "name": "baseline_warn_sql_sensitive_table_access",
+        "enabled": true,
+        "priority": 82,
+        "type": "tool_call",
+        "classifier:sql_sensitive_table": true,
+        "description": "Warns when queries touch sensitive tables."
+      },
+      {
+        "title": "Warn on raw GitHub egress",
+        "name": "baseline_warn_raw_github_egress",
+        "enabled": true,
+        "priority": 72,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "raw.githubusercontent.com"
+        },
+        "description": "Warns on raw GitHub content access, a common path for tool-output injection and payload staging."
+      },
+      {
+        "title": "Warn after previous warned trace step",
+        "name": "baseline_warn_after_previous_warned_trace_step",
+        "enabled": true,
+        "priority": 82,
+        "field:metadata.behavior.previous_warned": true,
+        "description": "Warns when a trace continues after a prior warning."
+      },
+      {
+        "title": "Warn on suspicious sequence",
+        "name": "baseline_warn_suspicious_sequence",
+        "enabled": true,
+        "priority": 85,
+        "field:metadata.behavior.suspicious_sequence": true,
+        "description": "Warns when trace behavior indicates cross-tool, cross-domain, or prior-warning escalation."
+      },
+      {
+        "title": "Warn on high risk action",
+        "name": "baseline_warn_high_risk_action",
+        "enabled": true,
+        "priority": 75,
+        "field:risk_score": {
+          "gte": 70
+        },
+        "description": "Warns when enriched risk is high but below the hard block threshold."
+      },
+      {
+        "title": "Warn on CI workflow file modification",
+        "name": "baseline_warn_ci_workflow_modification",
+        "enabled": true,
+        "priority": 84,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": ".github/workflows"
+        },
+        "description": "Warns when actions modify CI workflows that may alter trust boundaries."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor all HTTP requests",
+        "name": "baseline_monitor_all_http_requests",
+        "enabled": true,
+        "priority": 10,
+        "type": "http_request",
+        "description": "Captures outbound HTTP calls."
+      },
+      {
+        "title": "Monitor all LLM calls",
+        "name": "baseline_monitor_all_llm_calls",
+        "enabled": true,
+        "priority": 10,
+        "type": "llm_call",
+        "description": "Captures LLM interactions."
+      },
+      {
+        "title": "Monitor all tool calls",
+        "name": "baseline_monitor_all_tool_calls",
+        "enabled": true,
+        "priority": 5,
+        "type": "tool_call",
+        "description": "Captures generic tool calls for trace visibility."
+      },
+      {
+        "title": "Monitor SQL tools",
+        "name": "baseline_monitor_sql_tools",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "field:tool": {
+          "in": [
+            "sql.query",
+            "sql.execute",
+            "db.query",
+            "db.execute",
+            "database.query",
+            "database.execute",
+            "postgres.query",
+            "postgres.execute",
+            "mysql.query",
+            "mysql.execute",
+            "sqlite.query",
+            "sqlite.execute",
+            "psycopg.execute",
+            "cursor.execute",
+            "sqlalchemy.execute"
+          ]
+        },
+        "description": "Captures SQL tool usage."
+      }
+    ],
+    "allow": []
+  }
+}

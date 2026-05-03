@@ -1,0 +1,113 @@
+{
+  "name": "monitoring-foundation",
+  "description": "Baseline observability for common agent actions without blocking or warning by itself.",
+  "template": {
+    "block": [],
+    "warn": [],
+    "monitor": [
+      {
+        "title": "Monitor all HTTP requests",
+        "name": "monitor_all_http_requests",
+        "enabled": true,
+        "priority": 10,
+        "type": "http_request",
+        "description": "Captures outbound HTTP calls."
+      },
+      {
+        "title": "Monitor all LLM calls",
+        "name": "monitor_all_llm_calls",
+        "enabled": true,
+        "priority": 10,
+        "type": "llm_call",
+        "description": "Captures LLM interactions."
+      },
+      {
+        "title": "Monitor all tool calls",
+        "name": "monitor_all_tool_calls",
+        "enabled": true,
+        "priority": 5,
+        "type": "tool_call",
+        "description": "Captures generic tool calls for trace visibility."
+      },
+      {
+        "title": "Monitor shell-capable tools",
+        "name": "monitor_shell_capable_tools",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "field:tool": {
+          "in": [
+            "subprocess.run",
+            "subprocess.Popen",
+            "exec_shell",
+            "shell.run",
+            "powershell",
+            "bash"
+          ]
+        },
+        "description": "Captures shell-capable tools."
+      },
+      {
+        "title": "Monitor SQL tools",
+        "name": "monitor_sql_tools_foundation",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "field:tool": {
+          "in": [
+            "sql.query",
+            "sql.execute",
+            "db.query",
+            "db.execute",
+            "database.query",
+            "database.execute",
+            "postgres.query",
+            "postgres.execute",
+            "mysql.query",
+            "mysql.execute",
+            "sqlite.query",
+            "sqlite.execute",
+            "psycopg.execute",
+            "cursor.execute",
+            "sqlalchemy.execute"
+          ]
+        },
+        "description": "Captures SQL tool usage."
+      },
+      {
+        "title": "Monitor package manager tools",
+        "name": "monitor_package_manager_tools",
+        "enabled": true,
+        "priority": 15,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "npm "
+        },
+        "description": "Captures npm package manager commands."
+      },
+      {
+        "title": "Monitor cloud CLI actions",
+        "name": "monitor_cloud_cli_actions",
+        "enabled": true,
+        "priority": 15,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "aws "
+        },
+        "description": "Captures AWS CLI actions."
+      },
+      {
+        "title": "Monitor repository writes",
+        "name": "monitor_repository_writes",
+        "enabled": true,
+        "priority": 15,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "git push"
+        },
+        "description": "Captures Git push operations."
+      }
+    ],
+    "allow": []
+  }
+}

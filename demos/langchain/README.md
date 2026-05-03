@@ -1,6 +1,13 @@
-# Sentinel × LangChain demos
+# Varden × LangChain demos
 
-These demos show the `sentinel_langchain` integration in a way that is easy to run and easy to understand.
+These demos show the `varden_langchain` integration with minimal setup:
+
+```python
+import varden
+varden.protect(...)
+```
+
+Then the only LangChain-specific step is wrapping tools with `protect_tools(...)`.
 
 ## Install
 
@@ -8,10 +15,10 @@ These demos show the `sentinel_langchain` integration in a way that is easy to r
 pip install -e .[langchain]
 ```
 
-## Start Sentinel
+## Start Varden
 
 ```bash
-python -m sentinel.api --config examples/dev.env
+python -m varden.api --config examples/dev.env
 ```
 
 ## Run a demo
@@ -34,5 +41,5 @@ python -m demos.langchain.sql_guard_demo
 python -m demos.langchain.exfiltration_demo
 ```
 
-Each demo emits Sentinel events and traces so you can inspect the flow in the dashboard.
+Each demo emits Varden events and traces so you can inspect the flow in the dashboard.
 

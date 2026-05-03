@@ -1,0 +1,152 @@
+{
+  "name": "supply-chain-and-ci-integrity",
+  "description": "Blocks common supply-chain compromise and CI/CD abuse patterns including remote script execution, lockfile tampering signals, secret-bleeding CI commands, and unsafe release actions.",
+  "template": {
+    "block": [
+      {
+        "title": "Block curl-pipe-shell execution",
+        "name": "block_curl_pipe_shell_execution",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "curl"
+        },
+        "field:args.kwargs": {
+          "contains": "| sh"
+        },
+        "description": "Blocks remote script execution patterns frequently used in compromises."
+      },
+      {
+        "title": "Block wget-pipe-bash execution",
+        "name": "block_wget_pipe_bash_execution",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "wget"
+        },
+        "field:args.kwargs": {
+          "contains": "| bash"
+        },
+        "description": "Blocks remote shell bootstrap patterns via wget pipelines."
+      },
+      {
+        "title": "Block npm preinstall script injection",
+        "name": "block_npm_preinstall_script_injection",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "preinstall"
+        },
+        "description": "Blocks suspicious package script manipulation often used for supply-chain persistence."
+      },
+      {
+        "title": "Block dependency lockfile deletion",
+        "name": "block_dependency_lockfile_deletion",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "package-lock.json"
+        },
+        "description": "Blocks lockfile deletion attempts that can mask dependency drift."
+      },
+      {
+        "title": "Block CI secret export command",
+        "name": "block_ci_secret_export_command",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "GITHUB_TOKEN"
+        },
+        "description": "Blocks explicit handling of CI auth tokens in tool command payloads."
+      },
+      {
+        "title": "Block release publish with embedded secrets",
+        "name": "block_release_publish_with_secrets",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:secrets": true,
+        "field:args.args": {
+          "contains": "publish"
+        },
+        "description": "Blocks package publish operations when payload includes likely secrets."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on dependency update without lockfile signal",
+        "name": "warn_dependency_update_lockfile_signal",
+        "enabled": true,
+        "priority": 82,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "npm install"
+        },
+        "description": "Warns on dependency updates that may require lockfile review."
+      },
+      {
+        "title": "Warn on direct install from arbitrary URL",
+        "name": "warn_direct_install_from_url",
+        "enabled": true,
+        "priority": 84,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "pip install http"
+        },
+        "description": "Warns on direct dependency installs from URL sources."
+      },
+      {
+        "title": "Warn on force push to protected branches",
+        "name": "warn_force_push_protected_branches",
+        "enabled": true,
+        "priority": 85,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "push --force"
+        },
+        "description": "Warns on force-push operations that can bypass normal review integrity."
+      },
+      {
+        "title": "Warn on workflow file modification",
+        "name": "warn_workflow_file_modification",
+        "enabled": true,
+        "priority": 80,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": ".github/workflows"
+        },
+        "description": "Warns on CI workflow modifications that should receive explicit maintainer scrutiny."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor package and release tool activity",
+        "name": "monitor_package_release_tool_activity",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "publish"
+        },
+        "description": "Captures package release activity for provenance and incident response."
+      },
+      {
+        "title": "Monitor CI and workflow touching commands",
+        "name": "monitor_ci_workflow_touching_commands",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": ".github"
+        },
+        "description": "Captures commands that touch CI and repository governance paths."
+      }
+    ],
+    "allow": []
+  }
+}

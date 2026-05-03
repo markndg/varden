@@ -3,9 +3,9 @@ from tempfile import TemporaryDirectory
 
 from fastapi.testclient import TestClient
 
-from sentinel.app_factory import create_app
-from sentinel.config import AppConfig
-from sentinel.cli import main
+from varden.app_factory import create_app
+from varden.config import AppConfig
+from varden.cli import main
 
 
 def make_client(tmpdir: str):
@@ -18,8 +18,8 @@ def make_client(tmpdir: str):
     }''', encoding='utf-8')
     cfg = AppConfig(
         env='dev',
-        db_path=str(Path(tmpdir) / 'sentinel.db'),
-        auth_db_path=str(Path(tmpdir) / 'sentinel_auth.db'),
+        db_path=str(Path(tmpdir) / 'varden.db'),
+        auth_db_path=str(Path(tmpdir) / 'varden_auth.db'),
         policy_file=str(policy_path),
         signing_secret='dev-secret',
         rate_limit_per_minute=1000,

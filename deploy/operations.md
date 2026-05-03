@@ -1,4 +1,4 @@
-# Sentinel OSS operations
+# Varden OSS operations
 
 ## Runtime checks
 
@@ -9,7 +9,7 @@
 
 ## Low-overhead guidance
 
-Use `SENTINEL_SCAN_MODE=fast` unless you specifically need deeper enrichment.
+Use `VARDEN_SCAN_MODE=fast` unless you specifically need deeper enrichment.
 The dashboard overview shows average decision latency so you can validate overhead in your own environment.
 
 ## Policy workflow

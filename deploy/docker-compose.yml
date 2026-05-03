@@ -2,19 +2,19 @@ version: "3.9"
 services:
   api:
     build: ..
-    command: ["python", "-m", "sentinel.api", "--config", "/config/prod.env"]
+    command: ["python", "-m", "varden.api", "--config", "/config/prod.env"]
     ports:
       - "8000:8000"
     volumes:
-      - sentinel_data:/data
+      - varden_data:/data
       - ./config:/config
-      - sentinel_backups:/app/backups
+      - varden_backups:/app/backups
     environment:
-      SENTINEL_DB_PATH: /data/sentinel.db
-      SENTINEL_AUTH_DB_PATH: /data/sentinel_auth.db
-      SENTINEL_POLICY_FILE: /config/policy.json
-      SENTINEL_PUBLIC_BASE_URL: http://localhost:8000
-      SENTINEL_ENABLE_DEV_BOOTSTRAP: "false"
+      VARDEN_DB_PATH: /data/varden.db
+      VARDEN_AUTH_DB_PATH: /data/varden_auth.db
+      VARDEN_POLICY_FILE: /config/policy.json
+      VARDEN_PUBLIC_BASE_URL: http://localhost:8000
+      VARDEN_ENABLE_DEV_BOOTSTRAP: "false"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')"]
       interval: 20s
@@ -24,12 +24,12 @@ services:
 
   worker:
     build: ..
-    command: ["python", "-m", "sentinel.worker_service", "--config", "/config/prod.env"]
+    command: ["python", "-m", "varden.worker_service", "--config", "/config/prod.env"]
     volumes:
-      - sentinel_data:/data
+      - varden_data:/data
       - ./config:/config
     restart: unless-stopped
 
 volumes:
-  sentinel_data:
-  sentinel_backups:
+  varden_data:
+  varden_backups:

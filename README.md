@@ -1,13 +1,13 @@
-# Arbiter OSS
+# Varden OSS
 
-![Arbiter logo](sentinel/web/assets/sentinel-icon.png)
+![Varden logo](varden/web/assets/varden-icon.png)
 
-**Arbiter OSS is a self-hosted runtime firewall for AI agents.**
+**Varden OSS is a self-hosted runtime firewall for AI agents.**
 It sits between agent reasoning and action execution so teams can allow, warn, or block tool calls, HTTP requests, LLM calls, and workflow steps from infrastructure they run themselves.
 
 This OSS edition is shaped for adoption:
 - 5-minute local start
-- one-line Python protection with `arbiter.protect()`
+- one-line Python protection with `varden.protect()`
 - fast mode by default for low overhead
 - optional deep scan mode for slower, richer inspection
 - production-style dashboard at `/`
@@ -19,10 +19,10 @@ This OSS edition is shaped for adoption:
 
 ---
 
-## Why Arbiter OSS exists
+## Why Varden OSS exists
 
 Most AI security products still focus on the chatbot threat model: prompt in, response out.
-Arbiter protects the **agent runtime** instead:
+Varden protects the **agent runtime** instead:
 
 - tool execution
 - HTTP/API calls
@@ -40,8 +40,8 @@ That makes it useful for teams building internal agents, copilots, orchestration
 - policy engine with `allow`, `warn`, `block`, and `monitor` paths
 - classifier-assisted decisions for secrets, PII, and internal data markers
 - action logging for tool calls, HTTP calls, and LLM calls
-- Python SDK with invisible runtime protection via `arbiter.protect()`
-- optional `arbiter.trace_agent(...)`, `arbiter.tool(...)`, and tagging helpers for advanced use cases only
+- Python SDK with invisible runtime protection via `varden.protect()`
+- optional `varden.trace_agent(...)`, `varden.tool(...)`, and tagging helpers for advanced use cases only
 
 ### Self-hosted control plane
 - dashboard at `/`
@@ -64,20 +64,34 @@ That makes it useful for teams building internal agents, copilots, orchestration
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+source .venv/bin/activate
+pip install -e .
+```
+
+PowerShell:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -e .
 ```
 
 ### 2) Copy the demo policy
 
 ```bash
-copy examples\policy.json policy.json
+cp examples/policy.json policy.json
 ```
 
-### 3) Start Arbiter
+PowerShell:
+
+```powershell
+Copy-Item examples\policy.json policy.json
+```
+
+### 3) Start Varden
 
 ```bash
-python -m sentinel.api --config examples/dev.env
+python -m varden.api --config examples/dev.env
 ```
 
 ### 4) Open the UI
@@ -100,10 +114,16 @@ admin-demo-key
 ### Fastest path
 
 ```bash
-arbiter demo
+python -m varden.cli demo
 ```
 
 That starts the local OSS stack, seeds one allowed, one warned, and one blocked trace, and opens the command center.
+
+If you installed the package and have the console script on your `PATH`, this equivalent command also works:
+
+```bash
+varden demo
+```
 
 
 After the API is running, open a second terminal and run the demo agents.
@@ -117,7 +137,7 @@ python demos/blocked_tool_agent.py
 What it does:
 - runs normal application code
 - attempts a dangerous subprocess command containing `delete_database`
-- Arbiter blocks it before execution
+- Varden blocks it before execution
 - a blocked event is written to the control plane
 
 ### Demo 2: warned outbound HTTP action
@@ -128,8 +148,8 @@ python demos/flagged_data_agent.py
 
 What it does:
 - sends an outbound HTTP request containing internal/secrets markers
-- Arbiter classifies the payload automatically
-- Arbiter warns, logs classifiers, and still records the event even if the remote call fails
+- Varden classifies the payload automatically
+- Varden warns, logs classifiers, and still records the event even if the remote call fails
 
 ### What you should see in the dashboard
 
@@ -143,7 +163,7 @@ After running the demos, the dashboard should show:
 
 ## Official LangChain integration
 
-Arbiter ships a first-class optional LangChain integration in `arbiter_langchain` (alias for `sentinel_langchain`) so teams can add policy enforcement and tracing to LangChain tools without rewriting their app architecture.
+Varden ships a first-class optional LangChain integration in `varden_langchain` so teams can add policy enforcement and tracing to LangChain tools without rewriting their app architecture.
 
 ### Install
 
@@ -154,10 +174,10 @@ pip install -e .[langchain]
 ### Drop-in usage
 
 ```python
-import arbiter
-from arbiter_langchain import protect_tools
+import varden
+from varden_langchain import protect_tools
 
-arbiter.protect_from_env(auto_instrument=False)
+varden.protect_from_env(auto_instrument=False)
 tools = protect_tools(tools, agent_name='support-agent')
 ```
 
@@ -170,7 +190,7 @@ tools = protect_tools(tools, agent_name='support-agent')
 
 ### LangChain demo set
 
-Run these after Arbiter is up:
+Run these after Varden is up:
 
 ```bash
 python demos/langchain/allow_warn_block_demo.py
@@ -190,10 +210,10 @@ See also: `docs/langchain.md`
 ## Python: one-line protection
 
 ```python
-import arbiter
+import varden
 import requests
 
-arbiter.protect()
+varden.protect()
 
 requests.post(
     "https://partner.example/api/report",
@@ -204,7 +224,7 @@ requests.post(
 
 ### What `protect()` does
 
-With zero extra developer instrumentation, Arbiter patches common Python runtime paths so actions are checked by the control plane:
+With zero extra developer instrumentation, Varden patches common Python runtime paths so actions are checked by the control plane:
 
 - `requests`
 - `httpx` sync and async clients
@@ -213,7 +233,7 @@ With zero extra developer instrumentation, Arbiter patches common Python runtime
 - Anthropic Messages, if installed
 - future imports of those libraries after `protect()` is called
 
-Arbiter sends pre-execution checks to:
+Varden sends pre-execution checks to:
 - `POST /sdk/guard`
 
 and outcome logging to:
@@ -222,29 +242,29 @@ and outcome logging to:
 ### Environment-based configuration
 
 ```python
-import arbiter
+import varden
 
-arbiter.protect_from_env()
+varden.protect_from_env()
 ```
 
 Environment variables for local or self-hosted rollouts:
 
 ```text
-SENTINEL_BASE_URL=http://127.0.0.1:8000
-SENTINEL_API_KEY=admin-demo-key
-SENTINEL_APP_NAME=my-app
-SENTINEL_MODE=enforce
-SENTINEL_AUTO_INSTRUMENT=true
-SENTINEL_FAIL_MODE=open
-SENTINEL_TIMEOUT=5.0
+VARDEN_BASE_URL=http://127.0.0.1:8000
+VARDEN_API_KEY=admin-demo-key
+VARDEN_APP_NAME=my-app
+VARDEN_MODE=enforce
+VARDEN_AUTO_INSTRUMENT=true
+VARDEN_FAIL_MODE=open
+VARDEN_TIMEOUT=5.0
 ```
 
 ### Scan modes
 
-Arbiter OSS defaults to **fast** mode to keep the policy path lightweight.
+Varden OSS defaults to **fast** mode to keep the policy path lightweight.
 
 ```text
-SENTINEL_SCAN_MODE=fast
+VARDEN_SCAN_MODE=fast
 ```
 
 Fast mode:
@@ -255,7 +275,7 @@ Fast mode:
 Deep mode:
 
 ```text
-SENTINEL_SCAN_MODE=deep
+VARDEN_SCAN_MODE=deep
 ```
 
 Deep mode:
@@ -324,13 +344,13 @@ Frontend source lives in `frontend/` and can be worked on independently:
 
 - `cd frontend && npm install`
 - `npm run dev` for local UI development
-- `npm run build` to emit production assets into `sentinel/web/app`
+- `npm run build` to emit production assets into `varden/web/app`
 
 The backend continues to serve the UI at `/ui` and `/ui/rules`, so deployment and existing routes stay unchanged.
 
 ## Self-hosting
 
-Arbiter OSS is designed so teams can run it themselves.
+Varden OSS is designed so teams can run it themselves.
 
 Use:
 - `deploy/docker-compose.yml`
@@ -351,7 +371,7 @@ Notes:
 - `demos/flagged_data_agent.py`
 - `demos/README.md`
 
-These are intended to be the shortest path from clone to “I can see Arbiter doing useful work.”
+These are intended to be the shortest path from clone to “I can see Varden doing useful work.”
 
 ---
 
@@ -359,17 +379,17 @@ These are intended to be the shortest path from clone to “I can see Arbiter do
 
 ## LangChain integration
 
-Arbiter includes a drop-in `arbiter_langchain` (alias for `sentinel_langchain`) integration package for protecting LangChain tool execution without relying on fragile monkey patching. The recommended model is:
+Varden includes a drop-in `varden_langchain` integration package for protecting LangChain tool execution without relying on fragile monkey patching. The recommended model is:
 
 - wrap tools with `protect_tools(...)` for allow / warn / block enforcement
-- attach `ArbiterCallbackHandler(...)` for chain, tool, and LLM trace events
+- attach `VardenCallbackHandler(...)` for chain, tool, and LLM trace events
 - or use `create_protected_agent(...)` to get both in one step
 
 ```python
-import arbiter
-from arbiter_langchain import create_protected_agent
+import varden
+from varden_langchain import create_protected_agent
 
-arbiter.protect_from_env(auto_instrument=False, app_name="langchain-app")
+varden.protect_from_env(auto_instrument=False, app_name="langchain-app")
 protected = create_protected_agent(tools=my_tools, agent_name="research-agent")
 agent = initialize_agent(
     tools=protected["tools"],
@@ -378,7 +398,10 @@ agent = initialize_agent(
 )
 ```
 
-A lightweight demo lives at `demos/langchain_integration_demo.py`.
+Lightweight runnable demos live under `demos/langchain/`:
+- `demos/langchain/allow_warn_block_demo.py`
+- `demos/langchain/sql_guard_demo.py`
+- `demos/langchain/exfiltration_demo.py`
 
 ## Language SDKs
 
@@ -391,7 +414,11 @@ Python is the most complete runtime-integrated path in this OSS release.
 
 ## License
 
-Arbiter OSS is licensed under **AGPL-3.0-or-later**. That means anyone who modifies and runs Arbiter for users over a network must make the corresponding source code for those modifications available to those users.
+Varden OSS uses a split license model:
+- **Core platform and dashboard** are licensed under **AGPL-3.0-or-later**.
+- **SDKs** in `sdks/python`, `sdks/java`, and `sdks/rust` are licensed under **Apache-2.0**.
+
+For AGPL-covered components, anyone who modifies and runs Varden for users over a network must make the corresponding source code for those modifications available to those users.
 
 This is the strongest widely adopted **open-source** option if you want to discourage companies from taking the code, modifying it, and quietly running it as a closed hosted service.
 
@@ -419,7 +446,7 @@ This repository includes:
 
 ## Included OSS policy packs
 
-Arbiter now ships with an out-of-the-box database safety pack for agent-written SQL. The default policy blocks destructive database operations and warns on suspect SQL patterns such as schema enumeration, broad reads from sensitive tables, `SELECT *`, and missing `LIMIT` clauses on reads.
+Varden now ships with an out-of-the-box database safety pack for agent-written SQL. The default policy blocks destructive database operations and warns on suspect SQL patterns such as schema enumeration, broad reads from sensitive tables, `SELECT *`, and missing `LIMIT` clauses on reads.
 
 Included SQL protections:
 - block destructive SQL such as `DROP TABLE`, `DROP DATABASE`, `TRUNCATE`, dangerous privilege changes, unbounded `DELETE` / `UPDATE`, and multi-statement SQL

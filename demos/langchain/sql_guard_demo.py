@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import arbiter
-from arbiter import SentinelBlockedError
+import varden
+from varden import VardenBlockedError
 
-from demos.langchain.common import DemoTool, configure_guard, make_demo_bundle, print_banner
+from demos.langchain.common import configure_guard, make_langchain_tool, print_banner, protect_demo_tools
 
 
 def db_query(payload):
@@ -16,13 +16,13 @@ def db_query(payload):
 
 def main() -> int:
     configure_guard('langchain-sql-guard-demo')
-    bundle = make_demo_bundle(
+    bundle = protect_demo_tools(
         agent_name='langchain-sql-agent',
-        tools=[DemoTool('dangerous_sql', 'Execute analyst SQL queries', db_query)],
+        tools=[make_langchain_tool('dangerous_sql', 'Execute analyst SQL queries', db_query)],
     )
     sql_tool = bundle['tools'][0]
 
-    with arbiter.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
+    with varden.trace_agent(bundle['agent_name'], workflow_id=bundle['workflow_id']):
         print_banner('Safe read query')
         print(sql_tool.invoke('SELECT id, status FROM orders LIMIT 10;'))
 
@@ -32,8 +32,8 @@ def main() -> int:
         print_banner('Dangerous destructive query')
         try:
             print(sql_tool.invoke('DROP TABLE customers;'))
-        except SentinelBlockedError as exc:
-            print(f'Blocked by Sentinel: {exc}')
+        except VardenBlockedError as exc:
+            print(f'Blocked by Varden: {exc}')
 
     print('\nInspect the SQL policy pack matches in the dashboard and rules workspace.')
     return 0

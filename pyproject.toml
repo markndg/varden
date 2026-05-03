@@ -3,11 +3,12 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "arbiter-integrated-platform"
+name = "varden-integrated-platform"
 version = "3.0.0"
-description = "Production Arbiter platform with control plane and multi-language SDKs"
+description = "Production Varden platform with control plane and multi-language SDKs"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "AGPL-3.0-or-later" }
 dependencies = [
   "fastapi>=0.111",
   "uvicorn>=0.30",
@@ -17,16 +18,15 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["sentinel*", "sentinel_sdk*", "sentinel_langchain*", "arbiter*", "arbiter_langchain*"]
+include = ["varden*", "varden_sdk*", "varden_langchain*"]
 
 
 [tool.setuptools.package-data]
-"sentinel" = ["web/**/*"]
+"varden" = ["web/**/*"]
 
 
 [project.scripts]
-sentinel = "sentinel.cli:main"
-arbiter = "sentinel.cli:main"
+varden = "varden.cli:main"
 
 
 [project.optional-dependencies]

@@ -1,0 +1,160 @@
+{
+  "name": "network-egress-and-tunnels",
+  "description": "Restricts high-risk egress paths such as cloud metadata services, paste sites, tunnels, webhooks, messaging APIs, and file transfer services.",
+  "template": {
+    "block": [
+      {
+        "title": "Block AWS instance metadata endpoint",
+        "name": "block_aws_instance_metadata",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "field:url": {
+          "contains": "169.254.169.254"
+        },
+        "description": "Blocks access to AWS instance metadata credentials."
+      },
+      {
+        "title": "Block GCP metadata endpoint",
+        "name": "block_gcp_instance_metadata",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "field:url": {
+          "contains": "metadata.google.internal"
+        },
+        "description": "Blocks access to GCP metadata credentials."
+      },
+      {
+        "title": "Block generic metadata path",
+        "name": "block_generic_metadata_path",
+        "enabled": true,
+        "priority": 98,
+        "type": "http_request",
+        "field:url": {
+          "contains": "latest/meta-data"
+        },
+        "description": "Blocks generic cloud metadata scraping."
+      },
+      {
+        "title": "Block pastebin egress",
+        "name": "block_pastebin_egress",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "pastebin"
+        },
+        "description": "Blocks pastebin-like destinations commonly used for exfiltration."
+      },
+      {
+        "title": "Block ngrok tunnel egress",
+        "name": "block_ngrok_tunnel_egress",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "ngrok"
+        },
+        "description": "Blocks ngrok tunnel destinations."
+      },
+      {
+        "title": "Block transfer.sh egress",
+        "name": "block_transfer_sh_egress",
+        "enabled": true,
+        "priority": 95,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "transfer.sh"
+        },
+        "description": "Blocks file transfer services often used for quick exfiltration."
+      },
+      {
+        "title": "Block webhook egress",
+        "name": "block_webhook_egress",
+        "enabled": true,
+        "priority": 92,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "webhook"
+        },
+        "description": "Blocks generic webhook exfiltration paths."
+      },
+      {
+        "title": "Block Discord egress",
+        "name": "block_discord_egress",
+        "enabled": true,
+        "priority": 90,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "discord"
+        },
+        "description": "Blocks Discord destinations commonly used as exfiltration drops."
+      },
+      {
+        "title": "Block Telegram egress",
+        "name": "block_telegram_egress",
+        "enabled": true,
+        "priority": 90,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "telegram"
+        },
+        "description": "Blocks Telegram bot/API destinations commonly used as exfiltration drops."
+      },
+      {
+        "title": "Block secrets to any external domain",
+        "name": "block_secrets_to_external_domain",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Blocks likely credentials from leaving over HTTP."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on raw GitHub egress",
+        "name": "warn_raw_github_egress",
+        "enabled": true,
+        "priority": 72,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "raw.githubusercontent.com"
+        },
+        "description": "Warns on raw GitHub content access, a common path for tool-output injection and payload staging."
+      },
+      {
+        "title": "Warn on model-provider outbound call",
+        "name": "warn_model_provider_http_call",
+        "enabled": true,
+        "priority": 60,
+        "type": "http_request",
+        "field:domain": {
+          "in": [
+            "api.openai.com",
+            "openai.com",
+            "api.anthropic.com",
+            "anthropic.com",
+            "generativelanguage.googleapis.com"
+          ]
+        },
+        "description": "Warns on model provider egress for review when sensitive context may be present."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor all outbound HTTP",
+        "name": "monitor_all_outbound_http",
+        "enabled": true,
+        "priority": 10,
+        "type": "http_request",
+        "description": "Captures all outbound HTTP activity for egress analytics."
+      }
+    ],
+    "allow": []
+  }
+}

@@ -1,22 +1,29 @@
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 import httpx
-import arbiter
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+import varden
 
 BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
 AGENT_NAME = 'allowed-demo-agent'
 
 # This is the entire adoption story for developers.
-# Start the Sentinel control plane locally, then just do:
-#   import arbiter
-#   arbiter.protect()
-arbiter.protect()
+# Start the Varden control plane locally, then just do:
+#   import varden
+#   varden.protect()
+varden.protect()
 
 DEMO_ALLOWED_POLICY = {
     'block': [],
@@ -52,8 +59,8 @@ def latest_event_detail() -> dict[str, Any]:
 def run() -> int:
     previous_policy = _json_request('/policy')
     _json_request('/policy', method='PUT', payload=DEMO_ALLOWED_POLICY)
-    print('Arbiter OSS demo: allowed action with one-line protection')
-    print('Only setup in this file: import arbiter + arbiter.protect()')
+    print('Varden OSS demo: allowed action with one-line protection')
+    print('Only setup in this file: import varden + varden.protect()')
     safe_payload = {
         'title': 'public status heartbeat',
         'notes': 'availability green and latency normal',
@@ -61,13 +68,13 @@ def run() -> int:
     }
 
     try:
-        with arbiter.trace_agent(AGENT_NAME, lineage={'source': 'public-status'}):
+        with varden.trace_agent(AGENT_NAME, lineage={'source': 'public-status'}):
             print('1) Sending a benign report that policy should allow...')
             try:
                 httpx.post('https://example.com/health', json=safe_payload, timeout=2.0)
             except Exception as exc:
                 print('   network result:', exc.__class__.__name__)
-                print('   Sentinel already recorded the allow decision before the outbound call completed.')
+                print('   Varden already recorded the allow decision before the outbound call completed.')
 
         detail = latest_event_detail()
         latest = detail.get('event') or {}

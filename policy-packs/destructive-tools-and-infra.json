@@ -1,0 +1,186 @@
+{
+  "name": "destructive-tools-and-infra",
+  "description": "Blocks destructive tools and infrastructure operations that can damage filesystems, databases, clusters, packages, cloud resources, or source control.",
+  "template": {
+    "block": [
+      {
+        "title": "Block direct database deletion tool",
+        "name": "block_delete_database_tool",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "delete_database",
+        "description": "Blocks direct database deletion tools."
+      },
+      {
+        "title": "Block recursive filesystem deletion",
+        "name": "block_recursive_filesystem_deletion",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "rm -rf"
+        },
+        "description": "Blocks recursive delete commands."
+      },
+      {
+        "title": "Block Windows drive formatting",
+        "name": "block_windows_drive_format",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "format c:"
+        },
+        "description": "Blocks obvious destructive Windows format commands."
+      },
+      {
+        "title": "Block Terraform destroy",
+        "name": "block_terraform_destroy",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "terraform destroy"
+        },
+        "description": "Blocks destructive infrastructure teardown."
+      },
+      {
+        "title": "Block kubectl delete",
+        "name": "block_kubectl_delete",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "kubectl delete"
+        },
+        "description": "Blocks Kubernetes resource deletion."
+      },
+      {
+        "title": "Block Helm uninstall",
+        "name": "block_helm_uninstall",
+        "enabled": true,
+        "priority": 94,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "helm uninstall"
+        },
+        "description": "Blocks Helm release removal."
+      },
+      {
+        "title": "Block cloud instance termination",
+        "name": "block_cloud_instance_termination",
+        "enabled": true,
+        "priority": 94,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "terminate-instances"
+        },
+        "description": "Blocks cloud compute termination commands."
+      },
+      {
+        "title": "Block S3 bucket recursive delete",
+        "name": "block_s3_bucket_recursive_delete",
+        "enabled": true,
+        "priority": 94,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "aws s3 rm"
+        },
+        "description": "Blocks S3 removal commands that commonly precede destructive bucket wipes."
+      },
+      {
+        "title": "Block Git history rewrite force push",
+        "name": "block_git_force_push",
+        "enabled": true,
+        "priority": 90,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "push --force"
+        },
+        "description": "Blocks force pushes that can rewrite shared branch history."
+      },
+      {
+        "title": "Block package unpublish",
+        "name": "block_package_unpublish",
+        "enabled": true,
+        "priority": 90,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "npm unpublish"
+        },
+        "description": "Blocks package unpublish operations."
+      },
+      {
+        "title": "Block dangerous SQL classifier",
+        "name": "block_destructive_sql_classifier",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:sql_dangerous": true,
+        "description": "Blocks SQL classified as destructive."
+      },
+      {
+        "title": "Block unsafe keyword classifier",
+        "name": "block_unsafe_keyword_tool_action",
+        "enabled": true,
+        "priority": 92,
+        "type": "tool_call",
+        "classifier:unsafe_keywords": true,
+        "description": "Blocks tool calls containing high-risk destructive keywords."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on shell execution",
+        "name": "warn_shell_execution",
+        "enabled": true,
+        "priority": 65,
+        "type": "tool_call",
+        "field:tool": {
+          "in": [
+            "subprocess.run",
+            "subprocess.Popen",
+            "exec_shell",
+            "shell.run",
+            "powershell",
+            "bash"
+          ]
+        },
+        "description": "Warns on shell-capable tools even when no destructive command is detected."
+      },
+      {
+        "title": "Warn on package publish",
+        "name": "warn_package_publish",
+        "enabled": true,
+        "priority": 70,
+        "type": "tool_call",
+        "field:args.args": {
+          "contains": "npm publish"
+        },
+        "description": "Warns on package publication actions."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor subprocess usage",
+        "name": "monitor_subprocess_usage",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "field:tool": {
+          "in": [
+            "subprocess.run",
+            "subprocess.Popen",
+            "exec_shell",
+            "shell.run",
+            "powershell",
+            "bash"
+          ]
+        },
+        "description": "Captures shell-capable tool usage."
+      }
+    ],
+    "allow": []
+  }
+}
