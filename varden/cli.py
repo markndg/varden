@@ -77,9 +77,9 @@ def _monitor_missing_exit() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog='varden', description='Varden OSS command line tools')
+    parser = argparse.ArgumentParser(prog='varden', description='Varden command-line tools')
     sub = parser.add_subparsers(dest='command')
-    demo = sub.add_parser('demo', help='Run the OSS demo stack and seed allow/warn/block traces')
+    demo = sub.add_parser('demo', help='Run the demo stack and seed allow/warn/block traces')
     demo.add_argument('--host', default='127.0.0.1')
     demo.add_argument('--port', type=int, default=8000)
     demo.add_argument('--no-browser', action='store_true')

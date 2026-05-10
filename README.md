@@ -1,15 +1,14 @@
-# Varden OSS
+# Varden
 
 <img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
-**Varden OSS is a self-hosted runtime firewall for AI agents.**
+**Varden is a self-hosted runtime firewall for AI agents.**
 It sits between agent reasoning and action execution so teams can allow, warn, or block tool calls, HTTP requests, LLM calls, and workflow steps from infrastructure they run themselves.
 
-This OSS edition is shaped for adoption:
+Key Features:
 - 5-minute local start
 - one-line Python protection with `varden.protect()`
-- fast mode by default for low overhead
-- optional deep scan mode for slower, richer inspection
+- deep scan mode by default for full classifier and risk enrichment (optional **fast** scan mode for lower overhead when policy allows)
 - production-style dashboard at `/`
 - dedicated visual rules page at `/ui/rules`
 - working demo agents that show a blocked action and a warned action
@@ -19,7 +18,7 @@ This OSS edition is shaped for adoption:
 
 ---
 
-## Why Varden OSS exists
+## Why Varden exists
 
 Most AI security products still focus on the chatbot threat model: prompt in, response out.
 Varden protects the **agent runtime** instead:
@@ -34,10 +33,11 @@ That makes it useful for teams building internal agents, copilots, orchestration
 
 ---
 
-## What you get in this OSS release
+## What you get in this release
 
 ### Runtime enforcement
 - policy engine with `allow`, `warn`, `block`, and `monitor` paths
+- useful set of starter policy packs
 - classifier-assisted decisions for secrets, PII, and internal data markers
 - action logging for tool calls, HTTP calls, and LLM calls
 - Python SDK with invisible runtime protection via `varden.protect()`
@@ -76,16 +76,20 @@ python -m venv .venv
 pip install -e .
 ```
 
-### 2) Copy the demo policy
+### 2) Create a starter `policy.json`
+
+The control plane loads **`policy.json`** at the project root (`VARDEN_POLICY_FILE`). It must be a single JSON document with four top-level lists: `block`, `warn`, `monitor`, and `allow` (see [Policy model](#policy-model)).
+
+Bootstrap a full baseline from the bundled pack (recommended):
 
 ```bash
-cp examples/policy.json policy.json
+python -c "import json, pathlib; p=pathlib.Path('policy-packs/baseline-operational-safety.json'); pathlib.Path('policy.json').write_text(json.dumps(json.loads(p.read_text(encoding='utf-8'))['template'], indent=2) + '\n', encoding='utf-8')"
 ```
 
 PowerShell:
 
 ```powershell
-Copy-Item examples\policy.json policy.json
+python -c "import json, pathlib; p=pathlib.Path('policy-packs/baseline-operational-safety.json'); pathlib.Path('policy.json').write_text(json.dumps(json.loads(p.read_text(encoding='utf-8'))['template'], indent=2) + chr(10), encoding='utf-8')"
 ```
 
 ### 3) Start Varden
@@ -109,6 +113,48 @@ admin-demo-key
 
 ---
 
+## `varden session`: guard cloud and ops CLIs from your shell
+
+After `pip install -e .`, the **`varden session`** command starts an interactive shell (or a one-shot command) with a temporary **`PATH` prefix** so selected binaries are **resolved through Varden** instead of calling the real tools directly. Each shim forwards to the real executable on your original `PATH`, sends a **shell-execute** action to the control plane (`VARDEN_BASE_URL`), and either **enforces** policy before run or, in passive mode, **runs first and logs** the outcome.
+
+**When to use it:** wrap everyday operator workflows—Kubernetes, Terraform, cloud CLIs, Docker, package managers, Git, database clients, and common deploy targets—so decisions and traces land in the same dashboard as Python `varden.protect()` traffic.
+
+**Shimmed commands** (first on `PATH` inside the session): `railway`, `supabase`, `vercel`, `fly`, `render`, `kubectl`, `terraform`, `aws`, `gcloud`, `az`, `psql`, `mysql`, `git`, `npm`, `pip`, `pip3`, `docker`, `docker-compose`, `cursor`.
+
+**Examples**
+
+```bash
+# Start a subshell in the current directory (enforcing: guard → exec → log)
+export VARDEN_BASE_URL=http://127.0.0.1:8000
+export VARDEN_API_KEY=admin-demo-key
+varden session
+
+# Same, but log-only (no guard before exec; still posts telemetry)
+varden session --passive
+
+# Session rooted in another directory
+varden session ~/src/my-infra
+
+# One-shot: run a single guarded command, then exit
+varden session -- kubectl get pods -A
+
+# Open the current folder in Cursor; the `cursor` CLI goes through the shim (this launch is guarded and logged).
+# Child processes inside the IDE may not inherit the session PATH unless Cursor forwards it (use an interactive `varden session` shell for full coverage).
+varden session . -- cursor .
+```
+
+
+**Behaviour notes**
+
+- **Enforcing (default):** each shim uses the same guard → execute → log pipeline as `varden monitor`; blocks surface as a failed invocation with policy context in the control plane.
+- **`--passive`:** the real command always runs; Varden records an allowed decision with execution metadata afterward (useful for gradual rollout or inventory).
+- The session sets **`VARDEN_AGENT_NAME=varden-session`**, **`VARDEN_EXECUTION_SURFACE=varden_session`**, and a **`VARDEN_TRACE_ID`** if one is not already set. Shims honour **`VARDEN_MONITOR_*`** (timeout, caps, fail mode) alongside the usual **`VARDEN_BASE_URL`** / **`VARDEN_API_KEY`** (or bearer token) variables.
+- On macOS, if `cursor` is not on your normal `PATH`, the shim tries known paths under `Cursor.app`.
+
+Exit the subshell to tear down the temporary shim directory.
+
+---
+
 ## First-run demo flow
 
 ### Fastest path
@@ -117,7 +163,7 @@ admin-demo-key
 python -m varden.cli demo
 ```
 
-That starts the local OSS stack, seeds one allowed, one warned, and one blocked trace, and opens the command center.
+That starts the local stack, seeds one allowed, one warned, and one blocked trace, and opens the command center.
 
 If you installed the package and have the console script on your `PATH`, this equivalent command also works:
 
@@ -161,7 +207,7 @@ After running the demos, the dashboard should show:
 ---
 
 
-## Official LangChain integration
+## LangChain integration
 
 Varden ships a first-class optional LangChain integration in `varden_langchain` so teams can add policy enforcement and tracing to LangChain tools without rewriting their app architecture.
 
@@ -181,6 +227,21 @@ varden.protect_from_env(auto_instrument=False)
 tools = protect_tools(tools, agent_name='support-agent')
 ```
 
+Optional: combine callbacks and wrapped tools in one step:
+
+```python
+import varden
+from varden_langchain import create_protected_agent
+
+varden.protect_from_env(auto_instrument=False, app_name="langchain-app")
+protected = create_protected_agent(tools=my_tools, agent_name="research-agent")
+agent = initialize_agent(
+    tools=protected["tools"],
+    llm=llm,
+    callbacks=protected["callbacks"],
+)
+```
+
 ### What you get
 
 - pre-execution allow / warn / block checks on tool calls
@@ -198,7 +259,7 @@ python demos/langchain/sql_guard_demo.py
 python demos/langchain/exfiltration_demo.py
 ```
 
-The demos are designed to look good in the OSS dashboard:
+The demos are designed to look good on the dashboard:
 - a clear allowed tool call
 - a warned outbound data movement attempt
 - a blocked dangerous SQL action
@@ -261,7 +322,7 @@ VARDEN_TIMEOUT=5.0
 
 ### Scan modes
 
-Varden OSS defaults to **fast** mode to keep the policy path lightweight.
+Varden defaults to **deep** mode to keep the policy path fully enforced. Toggle between the two within app.
 
 ```text
 VARDEN_SCAN_MODE=fast
@@ -288,7 +349,27 @@ Because scan depth is set on the control plane, developers cannot silently bypas
 
 ## Policy model
 
-The default OSS policy is in `examples/policy.json` and can be changed centrally from `/ui/rules`:
+Policies are a single JSON document saved as **`policy.json`** (or the path in **`VARDEN_POLICY_FILE`**). The runtime expects **four arrays** at the top level:
+
+| Key | Role |
+|-----|------|
+| `block` | Deny the action before it runs when a rule matches. |
+| `warn` | Allow but flag; downstream intelligence may raise risk. |
+| `monitor` | Observed and logged; use for broad coverage of tool or channel types. |
+| `allow` | Optional explicit **allow** decisions with a matched rule (only evaluated if nothing matched in `block`, `warn`, or `monitor`). |
+
+**How matching works:** the engine walks the buckets in order **`block` → `warn` → `monitor` → `allow`**. For each bucket it scans rules **in list order** and returns as soon as **one rule matches** the normalized action; that bucket sets the outcome (`block`, `warn`, `monitor`, or `allow`). If **no** rule matches in **any** bucket, the action is **allowed** by default. Optional per-rule metadata such as `name`, `title`, `description`, `priority`, and `reason` is carried for the UI and audit output; **`enabled: false` skips a rule.**
+
+**What a rule looks like:** each rule is a JSON object whose **predicate keys** are compared to fields on the action, for example:
+
+- **Action type and tool:** `type` (e.g. `tool_call`, `http_request`, `llm_call`), `tool`, `url`, `domain`, `method`
+- **Arguments and payload:** `field:args.args`, `field:args.kwargs` with operators such as `{ "contains": "substring" }`, `{ "in": ["a", "b"] }`, `{ "gte": 60 }`, `{ "exists": true }`, `startswith`, `endswith`, `eq`, `lte`
+- **Classifiers and risk:** `classifier:secrets`, `classifier:internal`, `min_risk_score`, `field:risk_score`, and other classifier or metadata keys the guard populates
+- **Nested metadata:** keys starting with `metadata.` for behaviour or enrichment features
+
+**Where to start:** import or merge the `template` section from files in **`policy-packs/`** (see `policy-packs/README.md`), use **`GET /policy/templates`** for SQL-oriented starter fragments, or author rules in the visual editor at **`/ui/rules`**, which reads and writes the same four-list document.
+
+**Minimal example** (illustrative only; real policies are usually larger):
 
 ```json
 {
@@ -304,10 +385,6 @@ The default OSS policy is in `examples/policy.json` and can be changed centrally
   "allow": []
 }
 ```
-
-This gives a useful first-run story:
-- dangerous destructive tools are blocked
-- internal/secrets content is surfaced as a warn path
 
 ---
 
@@ -350,7 +427,7 @@ The backend continues to serve the UI at `/ui` and `/ui/rules`, so deployment an
 
 ## Self-hosting
 
-Varden OSS is designed so teams can run it themselves.
+Varden is designed so teams and/or developers can run it themselves.
 
 Use:
 - `deploy/docker-compose.yml`
@@ -361,7 +438,7 @@ Notes:
 - local/dev defaults use SQLite for fast adoption
 - production self-hosting should disable dev bootstrap auth and set a strong signing secret
 - the dashboard auto-loads the bootstrap API key from `/health` in local dev mode
-- this OSS release is intentionally single-tenant and does not include enterprise governance APIs
+- this distribution is intentionally **single-tenant**; multi-tenant enterprise governance APIs are not part of the default product surface
 
 ---
 
@@ -375,54 +452,26 @@ These are intended to be the shortest path from clone to “I can see Varden doi
 
 ---
 
-
-
-## LangChain integration
-
-Varden includes a drop-in `varden_langchain` integration package for protecting LangChain tool execution without relying on fragile monkey patching. The recommended model is:
-
-- wrap tools with `protect_tools(...)` for allow / warn / block enforcement
-- attach `VardenCallbackHandler(...)` for chain, tool, and LLM trace events
-- or use `create_protected_agent(...)` to get both in one step
-
-```python
-import varden
-from varden_langchain import create_protected_agent
-
-varden.protect_from_env(auto_instrument=False, app_name="langchain-app")
-protected = create_protected_agent(tools=my_tools, agent_name="research-agent")
-agent = initialize_agent(
-    tools=protected["tools"],
-    llm=llm,
-    callbacks=protected["callbacks"],
-)
-```
-
-Lightweight runnable demos live under `demos/langchain/`:
-- `demos/langchain/allow_warn_block_demo.py`
-- `demos/langchain/sql_guard_demo.py`
-- `demos/langchain/exfiltration_demo.py`
-
 ## Language SDKs
 
 This repository also includes starter SDKs for:
 - `sdks/rust`
 - `sdks/java`
 
-Python is the most complete runtime-integrated path in this OSS release.
+Python is the most complete runtime-integrated path in this repository.
 
 
 ## License
 
-Varden OSS uses a split license model:
+Varden uses a split license model:
 - **Core platform and dashboard** are licensed under **AGPL-3.0-or-later**.
 - **SDKs** in `sdks/python`, `sdks/java`, and `sdks/rust` are licensed under **Apache-2.0**.
 
 For AGPL-covered components, anyone who modifies and runs Varden for users over a network must make the corresponding source code for those modifications available to those users.
 
-This is the strongest widely adopted **open-source** option if you want to discourage companies from taking the code, modifying it, and quietly running it as a closed hosted service.
+This is a strong **copyleft** option if you want to discourage companies from taking the code, modifying it, and quietly running it as a closed hosted service.
 
-Important: no OSI-approved open-source license prevents people from copying or modifying code entirely. If you eventually want stronger commercial restrictions than AGPL permits, the usual path is **dual licensing**: keep OSS under AGPL and offer separate commercial terms for customers who do not want AGPL obligations.
+Important: no OSI-approved license prevents people from copying or modifying code entirely. If you eventually want stronger commercial restrictions than AGPL permits, the usual path is **dual licensing**: keep the AGPL-licensed tree available under AGPL and offer separate commercial terms for customers who do not want AGPL obligations.
 
 ## Repository hygiene
 
@@ -432,26 +481,4 @@ This repository includes:
 - `NOTICE` for copyright and branding notice
 - `.gitignore` for Python, Node, and local runtime state
 - `.gitattributes` for line endings and generated frontend assets
-- `CODEOWNERS`, `CONTRIBUTING.md`, and `SECURITY.md` to support a clean OSS workflow
-
-
-
-## New in this OSS cut
-
-- `trace_id` propagation across SDK-guarded actions
-- parent-child event linkage for replayable decision chains
-- `/traces/{trace_id}` API for graph-ready execution traces
-- behavioural enrichment in the intelligence layer, including suspicious multi-step sequence scoring
-- policy template for warning on suspicious sequences
-
-## Included OSS policy packs
-
-Varden now ships with an out-of-the-box database safety pack for agent-written SQL. The default policy blocks destructive database operations and warns on suspect SQL patterns such as schema enumeration, broad reads from sensitive tables, `SELECT *`, and missing `LIMIT` clauses on reads.
-
-Included SQL protections:
-- block destructive SQL such as `DROP TABLE`, `DROP DATABASE`, `TRUNCATE`, dangerous privilege changes, unbounded `DELETE` / `UPDATE`, and multi-statement SQL
-- warn on schema enumeration via `information_schema`, `pg_catalog`, `sqlite_master`, `SHOW TABLES`, and similar patterns
-- warn on broad reads from sensitive tables, `SELECT *`, `UNION SELECT`, and read queries without a `LIMIT`
-- monitor common SQL execution tools including `sql.query`, `db.query`, `postgres.query`, `mysql.query`, `sqlite.query`, `psycopg.execute`, `cursor.execute`, and `sqlalchemy.execute`
-
-The policy templates `block_dangerous_database_operations` and `warn_suspect_sql_operations` are available from the policy API and are also reflected in the default `policy.json`.
+- `CODEOWNERS`, `CONTRIBUTING.md`, and `SECURITY.md` to support a clean contribution workflow
