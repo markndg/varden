@@ -10,6 +10,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -e .
+      - run: pip install -e ".[langchain,test]"
       - run: python -m compileall varden
       - run: python -m pytest -q
