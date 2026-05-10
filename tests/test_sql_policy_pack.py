@@ -28,11 +28,9 @@ def test_templates_include_database_pack(tmp_path):
 
 
 def test_default_policy_blocks_unbounded_sql_write(tmp_path):
-    import json
-    policy = json.loads((tmp_path.parent / 'policy.json').read_text()) if False else None
     engine = PolicyEngine(str(tmp_path / 'varden.db'))
-    import pathlib, json as _json
-    repo_policy = _json.loads(pathlib.Path(__file__).resolve().parents[1].joinpath('policy.json').read_text(encoding='utf-8'))
+    # Same SQL rules as GET /policy/templates → block_dangerous_database_operations (committed in code; no repo-root policy.json).
+    repo_policy = engine.templates()["block_dangerous_database_operations"]
     engine.update_policy(repo_policy)
     action = Action(
         type='tool_call',
@@ -46,8 +44,7 @@ def test_default_policy_blocks_unbounded_sql_write(tmp_path):
 
 def test_default_policy_warns_sensitive_select(tmp_path):
     engine = PolicyEngine(str(tmp_path / 'varden.db'))
-    import pathlib, json as _json
-    repo_policy = _json.loads(pathlib.Path(__file__).resolve().parents[1].joinpath('policy.json').read_text(encoding='utf-8'))
+    repo_policy = engine.templates()["block_dangerous_database_operations"]
     engine.update_policy(repo_policy)
     sql = 'SELECT * FROM customers'
     action = Action(
