@@ -415,7 +415,7 @@ Policies are a single JSON document saved as **`policy.json`** (or the path in *
 
 ## Dashboard frontend
 
-The dashboard has been rebuilt as a typed React + TypeScript application and compiled into static assets served by the FastAPI control plane.
+The dashboard has been designed to be feature rich, built using React + typescript.
 
 Frontend source lives in `frontend/` and can be worked on independently:
 
