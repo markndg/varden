@@ -1,6 +1,6 @@
 # Varden OSS
 
-![Varden logo](varden/web/assets/varden-icon.png)
+<img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="90" />
 
 **Varden OSS is a self-hosted runtime firewall for AI agents.**
 It sits between agent reasoning and action execution so teams can allow, warn, or block tool calls, HTTP requests, LLM calls, and workflow steps from infrastructure they run themselves.

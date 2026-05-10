@@ -1993,6 +1993,15 @@ button { cursor: pointer; }
   flex-wrap: wrap;
   margin-top: 12px;
 }
+.coverageDetail .toggleRow { gap: 8px; }
+.coverageDetail .toggleRow .segmented {
+  padding: 8px 14px;
+  border-radius: 12px;
+  line-height: 1.1;
+}
+.coverageDetail .coverageCluster__chips .badge {
+  padding: 4px 10px;
+}
 .coverageCluster__impact {
   display: flex;
   align-items: center;

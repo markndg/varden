@@ -13,11 +13,12 @@ type RulesPageProps = {
   ruleFocusToken: string;
   ruleReturnTo: string;
   ruleDraft: string;
+  ruleDraftNonce: string;
   onBackToDecision: (path: string) => void;
   helpers: any;
 };
 
-export function RulesPage({ policy, policyText, setPolicyText, templates, onSave, loading, ruleFocus, ruleFocusBucket, ruleFocusToken, ruleReturnTo, ruleDraft, onBackToDecision, helpers }: RulesPageProps) {
+export function RulesPage({ policy, policyText, setPolicyText, templates, onSave, loading, ruleFocus, ruleFocusBucket, ruleFocusToken, ruleReturnTo, ruleDraft, ruleDraftNonce, onBackToDecision, helpers }: RulesPageProps) {
   const { RULE_BUCKETS, usePersistentState, safeParsePolicy, classNames, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, pickFirstNonEmptyBucket, mergePolicyWithoutDuplicates, semanticRuleFingerprint, summarizeRule, summarizeRuleConditions, getRuleOperator, getRuleValue, coerceRuleInput, setRuleOperatorValue, setRuleSimpleValue, ADVANCED_FIELDS, CLASSIFIER_KEYS, OPERATOR_OPTIONS, bucketTone } = helpers;
   const [selectedBucket, setSelectedBucket] = useState<string>('block');
   const [selectedRuleIndex, setSelectedRuleIndex] = useState(0);
@@ -38,7 +39,7 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, onSave
   const activeRules = workingPolicy[selectedBucket] || [];
   const activeRule = activeRules[selectedRuleIndex] || null;
   const ruleKey = (bucket: string, idx: number) => `${bucket}:${idx}`;
-  const scrollSelectedRuleIntoView = (bucket = selectedBucket, index = selectedRuleIndex) => { const target = ruleItemRefs.current[ruleKey(bucket, index)]; if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'nearest' }); };
+  const scrollSelectedRuleIntoView = (bucket = selectedBucket, index = selectedRuleIndex) => { const target = ruleItemRefs.current[ruleKey(bucket, index)]; if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' }); };
   const resetRuleEditorScroll = () => { if (ruleEditorPaneRef.current) ruleEditorPaneRef.current.scrollTop = 0; };
   const activeRuleDefinedFields = (rule: any) => { if (!rule) return []; const fields: string[] = []; if (rule.type) fields.push('type'); if (rule.tool) fields.push('tool'); if (rule.priority !== undefined) fields.push('priority'); if (rule.title || rule.name) fields.push('title'); if (rule.description || rule.reason) fields.push('description'); if (rule.enabled !== undefined) fields.push('enabled'); for (const key of Object.keys(rule || {})) if (String(key).startsWith('classifier:') || String(key).startsWith('field:')) fields.push(String(key)); for (const [key] of customRuleEntries(rule)) fields.push(String(key)); return Array.from(new Set(fields)); };
   const fieldClass = (fieldKey: string, extra?: string) => classNames(extra, highlightedFields.includes(fieldKey) && 'ruleField--matched');
@@ -65,18 +66,47 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, onSave
 
   useEffect(() => {
     const raw = String(ruleDraft || '').trim();
-    if (!raw || appliedDraftRef.current === raw) return;
+    const nonce = String(ruleDraftNonce || '').trim();
+    const applyKey = `${raw}::${nonce}`;
+    if (!raw) return;
     try {
       const parsed = ensurePolicyDoc(JSON.parse(raw));
       const nextDoc = mergePolicyWithoutDuplicates(workingPolicy, parsed);
       const bucket = pickFirstNonEmptyBucket(parsed);
+      const draftedRule = parsed?.[bucket]?.[0] || null;
+      const draftedFingerprint = draftedRule ? semanticRuleFingerprint(draftedRule) : '';
+      const existingIndex = draftedRule
+        ? Math.max(
+          draftedFingerprint ? (workingPolicy[bucket] || []).findIndex((rule: any) => semanticRuleFingerprint(rule) === draftedFingerprint) : -1,
+          (workingPolicy[bucket] || []).findIndex((rule: any) => JSON.stringify(rule || {}) === JSON.stringify(draftedRule || {})),
+        )
+        : -1;
+
+      // If rule is already present, still force-select it for this click.
+      if (existingIndex >= 0) {
+        if (appliedDraftRef.current !== applyKey) {
+          requestAnimationFrame(() => selectRule(bucket, existingIndex));
+          appliedDraftRef.current = applyKey;
+        }
+        return;
+      }
+
       setPolicyText(JSON.stringify(dedupePolicyDoc(nextDoc), null, 2));
-      requestAnimationFrame(() => selectRule(bucket, 0));
-      appliedDraftRef.current = raw;
+      requestAnimationFrame(() => {
+        const byFingerprint = draftedFingerprint
+          ? (nextDoc[bucket] || []).findIndex((rule: any) => semanticRuleFingerprint(rule) === draftedFingerprint)
+          : -1;
+        const byShape = draftedRule
+          ? (nextDoc[bucket] || []).findIndex((rule: any) => JSON.stringify(rule || {}) === JSON.stringify(draftedRule || {}))
+          : -1;
+        const targetIndex = Math.max(byFingerprint, byShape, 0);
+        selectRule(bucket, targetIndex);
+      });
+      appliedDraftRef.current = applyKey;
     } catch {
-      appliedDraftRef.current = raw;
+      appliedDraftRef.current = applyKey;
     }
-  }, [ruleDraft, workingPolicy, ensurePolicyDoc, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, dedupePolicyDoc, setPolicyText]);
+  }, [ruleDraft, ruleDraftNonce, workingPolicy, ensurePolicyDoc, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, dedupePolicyDoc, setPolicyText]);
 
   const updateDoc = (nextDoc: any) => setPolicyText(JSON.stringify(dedupePolicyDoc(ensurePolicyDoc(nextDoc)), null, 2));
   const selectRule = (bucket: string, index: number) => { setSelectedBucket(bucket); setSelectedRuleIndex(index); requestAnimationFrame(() => { scrollSelectedRuleIntoView(bucket, index); resetRuleEditorScroll(); }); };

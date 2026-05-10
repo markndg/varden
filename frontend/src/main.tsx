@@ -418,6 +418,7 @@ function Shell() {
   const [ruleFocusToken, setRuleFocusToken] = useState<string>(ruleFocusTokenFromSearch(location.search));
   const [ruleReturnTo, setRuleReturnTo] = useState<string>(ruleReturnToFromSearch(location.search));
   const [ruleDraft, setRuleDraft] = useState<string>(new URLSearchParams(location.search).get('draft') || '');
+  const [routeFocus, setRouteFocus] = useState<string>(new URLSearchParams(location.search).get('focus') || '');
   const [filters, setFilters] = usePersistentState('varden.filters', { search: '', status: 'all', from: '', to: '' });
   const [globalAgentFilter, setGlobalAgentFilter] = usePersistentState<string>('varden.globalAgent', '');
   const [agentScopeMenuOpen, setAgentScopeMenuOpen] = useState(false);
@@ -451,6 +452,7 @@ function Shell() {
       setRuleFocusToken(ruleFocusTokenFromSearch(location.search));
       setRuleReturnTo(ruleReturnToFromSearch(location.search));
       setRuleDraft(new URLSearchParams(location.search).get('draft') || '');
+      setRouteFocus(new URLSearchParams(location.search).get('focus') || '');
     };
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
@@ -526,7 +528,7 @@ function Shell() {
     refreshOverview().catch((e: any) => setError(e?.message || 'Failed to refresh overview'));
     if (page === 'rules' || page === 'coverage' || page === 'impact') refreshPolicy().catch((e: any) => setError(e?.message || 'Failed to load policy'));
     if (page === 'decision' && detailId) refreshDetail(detailId).catch((e: any) => setError(e?.message || 'Failed to load event'));
-  }, [token, page, detailId]);
+  }, [token, page, detailId, routeFocus]);
 
   useEffect(() => {
     if (!token || !selectedTraceId) return;
@@ -581,6 +583,7 @@ function Shell() {
     setRuleFocusToken(ruleFocusTokenFromSearch(search));
     setRuleReturnTo(ruleReturnToFromSearch(search));
     setRuleDraft(new URLSearchParams(path.split('?')[1] || '').get('draft') || '');
+    setRouteFocus(new URLSearchParams(path.split('?')[1] || '').get('focus') || '');
   }
 
   async function savePolicy() {
@@ -847,6 +850,7 @@ function Shell() {
             ruleFocusToken={ruleFocusToken}
             ruleReturnTo={ruleReturnTo}
             ruleDraft={ruleDraft}
+            ruleDraftNonce={routeFocus}
             onBackToDecision={(path: string) => navigate('decision', path)}
             helpers={{ RULE_BUCKETS, usePersistentState, safeParsePolicy, classNames, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, pickFirstNonEmptyBucket, mergePolicyWithoutDuplicates, semanticRuleFingerprint, summarizeRule, summarizeRuleConditions, getRuleOperator, getRuleValue, coerceRuleInput, setRuleOperatorValue, setRuleSimpleValue, ADVANCED_FIELDS, CLASSIFIER_KEYS, OPERATOR_OPTIONS, bucketTone }}
           />
@@ -865,8 +869,8 @@ function Shell() {
           <CoverageGapsPage
             overview={scopedOverview as DashboardPayload}
             policy={safeParsePolicy(policyText, policy)}
-            onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
-            onOpenRules={(draftRule: any) => navigate('rules', `/ui/rules?draft=${encodeURIComponent(JSON.stringify(draftRule || {}))}`)}
+            onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}?focus=${Date.now()}`)}
+            onOpenRules={(draftRule: any) => navigate('rules', `/ui/rules?draft=${encodeURIComponent(JSON.stringify(draftRule || {}))}&focus=${Date.now()}`)}
             helpers={{ RULE_BUCKETS: [...RULE_BUCKETS], summarizeRule, ruleFingerprint, normalizeEventRow, deriveMatchedRuleLabel, formatRiskReasonLabel, fmtNum, fmtTs, classNames }}
           />
         ) : null}
