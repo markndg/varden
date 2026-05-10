@@ -32,6 +32,7 @@ SHIM_CLI_NAMES: tuple[str, ...] = (
     "pip3",
     "docker",
     "docker-compose",
+    "cursor",
 )
 
 

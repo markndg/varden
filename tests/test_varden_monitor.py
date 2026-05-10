@@ -99,6 +99,53 @@ def test_guard_and_run_blocked_before_subprocess(monkeypatch):
     mock_guard.record_result.assert_not_called()
 
 
+def test_guard_and_run_observe_runs_when_blocked(monkeypatch):
+    from varden_sdk.sdk import VardenBlockedError
+
+    import varden_monitor.protect_run as pr_mod
+
+    ran: list[bool] = []
+
+    def fake_run(*_a, **_k):
+        ran.append(True)
+        pr = MagicMock()
+        pr.returncode = 0
+        pr.stdout = b""
+        pr.stderr = b""
+        return pr
+
+    monkeypatch.setattr(pr_mod.subprocess, "run", fake_run)
+
+    mock_guard = MagicMock()
+    mock_guard.activate.return_value = mock_guard
+    mock_guard.guarded_action.side_effect = VardenBlockedError("blocked", {"action": "block", "reason": "policy"})
+    mock_guard.record_result = MagicMock()
+
+    with patch.object(pr_mod, "VardenGuard", return_value=mock_guard):
+        with patch.object(pr_mod, "trace_agent") as m_trace:
+            m_trace.return_value.__enter__ = MagicMock()
+            m_trace.return_value.__exit__ = MagicMock(return_value=False)
+            code = _guard_and_run(
+                ["echo", "hi"],
+                cwd="/",
+                base_url="http://127.0.0.1:8000",
+                api_key=None,
+                bearer_token=None,
+                timeout=5.0,
+                agent_name="t",
+                trace_id=None,
+                workflow_id=None,
+                tenant_id="default",
+                fail_mode="open",
+                mode="observe",
+                stdout_cap=1000,
+                stderr_cap=1000,
+            )
+    assert code == 0
+    assert ran
+    mock_guard.record_result.assert_called_once()
+
+
 def test_guard_and_run_executes_when_allowed(monkeypatch):
     from varden_sdk.sdk import GuardResult
 

@@ -9,6 +9,7 @@ as a Python package.
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 
@@ -35,6 +36,9 @@ def _load_sdk_module():
         raise ImportError(f"Unable to load SDK module spec from {sdk_path}")
 
     module = importlib.util.module_from_spec(spec)
+    # Python 3.13+ dataclasses resolves annotations via sys.modules; loading via
+    # exec_module without registering leaves cls.__module__ missing from sys.modules.
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

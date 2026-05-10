@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
 try:
@@ -27,9 +28,24 @@ def _client_from_env() -> VardenClient:
     )
 
 
+def _darwin_cursor_cli_candidates() -> tuple[Path, ...]:
+    """Cursor IDE ships a CLI inside the .app; users often lack it on PATH."""
+    return (
+        Path("/Applications/Cursor.app/Contents/Resources/app/bin/cursor"),
+        Path.home() / "Applications/Cursor.app/Contents/Resources/app/bin/cursor",
+    )
+
+
 def _resolve_real_binary(tool_name: str) -> str | None:
     orig = os.environ.get("VARDEN_SESSION_ORIG_PATH") or os.environ.get("PATH", "")
-    return shutil.which(tool_name, path=orig)
+    found = shutil.which(tool_name, path=orig)
+    if found:
+        return found
+    if tool_name == "cursor" and sys.platform == "darwin":
+        for candidate in _darwin_cursor_cli_candidates():
+            if candidate.is_file():
+                return str(candidate)
+    return None
 
 
 def _run_child(exec_argv: list[str], cwd: str) -> subprocess.CompletedProcess:

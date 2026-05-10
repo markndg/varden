@@ -16,13 +16,28 @@ import time
 from typing import Any
 
 try:
-    from varden_sdk.sdk import VardenBlockedError, VardenGuard, trace_agent
+    from varden_sdk.sdk import GuardResult, VardenBlockedError, VardenGuard, trace_agent
 except ModuleNotFoundError:  # pragma: no cover
-    from varden_sdk import VardenBlockedError, VardenGuard, trace_agent  # type: ignore
+    from varden_sdk import GuardResult, VardenBlockedError, VardenGuard, trace_agent  # type: ignore
 
 from varden_monitor.payload import build_shell_execute_action, raw_payload_for_enrich
 
 SHELL_EXECUTE_TOOL = "shell.execute"
+
+
+def _decision_action_from_block_error(
+    exc: VardenBlockedError,
+    *,
+    fallback_action: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Normalize FastAPI 403 body (wrapped detail) or flat test doubles into (decision, action)."""
+    d = exc.decision if isinstance(exc.decision, dict) else {}
+    if isinstance(d.get("decision"), dict) and isinstance(d.get("action"), dict):
+        return d["decision"], d["action"]
+    sub = str(d.get("action", "")).strip().lower()
+    if sub in {"block", "blocked", "warn"}:
+        return d, fallback_action
+    return {"action": "block", "reason": str(exc)}, fallback_action
 
 
 def _status_from_decision(action: str | None) -> str:
@@ -111,10 +126,21 @@ def run_shell_execute_protected(
                 workflow_id=workflow_id,
             )
     except VardenBlockedError as e:
-        print(str(e), file=sys.stderr)
-        if isinstance(e.decision, dict):
-            print(e.decision.get("reason", ""), file=sys.stderr)
-        return 125
+        decision_part, action_part = _decision_action_from_block_error(e, fallback_action=action_dict)
+        if mode == "observe":
+            print(
+                "varden-monitor: policy blocked this command; observe mode runs it anyway.",
+                file=sys.stderr,
+            )
+            result = GuardResult(decision=decision_part, action=action_part, event_id=None)
+        else:
+            print(str(e), file=sys.stderr)
+            reason = ""
+            if isinstance(decision_part, dict):
+                reason = str(decision_part.get("reason") or "")
+            if reason:
+                print(reason, file=sys.stderr)
+            return 125
     except Exception as exc:
         guard_error = str(exc)
         if fail_mode == "closed":

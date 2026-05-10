@@ -66,6 +66,16 @@ def run_demo(host: str = '127.0.0.1', port: int = 8000, open_browser: bool = Tru
                 proc.kill()
 
 
+def _monitor_missing_exit() -> int:
+    print(
+        "varden monitor/session require the varden_monitor package (bundled with this repo).\n"
+        "From the repository root install the platform in editable mode:\n"
+        "  pip install -e .",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog='varden', description='Varden OSS command line tools')
     sub = parser.add_subparsers(dest='command')
@@ -81,12 +91,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'demo':
         return run_demo(host=args.host, port=args.port, open_browser=not args.no_browser)
     if args.command == 'monitor':
-        from varden_monitor.cli import monitor_argv
+        try:
+            from varden_monitor.cli import monitor_argv
+        except ModuleNotFoundError:
+            return _monitor_missing_exit()
 
         ma = getattr(args, 'monitor_args', None) or []
         return monitor_argv(ma)
     if args.command == 'session':
-        from varden_monitor.session import session_argv
+        try:
+            from varden_monitor.session import session_argv
+        except ModuleNotFoundError:
+            return _monitor_missing_exit()
 
         sa = getattr(args, 'session_args', None) or []
         return session_argv(sa)

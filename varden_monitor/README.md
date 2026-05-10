@@ -1,6 +1,6 @@
 # Varden Monitor
 
-Apache-2.0 host CLI that runs **`POST /sdk/guard`** before and **`POST /sdk/log`** after a subprocess. Use it to put **Cursor terminals**, **task runners**, or **CI steps** on the same policy rail as in-process SDK usage—without modifying closed-source IDEs.
+Apache-2.0 host CLI. For **`varden-monitor run|exec`** (and enforcing `varden session` shims), it runs **`POST /sdk/guard`** before the child and **`POST /sdk/log`** after it exits. **Passive** paths (`varden monitor .`, `varden session --passive`, or `VARDEN_SESSION_PASSIVE=1`) run the real binary first and **log** with an allow decision (no guard). Use it to put **Cursor terminals**, **task runners**, or **CI steps** on the same policy rail as in-process SDK usage—without modifying closed-source IDEs.
 
 ## Requirements
 
@@ -30,8 +30,10 @@ Place **`--`** before the command you want to execute.
 | `--workflow` / `VARDEN_WORKFLOW_ID` | Workflow id |
 | `--tenant` / `VARDEN_TENANT_ID` | Tenant (default `default`) |
 | `--fail-mode open\|closed` / `VARDEN_MONITOR_FAIL_MODE` | `open`: if guard/log HTTP fails, still run command; `closed`: abort |
+| `--mode enforce\|observe` / `VARDEN_MODE` | `enforce` (default): on policy **block** (HTTP 403 from guard), do not start the child; `observe`: still run the child and log the block decision (visibility without enforcement) |
 | `--timeout` / `VARDEN_MONITOR_TIMEOUT` | HTTP timeout seconds |
-| `--stdout-cap` / `--stderr-cap` | Max chars of child output stored in log payload |
+| `--stdout-cap` / `VARDEN_MONITOR_STDOUT_CAP` | Max chars of child **stdout** captured into the log payload (non-TTY; default 8000) |
+| `--stderr-cap` / `VARDEN_MONITOR_STDERR_CAP` | Max chars of child **stderr** captured into the log payload (non-TTY; default 8000) |
 
 ## `varden monitor .` (passive)
 
