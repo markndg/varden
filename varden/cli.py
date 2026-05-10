@@ -73,9 +73,23 @@ def main(argv: list[str] | None = None) -> int:
     demo.add_argument('--host', default='127.0.0.1')
     demo.add_argument('--port', type=int, default=8000)
     demo.add_argument('--no-browser', action='store_true')
+    monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
+    monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
+    session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
+    session.add_argument('session_args', nargs=argparse.REMAINDER, help='[--passive] [DIR] [-- CMD...]')
     args = parser.parse_args(argv)
     if args.command == 'demo':
         return run_demo(host=args.host, port=args.port, open_browser=not args.no_browser)
+    if args.command == 'monitor':
+        from varden_monitor.cli import monitor_argv
+
+        ma = getattr(args, 'monitor_args', None) or []
+        return monitor_argv(ma)
+    if args.command == 'session':
+        from varden_monitor.session import session_argv
+
+        sa = getattr(args, 'session_args', None) or []
+        return session_argv(sa)
     parser.print_help()
     return 0
 

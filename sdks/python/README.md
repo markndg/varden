@@ -27,3 +27,5 @@ After publish, users can install directly with:
 ```bash
 pip install varden
 ```
+
+From the **monorepo** root install (`pip install -e .`) also exposes **`varden-monitor`** and **`varden-session`**, plus `varden monitor` / `varden session` on the platform CLI. See [varden_monitor/README.md](../../varden_monitor/README.md) for PATH-shim sessions and passive `varden monitor .`.

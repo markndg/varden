@@ -46,6 +46,139 @@ function usePersistentState<T>(key: string, fallback: T) {
   return [value, setValue] as const;
 }
 
+function normalizeAgentKey(name?: string | null) {
+  return String(name || '').trim();
+}
+
+function eventMatchesGlobalAgent(event: any, agentFilter: string, normalizeEventRow: (event: any) => EventRow) {
+  if (!agentFilter) return true;
+  const row = normalizeEventRow(event);
+  return normalizeAgentKey(row.agent_name) === agentFilter;
+}
+
+function collectAgentNames(overview: DashboardPayload | null): string[] {
+  if (!overview) return [];
+  const set = new Set<string>();
+  for (const row of overview.top_agents || []) {
+    const a = normalizeAgentKey((row as any)?.agent);
+    if (a) set.add(a);
+  }
+  for (const row of overview.recent_events || []) {
+    const a = normalizeAgentKey((row as any)?.agent_name);
+    if (a) set.add(a);
+  }
+  for (const trace of [...(overview.recent_traces || []), ...(overview.trace_catalogue || [])]) {
+    for (const ev of trace?.events || []) {
+      const a = normalizeAgentKey((ev as any)?.agent_name || (ev as any)?.action?.agent_name);
+      if (a) set.add(a);
+    }
+    for (const key of Object.keys(trace?.summary?.agents || {})) {
+      const a = normalizeAgentKey(key);
+      if (a) set.add(a);
+    }
+  }
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
+function pruneTraceForAgent(trace: any, agentFilter: string, normalizeEventRow: (event: any) => EventRow): any | null {
+  if (!trace || !agentFilter) return trace;
+  const rawEvents = trace.events || [];
+  const filtered = rawEvents.filter((ev: any) => eventMatchesGlobalAgent(ev, agentFilter, normalizeEventRow));
+  if (!filtered.length) return null;
+  const ids = new Set(filtered.map((ev: any) => Number(ev?.id ?? ev?.action?.id ?? normalizeEventRow(ev).id)).filter((n: number) => n > 0));
+  const nodes = (trace.graph?.nodes || []).filter((n: any) => ids.has(Number(n.id)));
+  const edges = (trace.graph?.edges || []).filter((e: any) => ids.has(Number(e.source)) && ids.has(Number(e.target)));
+  const norm = filtered.map(normalizeEventRow);
+  const statuses: Record<string, number> = {};
+  const tools: Record<string, number> = {};
+  const agents: Record<string, number> = {};
+  let start = Infinity;
+  let end = -Infinity;
+  for (const row of norm) {
+    const st = String(row.outcome || eventOutcomeStatus(row) || 'allowed');
+    statuses[st] = (statuses[st] || 0) + 1;
+    const t = row.tool || 'unknown';
+    tools[t] = (tools[t] || 0) + 1;
+    const ag = row.agent_name || 'unknown';
+    agents[ag] = (agents[ag] || 0) + 1;
+    const ts = Number(row.timestamp || 0);
+    if (ts) {
+      start = Math.min(start, ts);
+      end = Math.max(end, ts);
+    }
+  }
+  return {
+    ...trace,
+    events: filtered,
+    graph: { nodes, edges },
+    summary: {
+      ...(trace.summary || {}),
+      event_count: filtered.length,
+      statuses,
+      tools,
+      agents,
+      start_timestamp: start === Infinity ? trace.summary?.start_timestamp : start,
+      end_timestamp: end === -Infinity ? trace.summary?.end_timestamp : end,
+    },
+  };
+}
+
+function applyAgentScopeToOverview(
+  overview: DashboardPayload | null,
+  agentFilter: string,
+  normalizeEventRow: (event: any) => EventRow,
+): DashboardPayload | null {
+  if (!overview || !agentFilter) return overview;
+  const recent_events = (overview.recent_events || []).filter((row) => eventMatchesGlobalAgent(row, agentFilter, normalizeEventRow));
+  const mapTraces = (traces: any[] | undefined) =>
+    (traces || []).map((t) => pruneTraceForAgent(t, agentFilter, normalizeEventRow)).filter(Boolean) as any[];
+  const recent_traces = mapTraces(overview.recent_traces);
+  const trace_catalogue = mapTraces(overview.trace_catalogue);
+  const merged = new Map<number, EventRow>();
+  for (const row of recent_events.map(normalizeEventRow)) if (row.id) merged.set(row.id, row);
+  for (const trace of [...recent_traces, ...trace_catalogue]) {
+    for (const ev of trace?.events || []) {
+      const row = normalizeEventRow(ev);
+      if (row.id) merged.set(row.id, row);
+    }
+  }
+  const allScoped = Array.from(merged.values());
+  const top_tools = (() => {
+    const m = new Map<string, number>();
+    for (const row of allScoped) {
+      const t = row.tool || 'unknown';
+      m.set(t, (m.get(t) || 0) + 1);
+    }
+    return Array.from(m.entries()).map(([tool, count]) => ({ tool, count })).sort((a, b) => b.count - a.count).slice(0, 12);
+  })();
+  const top_agents = (() => {
+    const m = new Map<string, number>();
+    for (const row of allScoped) {
+      const a = row.agent_name || 'unknown';
+      m.set(a, (m.get(a) || 0) + 1);
+    }
+    return Array.from(m.entries()).map(([agent, count]) => ({ agent, count })).sort((a, b) => b.count - a.count);
+  })();
+  const latencies = allScoped.map((row) => Number((row as any).decision_latency_ms || 0)).filter((n) => n > 0).sort((a, b) => a - b);
+  const p95_decision_latency_ms = latencies.length ? latencies[Math.max(0, Math.floor(0.95 * (latencies.length - 1)))] : overview.metrics?.p95_decision_latency_ms;
+  const avg_decision_latency_ms = latencies.length
+    ? latencies.reduce((s, n) => s + n, 0) / latencies.length
+    : overview.metrics?.avg_decision_latency_ms;
+  return {
+    ...overview,
+    recent_events,
+    recent_traces,
+    trace_catalogue,
+    top_tools,
+    top_agents,
+    metrics: {
+      ...(overview.metrics || {}),
+      total_events: allScoped.length,
+      p95_decision_latency_ms,
+      avg_decision_latency_ms,
+    },
+  };
+}
 
 function isElementFullyVisible(el: Element | null) {
   if (!el) return false;
@@ -286,9 +419,28 @@ function Shell() {
   const [ruleReturnTo, setRuleReturnTo] = useState<string>(ruleReturnToFromSearch(location.search));
   const [ruleDraft, setRuleDraft] = useState<string>(new URLSearchParams(location.search).get('draft') || '');
   const [filters, setFilters] = usePersistentState('varden.filters', { search: '', status: 'all', from: '', to: '' });
+  const [globalAgentFilter, setGlobalAgentFilter] = usePersistentState<string>('varden.globalAgent', '');
+  const [agentScopeMenuOpen, setAgentScopeMenuOpen] = useState(false);
+  const agentScopeMenuRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!agentScopeMenuOpen) return;
+    const onDocMouseDown = (e: MouseEvent) => {
+      if (agentScopeMenuRef.current && !agentScopeMenuRef.current.contains(e.target as Node)) setAgentScopeMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setAgentScopeMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocMouseDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDocMouseDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [agentScopeMenuOpen]);
 
   useEffect(() => {
     const handlePop = () => {
@@ -385,6 +537,22 @@ function Shell() {
     return () => { cancelled = true; };
   }, [token, selectedTraceId]);
 
+  const scopedOverview = useMemo(
+    () => applyAgentScopeToOverview(overview, globalAgentFilter, normalizeEventRow),
+    [overview, globalAgentFilter],
+  );
+  const agentCatalog = useMemo(() => collectAgentNames(overview), [overview]);
+  const displaySelectedTrace = useMemo(() => {
+    if (!selectedTrace) return null;
+    if (!globalAgentFilter) return selectedTrace;
+    return pruneTraceForAgent(selectedTrace, globalAgentFilter, normalizeEventRow);
+  }, [selectedTrace, globalAgentFilter]);
+
+  useEffect(() => {
+    if (!globalAgentFilter || !agentCatalog.length) return;
+    if (!agentCatalog.includes(globalAgentFilter)) setGlobalAgentFilter('');
+  }, [agentCatalog, globalAgentFilter, setGlobalAgentFilter]);
+
   useEffect(() => {
     if (!token) return;
     const stream = new EventSource(`/stream/updates?token=${encodeURIComponent(token)}`);
@@ -447,7 +615,7 @@ function Shell() {
   }
 
   const filteredEvents = useMemo(() => {
-    const rows = overview?.recent_events || [];
+    const rows = scopedOverview?.recent_events || [];
     return rows.filter((row) => {
       if (filters.status !== 'all' && row.status !== filters.status) return false;
       if (filters.search) {
@@ -460,40 +628,52 @@ function Shell() {
       if (toTs && Number(row.timestamp || 0) > toTs) return false;
       return true;
     });
-  }, [overview, filters]);
+  }, [scopedOverview, filters]);
 
   const traceCandidates = useMemo(() => {
+    const base = scopedOverview ?? overview;
+    if (!base) return [];
     const ids = new Set<string>();
     const out: TraceOption[] = [];
-    for (const trace of traceOptions) {
-      if (trace?.trace_id && !ids.has(trace.trace_id)) {
-        ids.add(trace.trace_id);
-        out.push(trace);
-      }
+    const add = (id: string, label?: string) => {
+      if (!id || ids.has(id)) return;
+      ids.add(id);
+      out.push({ trace_id: id, label: label || id });
+    };
+    for (const trace of [...(base.trace_catalogue || []), ...(base.recent_traces || [])]) {
+      if (trace?.trace_id) add(trace.trace_id);
     }
-    for (const trace of [
-      ...((overview as any)?.trace_catalogue || []),
-      ...(overview?.recent_traces || []),
-    ]) {
-      if (trace?.trace_id && !ids.has(trace.trace_id)) {
-        ids.add(trace.trace_id);
-        out.push({ trace_id: trace.trace_id, label: trace.trace_id });
-      }
-    }
-    for (const event of overview?.recent_events || []) {
+    for (const event of base.recent_events || []) {
       const traceId = (event as any).trace_id || '';
-      if (traceId && !ids.has(traceId)) {
-        ids.add(traceId);
-        out.push({ trace_id: traceId, label: traceId });
+      if (traceId) add(String(traceId));
+    }
+    if (!globalAgentFilter) {
+      for (const trace of traceOptions) {
+        if (trace?.trace_id) add(trace.trace_id, trace.label);
+      }
+    } else {
+      for (const trace of traceOptions) {
+        if (trace?.trace_id && ids.has(trace.trace_id)) add(trace.trace_id, trace.label);
       }
     }
-    if (selectedTrace?.trace_id && !ids.has(selectedTrace.trace_id)) {
-      out.unshift({ trace_id: selectedTrace.trace_id, label: selectedTrace.trace_id });
+    if (selectedTrace?.trace_id) {
+      const ok = !globalAgentFilter || pruneTraceForAgent(selectedTrace, globalAgentFilter, normalizeEventRow);
+      if (ok) add(selectedTrace.trace_id);
     }
     return out;
-  }, [overview, traceOptions, selectedTrace?.trace_id]);
+  }, [scopedOverview, overview, traceOptions, selectedTrace, globalAgentFilter]);
+
+  useEffect(() => {
+    if (!globalAgentFilter) return;
+    const valid = new Set(traceCandidates.map((t) => t.trace_id));
+    if (selectedTraceId && !valid.has(selectedTraceId)) {
+      setSelectedTraceId(traceCandidates[0]?.trace_id || '');
+    }
+  }, [globalAgentFilter, traceCandidates, selectedTraceId]);
 
   const currentScanMode = overview?.config?.scan_mode || 'deep';
+  const topbarEventCount = globalAgentFilter ? (scopedOverview?.metrics?.total_events ?? 0) : (overview?.metrics?.total_events ?? 0);
+  const topbarP95Ms = globalAgentFilter ? (scopedOverview?.metrics?.p95_decision_latency_ms ?? 0) : (overview?.metrics?.p95_decision_latency_ms ?? 0);
 
   return (
     <div className="shell">
@@ -518,6 +698,54 @@ function Shell() {
           <button className={classNames('nav__item', page === 'coverage' && 'is-active')} onClick={() => navigate('coverage', '/ui/coverage-gaps')}>Coverage Gaps</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
+        <div className="sidebar__section">
+          <div className="sidebar__label">Agent scope</div>
+          <div
+            className={classNames('sidebarAgentSelect', agentScopeMenuOpen && 'is-open')}
+            ref={agentScopeMenuRef}
+          >
+            <button
+              type="button"
+              className="sidebarAgentSelect__trigger"
+              aria-haspopup="listbox"
+              aria-expanded={agentScopeMenuOpen}
+              aria-label="Filter entire dashboard by agent"
+              onClick={() => setAgentScopeMenuOpen((open) => !open)}
+            >
+              <span className="sidebarAgentSelect__value">{globalAgentFilter || 'All agents'}</span>
+              <span className="sidebarAgentSelect__caret" aria-hidden />
+            </button>
+            {agentScopeMenuOpen ? (
+              <ul className="sidebarAgentSelect__menu" role="listbox" aria-label="Agents">
+                <li role="none">
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={!globalAgentFilter}
+                    className={classNames('sidebarAgentSelect__option', !globalAgentFilter && 'is-selected')}
+                    onClick={() => { setGlobalAgentFilter(''); setAgentScopeMenuOpen(false); }}
+                  >
+                    All agents
+                  </button>
+                </li>
+                {agentCatalog.map((name) => (
+                  <li key={name} role="none">
+                    <button
+                      type="button"
+                      role="option"
+                      aria-selected={globalAgentFilter === name}
+                      className={classNames('sidebarAgentSelect__option', globalAgentFilter === name && 'is-selected')}
+                      onClick={() => { setGlobalAgentFilter(name); setAgentScopeMenuOpen(false); }}
+                    >
+                      {name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+          <p className="muted sidebarAgentSelect__hint">Charts, traces, rule impact, and coverage use this scope. Rules workspace is unchanged.</p>
+        </div>
         <div className="sidebar__section">
           <div className="sidebar__label">Inspection mode</div>
           <div className="toggleRow">
@@ -555,21 +783,33 @@ function Shell() {
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
-            <div className="statusPill">Events: <strong>{overview?.metrics?.total_events ?? 0}</strong></div>
-            <div className="statusPill">P95: <strong>{fmtNum(overview?.metrics?.p95_decision_latency_ms, 1)} ms</strong></div>
+            <div className="statusPill">Events: <strong>{topbarEventCount}</strong>{globalAgentFilter ? <span className="statusPill__suffix"> scoped</span> : null}</div>
+            <div className="statusPill">P95: <strong>{fmtNum(topbarP95Ms, 1)} ms</strong></div>
           </div>
         </header>
 
         {error ? <div className="banner banner--error">{error}</div> : null}
         {notice ? <div className="banner banner--ok">{notice}</div> : null}
+        {page === 'decision' && detail && globalAgentFilter ? (() => {
+          const row = normalizeEventRow(detail.event || detail);
+          const an = normalizeAgentKey(row.agent_name);
+          if (an && an !== globalAgentFilter) {
+            return (
+              <div className="banner banner--warn">
+                This event is from agent <strong>{an}</strong>, but the sidebar scope is <strong>{globalAgentFilter}</strong>. Clear the agent filter to see the full picture, or switch scope.
+              </div>
+            );
+          }
+          return null;
+        })() : null}
 
         {page === 'overview' && overview ? (
           <OverviewPageView
-            overview={overview}
+            overview={scopedOverview as DashboardPayload}
             filteredEvents={filteredEvents}
             filters={filters}
             setFilters={setFilters}
-            selectedTrace={selectedTrace}
+            selectedTrace={displaySelectedTrace}
             setSelectedTraceId={setSelectedTraceId}
             token={token}
             traceCandidates={traceCandidates}
@@ -582,7 +822,7 @@ function Shell() {
 
         {page === 'impact' && overview ? (
           <ImpactPageView
-            overview={overview}
+            overview={scopedOverview as DashboardPayload}
             policy={safeParsePolicy(policyText, policy)}
             onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
             onOpenRules={(bucket: string, label: string, token?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}${token ? `&token=${encodeURIComponent(token)}` : ''}&focus=${Date.now()}`)}
@@ -623,7 +863,7 @@ function Shell() {
 
         {page === 'coverage' && overview ? (
           <CoverageGapsPage
-            overview={overview}
+            overview={scopedOverview as DashboardPayload}
             policy={safeParsePolicy(policyText, policy)}
             onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
             onOpenRules={(draftRule: any) => navigate('rules', `/ui/rules?draft=${encodeURIComponent(JSON.stringify(draftRule || {}))}`)}

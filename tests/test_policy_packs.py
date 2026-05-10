@@ -27,6 +27,7 @@ def test_policy_pack_directory_is_populated():
         "database-safety.json",
         "destructive-tools-and-infra.json",
         "excessive-agency-and-workflow-escalation.json",
+        "host-shell-safety.json",
         "monitoring-foundation.json",
         "network-egress-and-tunnels.json",
         "sensitive-data-exfiltration.json",
@@ -100,6 +101,20 @@ def test_topic_packs_match_representative_cases(tmp_path):
             "monitoring-foundation.json",
             Action(type="http_request", domain="example.com"),
             "monitor",
+        ),
+        (
+            "host-shell-safety.json",
+            Action(
+                type="tool_call",
+                tool="shell.execute",
+                args={
+                    "argv": ["railway", "status"],
+                    "argv_join": "railway status",
+                    "cwd": "/tmp",
+                    "env_keys": [],
+                },
+            ),
+            "warn",
         ),
     ]
 

@@ -35,6 +35,26 @@ class DecisionIntelligence:
         elif tool in db_tools or classifiers.get('sql_query'):
             score += 18
             reasons.append('database_query')
+        elif tool in {'host.exec', 'shell.execute'}:
+            score += 12
+            reasons.append('host_exec')
+            args = getattr(action, 'args', None) or {}
+            argv_join = str(args.get('argv_join') or '').lower()
+            high_risk_argv = (
+                'rm -rf',
+                'rm -fr ',
+                'mkfs.',
+                'dd if=',
+                ':(){',
+                'terraform destroy',
+                'kubectl delete',
+                'format c:',
+                'curl ',
+                'wget ',
+            )
+            if any(m in argv_join for m in high_risk_argv):
+                score += 38
+                reasons.append('host_exec_high_risk_argv')
 
         if domain:
             risky_domains = ['pastebin', 'ngrok', 'transfer.sh', 'discord', 'telegram', 'webhook', 'raw.githubusercontent.com']

@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["varden*", "varden_sdk*", "varden_langchain*"]
+include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*"]
 
 
 [tool.setuptools.package-data]
@@ -27,6 +27,8 @@ include = ["varden*", "varden_sdk*", "varden_langchain*"]
 
 [project.scripts]
 varden = "varden.cli:main"
+varden-monitor = "varden_monitor.cli:main"
+varden-session = "varden_monitor.session:main"
 
 
 [project.optional-dependencies]
