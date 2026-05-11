@@ -620,7 +620,7 @@ function Shell() {
   const filteredEvents = useMemo(() => {
     const rows = scopedOverview?.recent_events || [];
     return rows.filter((row) => {
-      if (filters.status !== 'all' && row.status !== filters.status) return false;
+      if (filters.status !== 'all' && eventOutcomeStatus(row) !== filters.status) return false;
       if (filters.search) {
         const blob = JSON.stringify(row).toLowerCase();
         if (!blob.includes(filters.search.toLowerCase())) return false;

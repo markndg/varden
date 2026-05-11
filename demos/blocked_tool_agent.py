@@ -31,6 +31,22 @@ DEMO_BLOCK_RULES = [
     {'type': 'tool_call', 'tool': 'subprocess.Popen', 'field:args.args': {'contains': 'delete_database'}},
 ]
 
+_RULE_META = frozenset({'enabled', 'priority', 'description', 'reason', 'title', 'name'})
+
+
+def _rule_predicates(rule: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in rule.items() if k not in _RULE_META and v is not None and v != ''}
+
+
+def _policy_has_equivalent_block(block_rules: list[Any], wanted: dict[str, Any]) -> bool:
+    target = _rule_predicates(wanted)
+    for existing in block_rules:
+        if not isinstance(existing, dict):
+            continue
+        if _rule_predicates(existing) == target:
+            return True
+    return False
+
 
 def _json_request(path: str, method: str = 'GET', payload: dict[str, Any] | None = None) -> Any:
     data = None if payload is None else json.dumps(payload).encode('utf-8')
@@ -50,10 +66,15 @@ def _json_request(path: str, method: str = 'GET', payload: dict[str, Any] | None
 def _ensure_demo_policy() -> None:
     current = _json_request('/policy')
     changed = False
+    block = current.get('block') or []
+    if not isinstance(block, list):
+        block = []
     for rule in DEMO_BLOCK_RULES:
-        if rule not in current.get('block', []):
-            current.setdefault('block', []).insert(0, rule)
-            changed = True
+        if _policy_has_equivalent_block(block, rule):
+            continue
+        current.setdefault('block', []).insert(0, rule)
+        block = current['block']
+        changed = True
     if changed:
         _json_request('/policy', method='PUT', payload=current)
 

@@ -213,12 +213,22 @@ class VardenGuard:
 
     def record_result(self, *, action: dict[str, Any], decision: dict[str, Any], input_payload: Any = None,
                       output_payload: Any = None, error: str | None = None) -> dict[str, Any] | None:
+        def _status_from_decision(d: dict[str, Any]) -> str:
+            text = str(d.get('action') or '').strip().lower()
+            if text in {'block', 'blocked'}:
+                return 'blocked'
+            if text in {'warn', 'warned'}:
+                return 'warned'
+            if text == 'monitor':
+                return 'monitor'
+            return 'allowed'
+
         payload = {
             'action': _json_safe(action),
             'decision': _json_safe(decision),
             'input_payload': _json_safe(input_payload),
             'output_payload': _json_safe(output_payload),
-            'status': 'blocked' if decision.get('action') == 'block' else 'warned' if decision.get('action') == 'warn' else 'allowed',
+            'status': _status_from_decision(decision),
             'error': error,
         }
         try:
