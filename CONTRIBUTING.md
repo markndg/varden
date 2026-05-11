@@ -60,6 +60,10 @@ gh api -X POST repos/markndg/varden/rulesets --input scripts/github-ruleset-main
 
 (If a ruleset with the same name already exists, remove it in **Settings → Rules → Rulesets** first, or adjust the JSON `name` field.)
 
+**If `git push origin main` is rejected** (`push declined due to repository rule violations`), that is expected: `main` only accepts changes that arrive via **pull request**. Push a topic branch and open a PR, wait for **`test`** and **`frontend`**, then merge.
+
+**One-time escape hatch** (e.g. you must land commits on `main` without a PR): list rulesets with `gh ruleset list -R markndg/varden`, delete the active ruleset by id, push, then re-apply from `scripts/github-ruleset-main.json` as above. Prefer the PR workflow whenever possible.
+
 **Merge rights:** GitHub allows anyone with **write** access to merge an eligible PR. Today only **`markndg`** has admin/write on this repo, so only you can merge. If you add collaborators with **write** or **maintain**, they can merge too; keep external contributors at **triage** or **read** if you want merges to stay with you alone.
 
 **Solo maintainer note:** the ruleset uses **`required_approving_review_count`: 0** so you can merge your own PRs after CI passes (a count of `1` would block you without a second reviewer). Reviews are still welcome for contributors.
