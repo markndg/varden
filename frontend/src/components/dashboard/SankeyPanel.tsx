@@ -41,9 +41,9 @@ export function SankeyPanel({ sourceEvents, onFocus, mode = 'agent_tool_outcome'
     pushFlow('left', left, 'mid', mid, status, event.id);
     pushFlow('mid', mid, 'right', right, status, event.id);
   }
-  const leftNodesRaw = Array.from(laneMaps.left.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5);
-  const midNodesRaw = Array.from(laneMaps.mid.entries()).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  const rightNodesRaw = Array.from(laneMaps.right.entries()).sort((a, b) => b[1] - a[1]).slice(0, 5);
+  const leftNodesRaw = Array.from(laneMaps.left.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
+  const midNodesRaw = Array.from(laneMaps.mid.entries()).sort((a, b) => b[1] - a[1]).slice(0, 10);
+  const rightNodesRaw = Array.from(laneMaps.right.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
   const maxFlow = Math.max(...Array.from(flowCounts.values()).map((entry) => entry.value), 1);
   const columnX = [80, 400, 720];
   const laneHeight = 56;
@@ -74,7 +74,7 @@ export function SankeyPanel({ sourceEvents, onFocus, mode = 'agent_tool_outcome'
   const outcomeTone = (label: string) => label.startsWith('blocked') ? 'danger' : label.startsWith('warned') ? 'warn' : label.startsWith('monitor') ? 'monitor' : 'ok';
   return (
     <div className="sankeyWrap">
-      <div className="traceSummaryBar"><span>{leftLabel} → {midLabel} → {rightLabel}</span><span>{events.length} observed actions</span><span>Click nodes or coloured lanes to jump into filtered activity</span></div>
+      <div className="traceSummaryBar"><span>{leftLabel} → {midLabel} → {rightLabel}</span><span>{events.length} observed actions</span><span>Top nodes per column by volume; other flows are not drawn. Click nodes or lanes to filter.</span></div>
       <div className="signalLegend"><span><i className="legendSwatch legendSwatch--danger" />Blocked-heavy path</span><span><i className="legendSwatch legendSwatch--warn" />Warn-heavy path</span><span><i className="legendSwatch legendSwatch--monitor" />Monitor-heavy path</span><span><i className="legendSwatch legendSwatch--ok" />Allow-heavy path</span></div>
       <div className="sankeyScroller">
         <svg width="980" height={height} viewBox={`0 0 980 ${height}`} className="traceSvg">
