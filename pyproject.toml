@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "varden-integrated-platform"
+name = "varden"
 version = "3.0.0"
 description = "Production Varden platform with control plane and multi-language SDKs"
 readme = "README.md"
@@ -16,6 +16,12 @@ dependencies = [
   "PyJWT>=2.8",
   "psycopg[binary]>=3.1"
 ]
+
+[project.urls]
+Homepage = "https://github.com/markndg/varden"
+Repository = "https://github.com/markndg/varden"
+Issues = "https://github.com/markndg/varden/issues"
+Changelog = "https://github.com/markndg/varden/commits/main"
 
 [tool.setuptools.packages.find]
 include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*"]

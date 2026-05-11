@@ -25,8 +25,8 @@ export function TraceGraph({ trace, onOpenDecision, onOpenRule, compact, helpers
   const height = compact ? 320 : 420;
   const laneY = compact ? 110 : 138;
   const eventPositions = nodes.map((node: any, index: number) => ({ ...node, x: 80 + (index * 210), y: laneY }));
-  const byId = new Map(eventPositions.map((node: any) => [node.id, node]));
-  const eventMap = new Map((trace.events || []).map((event: any) => [event.id, event]));
+  const byId = new Map<any, any>(eventPositions.map((node: any) => [node.id, node]));
+  const eventMap = new Map<any, any>((trace.events || []).map((event: any) => [event.id, event]));
   const ruleNodes = eventPositions.flatMap((node: any, index: number) => {
     const event = eventMap.get(node.id);
     const matchedRule = event?.decision?.matched_rule;

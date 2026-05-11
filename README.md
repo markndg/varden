@@ -2,6 +2,8 @@
 
 <img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
+**Project links:** [Source](https://github.com/markndg/varden) · [Issues](https://github.com/markndg/varden/issues) · [Security](https://github.com/markndg/varden/security)
+
 **Varden is a self-hosted runtime firewall for AI agents.**
 It sits between agent reasoning and action execution so teams can allow, warn, or block tool calls, HTTP requests, LLM calls, and workflow steps from infrastructure they run themselves.
 
@@ -61,6 +63,8 @@ That makes it useful for teams building internal agents, copilots, orchestration
 ## 5-minute quick start
 
 ### 1) Create a virtual environment and install
+
+From a clone of this repository, install in editable mode. The installable distribution name is **`varden`** (import paths: `varden`, `varden_sdk`, `varden_langchain`, and `varden_monitor`).
 
 ```bash
 python -m venv .venv
@@ -479,6 +483,6 @@ This repository includes:
 - `LICENSE` with the full AGPL-3.0-or-later text
 - `AUTHORS` listing project authorship
 - `NOTICE` for copyright and branding notice
-- `.gitignore` for Python, Node, and local runtime state
+- `.gitignore` for Python, Node, JVM build artifacts (`*.class`, `sdks/java/target/`), and local runtime state
 - `.gitattributes` for line endings and generated frontend assets
 - `CODEOWNERS`, `CONTRIBUTING.md`, and `SECURITY.md` to support a clean contribution workflow

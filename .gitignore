@@ -22,6 +22,10 @@ dist/
 *.egg-info/
 .eggs/
 
+# JVM / Java SDK
+*.class
+sdks/java/target/
+
 # Local runtime state
 policy.json
 *.db
