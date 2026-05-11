@@ -64,7 +64,7 @@ That makes it useful for teams building internal agents, copilots, orchestration
 
 ### 1) Create a virtual environment and install
 
-From a clone of this repository, install in editable mode. The installable distribution name is **`varden`** (import paths: `varden`, `varden_sdk`, `varden_langchain`, and `varden_monitor`).
+Clone this repository and install in editable mode (**not on PyPI yet**—`pip install varden` will follow). The distribution name will be **`varden`**; import paths are `varden`, `varden_sdk`, `varden_langchain`, and `varden_monitor`.
 
 ```bash
 python -m venv .venv
