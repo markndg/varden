@@ -42,7 +42,7 @@ gh api -X PUT "repos/${REPO}/actions/permissions/fork-pr-contributor-approval" \
   -f approval_policy=all_external_contributors
 ```
 
-Dependabot **version** updates are driven by [`.github/dependabot.yml`](.github/dependabot.yml).
+Dependabot **version** updates are driven by [`.github/dependabot.yml`](.github/dependabot.yml). The `npm` entry **groups** `vite` with `@vitejs/*`, and **groups** the React runtime with matching `@types/*`, so `npm ci` in CI does not hit one-sided peer dependency bumps.
 
 ### Default branch ruleset (`main`)
 
