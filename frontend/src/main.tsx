@@ -828,7 +828,7 @@ function Shell() {
             overview={scopedOverview as DashboardPayload}
             policy={safeParsePolicy(policyText, policy)}
             onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
-            onOpenRules={(bucket: string, label: string, token?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}${token ? `&token=${encodeURIComponent(token)}` : ''}&focus=${Date.now()}`)}
+            onOpenRules={(bucket: string, label: string, token?: string, index?: number) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}${token ? `&token=${encodeURIComponent(token)}` : ''}${typeof index === 'number' ? `&index=${index}` : ''}&focus=${Date.now()}`)}
             helpers={{ RULE_BUCKETS, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus }}
           />
         ) : null}

@@ -4,7 +4,7 @@ type ImpactPageProps = {
   overview: any;
   policy: any;
   onOpenDecision: (id: number) => void;
-  onOpenRules: (bucket: string, label: string, token?: string) => void;
+  onOpenRules: (bucket: string, label: string, token?: string, index?: number) => void;
   helpers: {
     RULE_BUCKETS: readonly string[];
     pickFirstNonEmptyBucket: (policy: any) => any;
@@ -88,6 +88,12 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
       return Array.from(tags).slice(0, 4);
     };
 
+    const eventRuleToken = (event: any) => {
+      const matchedRule = event?.matched_rule || event?.decision?.matched_rule;
+      if (!matchedRule || typeof matchedRule !== 'object') return '';
+      return semanticRuleFingerprint(matchedRule);
+    };
+
     return RULE_BUCKETS.flatMap((bucket) => (policyDoc[bucket] || []).map((rule: any, index: number) => {
       const summary = summarizeRule(rule);
       const summaryLc = lower(summary);
@@ -106,26 +112,31 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
         if (bucket === 'allow' && !label && outcome === 'allowed' && toolLc && lower(event.tool).includes(toolLc)) return true;
         return false;
       });
+      const exactToken = semanticRuleFingerprint(rule);
+      const strictMatches = matches.filter((event: any) => {
+        const token = eventRuleToken(event);
+        return token && token === exactToken;
+      });
+      const effectiveMatches = strictMatches.length ? strictMatches : matches;
 
-      const detections = matches.length;
-      const blocked = matches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'blocked').length;
-      const warned = matches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'warned').length;
-      const allowed = matches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'allowed').length;
+      const detections = effectiveMatches.length;
+      const blocked = effectiveMatches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'blocked').length;
+      const warned = effectiveMatches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'warned').length;
+      const allowed = effectiveMatches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'allowed').length;
       const impactScore = blocked * 1 + warned * 0.65 + allowed * 0.2;
       const coverage = detections ? (detections / totalEvents) * 100 : 0;
-      const lowRiskHits = matches.filter((event) => Number(event.risk_score || 0) <= 20).length;
-      const localhostHits = matches.filter((event) => String(event.domain || '').includes('localhost') || String(event.domain || '').endsWith('.local')).length;
+      const lowRiskHits = effectiveMatches.filter((event) => Number(event.risk_score || 0) <= 20).length;
+      const localhostHits = effectiveMatches.filter((event) => String(event.domain || '').includes('localhost') || String(event.domain || '').endsWith('.local')).length;
       const falsePositiveRate = detections ? ((lowRiskHits + localhostHits * 0.5) / detections) * 100 : 0;
-      const topAgents = Object.entries(matches.reduce((acc: Record<string, number>, event: any) => { const key = event.agent_name || 'unknown'; acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
-      const topTools = Object.entries(matches.reduce((acc: Record<string, number>, event: any) => { const key = event.tool || 'unknown'; acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
-      const topDomains = Object.entries(matches.reduce((acc: Record<string, number>, event: any) => { const key = event.domain || 'local'; acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
+      const topAgents = Object.entries(effectiveMatches.reduce((acc: Record<string, number>, event: any) => { const key = event.agent_name || 'unknown'; acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
+      const topTools = Object.entries(effectiveMatches.reduce((acc: Record<string, number>, event: any) => { const key = event.tool || 'unknown'; acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
+      const topDomains = Object.entries(effectiveMatches.reduce((acc: Record<string, number>, event: any) => { const key = event.domain || 'local'; acc[key] = (acc[key] || 0) + 1; return acc; }, {})).sort((a: any, b: any) => b[1] - a[1]).slice(0, 5);
       const timelineMap = new Map<string, number>();
       daySeries.forEach((day) => timelineMap.set(day, 0));
-      matches.forEach((event) => { const key = toDayKey(event.timestamp); timelineMap.set(key, (timelineMap.get(key) || 0) + 1); });
-      const recentEvents = matches.slice(0, 6);
-      const falsePositiveCandidates = matches.filter((event: any) => Number(event.risk_score || 0) <= 20 || String(event.domain || '').includes('localhost')).slice(0, 4);
+      effectiveMatches.forEach((event) => { const key = toDayKey(event.timestamp); timelineMap.set(key, (timelineMap.get(key) || 0) + 1); });
+      const recentEvents = effectiveMatches.slice(0, 6);
+      const falsePositiveCandidates = effectiveMatches.filter((event: any) => Number(event.risk_score || 0) <= 20 || String(event.domain || '').includes('localhost')).slice(0, 4);
       const id = `${bucket}:${index}:${semanticRuleFingerprint(rule)}`;
-      const exactToken = semanticRuleFingerprint(rule);
       return { id, bucket, index, rule, label: summary, detections, blocked, warned, allowed, impactScore, coverage, falsePositiveRate, tags, conditionSummary, exactToken, topAgents, topTools, topDomains, timeline: Array.from(timelineMap.entries()).map(([day, count]) => ({ day, count })), recentEvents, falsePositiveCandidates, enabled: rule?.enabled !== false };
     }));
   }, [RULE_BUCKETS, policyDoc, filteredEvents, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, eventOutcomeStatus, formatRuleFieldLabel, semanticRuleFingerprint]);
@@ -210,7 +221,7 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
             <>
               <div className="sectionHeader"><div><div className="eyebrow">Rule drilldown</div><h3>{selectedRow.label}</h3><p className="muted">{selectedRow.rule?.description || selectedRow.rule?.reason || 'No rule description yet.'}</p></div><div className={`badge badge--${bucketTone(selectedRow.bucket)}`}>{selectedRow.bucket}</div></div>
               <div className="impactDrilldown__stats"><div className="metricCard metricCard--danger"><div className="metricCard__title">Blocked</div><div className="metricCard__value">{selectedRow.blocked}</div><div className="metricCard__subtitle">hard stops</div></div><div className="metricCard metricCard--warn"><div className="metricCard__title">Warned</div><div className="metricCard__value">{selectedRow.warned}</div><div className="metricCard__subtitle">needs review</div></div><div className="metricCard metricCard--ok"><div className="metricCard__title">Allowed</div><div className="metricCard__value">{selectedRow.allowed}</div><div className="metricCard__subtitle">passed through</div></div></div>
-              <div className="impactDrilldown__donutRow"><div className="impactDonut" style={donutStyle}><div className="impactDonut__inner"><strong>{fmtNum(selectedFalsePositiveRate, 0)}%</strong><span>FP proxy</span></div></div><div className="stack"><div className="subheading">What this rule is touching</div><div className="traceSummaryBar"><span>{selectedRow.detections} detections</span><span>{fmtNum(selectedRow.coverage, 1)}% coverage</span><span>{fmtNum(selectedRow.impactScore, 1)} weighted impact</span></div><div className="impactActions"><button type="button" className="button" onClick={() => onOpenRules(selectedRow.bucket, selectedRow.label, selectedRow.exactToken)}>Open in rules workspace</button>{selectedRow.recentEvents[0]?.id ? <button type="button" className="button button--ghost" onClick={() => onOpenDecision(selectedRow.recentEvents[0].id)}>Open latest decision</button> : null}</div></div></div>
+              <div className="impactDrilldown__donutRow"><div className="impactDonut" style={donutStyle}><div className="impactDonut__inner"><strong>{fmtNum(selectedFalsePositiveRate, 0)}%</strong><span>FP proxy</span></div></div><div className="stack"><div className="subheading">What this rule is touching</div><div className="traceSummaryBar"><span>{selectedRow.detections} detections</span><span>{fmtNum(selectedRow.coverage, 1)}% coverage</span><span>{fmtNum(selectedRow.impactScore, 1)} weighted impact</span></div><div className="impactActions"><button type="button" className="button" onClick={() => onOpenRules(selectedRow.bucket, selectedRow.label, selectedRow.exactToken, selectedRow.index)}>Open in rules workspace</button>{selectedRow.recentEvents[0]?.id ? <button type="button" className="button button--ghost" onClick={() => onOpenDecision(selectedRow.recentEvents[0].id)}>Open latest decision</button> : null}</div></div></div>
               <div className="impactTrendCard"><div className="subheading">Recent trend</div><div className="impactTrend">{selectedRow.timeline.map((point: any) => { const max = Math.max(...selectedRow.timeline.map((entry: any) => entry.count), 1); const height = Math.max(10, (point.count / max) * 100); return (<div key={point.day} className="impactTrend__barWrap" title={`${point.day} · ${point.count} hits`}><div className="impactTrend__bar" style={{ height: `${height}%` }} /><span>{point.day.slice(5)}</span></div>); })}</div></div>
               <div className="layout layout--impactLists"><div className="impactListCard"><div className="subheading">Top agents</div><div className="barList">{selectedRow.topAgents.map(([label, value]: any) => (<div key={label} className="barList__row"><span>{label}</span><div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topAgents[0]?.[1] || 1, 1)) * 100}%` }} /></div><strong>{value}</strong></div>))}</div></div><div className="impactListCard"><div className="subheading">Top tools</div><div className="barList">{selectedRow.topTools.map(([label, value]: any) => (<div key={label} className="barList__row"><span>{label}</span><div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topTools[0]?.[1] || 1, 1)) * 100}%` }} /></div><strong>{value}</strong></div>))}</div></div></div>
               <div className="impactListCard"><div className="subheading">Top domains</div><div className="barList">{selectedRow.topDomains.map(([label, value]: any) => (<div key={label} className="barList__row"><span>{label}</span><div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topDomains[0]?.[1] || 1, 1)) * 100}%` }} /></div><strong>{value}</strong></div>))}</div></div>
