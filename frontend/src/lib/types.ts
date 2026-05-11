@@ -15,6 +15,12 @@ export type EventRow = {
   classifiers?: Record<string, boolean>;
   trace_id?: string | null;
   decision_latency_ms?: number | null;
+  /** Present when the source event row included full `action` (e.g. trace payloads). Used for client-side rule rollups. */
+  action_type?: string;
+  action_args?: Record<string, any> | any[] | null;
+  action_metadata?: Record<string, any> | null;
+  action_url?: string | null;
+  matched_rule?: Record<string, any> | string | null;
 };
 
 export type TraceSummary = {

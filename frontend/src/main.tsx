@@ -9,7 +9,7 @@ import { RulesPage as RulesPageView } from './components/dashboard/RulesPage';
 import { ADVANCED_FIELDS, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
 import { detailIdFromLocation, pageFromLocation, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
 import { averageLatencyFromPoints, classNames, fmtNum, fmtTs, fromDateTimeLocalValue, latencyValueFromPoint, toDateTimeLocalValue } from './lib/format';
-import { coerceRuleInput, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, getRuleOperator, getRuleValue, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, ruleFingerprint, safeParsePolicy, semanticRuleFingerprint, setRuleOperatorValue, setRuleSimpleValue, summarizeRule, summarizeRuleConditions } from './lib/policy';
+import { coerceRuleInput, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, getRuleOperator, getRuleValue, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, ruleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, safeParsePolicy, semanticRuleFingerprint, setRuleOperatorValue, setRuleSimpleValue, summarizeRule, summarizeRuleConditions } from './lib/policy';
 
 
 async function api<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
@@ -315,6 +315,11 @@ function normalizeEventRow(event: any): EventRow & { matched_rule_label?: string
     domain: action?.domain || null,
     classifiers: action?.classifiers || {},
     trace_id: event?.trace_id || action?.trace_id || null,
+    action_type: action?.type,
+    action_args: action?.args,
+    action_metadata: action?.metadata,
+    action_url: action?.url,
+    matched_rule: event?.matched_rule || decision?.matched_rule || null,
     matched_rule_label: matchedRuleLabel,
     parent_event_id: event?.parent_event_id || action?.parent_event_id || null,
     decision_latency_ms: Number(event?.decision_latency_ms ?? action?.decision_latency_ms ?? decision?.latency_ms ?? decision?.decision_latency_ms ?? 0) || null,
@@ -829,7 +834,7 @@ function Shell() {
             policy={safeParsePolicy(policyText, policy)}
             onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
             onOpenRules={(bucket: string, label: string, token?: string, index?: number) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}${token ? `&token=${encodeURIComponent(token)}` : ''}${typeof index === 'number' ? `&index=${index}` : ''}&focus=${Date.now()}`)}
-            helpers={{ RULE_BUCKETS, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus }}
+            helpers={{ RULE_BUCKETS, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus, ruleHasStructuralPredicates, rulePredicatesMatchEvent }}
           />
         ) : null}
 

@@ -15,6 +15,8 @@ type ImpactPageProps = {
     summarizeRuleConditions: (rule: any, max?: number) => string[];
     deriveMatchedRuleLabel: (event: any) => string | null;
     semanticRuleFingerprint: (rule: any) => string;
+    ruleHasStructuralPredicates: (rule: any) => boolean;
+    rulePredicatesMatchEvent: (event: any, rule: any) => boolean;
     formatRuleFieldLabel: (field?: string | null) => string;
     bucketTone: (bucket: string) => string;
     classNames: (...parts: Array<string | false | null | undefined>) => string;
@@ -25,7 +27,7 @@ type ImpactPageProps = {
 };
 
 export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, helpers }: ImpactPageProps) {
-  const { RULE_BUCKETS, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus } = helpers;
+  const { RULE_BUCKETS, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus } = helpers;
   const [activeBucket, setActiveBucket] = useState<typeof RULE_BUCKETS[number]>(pickFirstNonEmptyBucket(ensurePolicyDoc(policy)));
   const [windowMode, setWindowMode] = useState<'recent' | 'all'>('recent');
   const [analyticsMode, setAnalyticsMode] = useState<'impact' | 'detections' | 'fp'>('impact');
@@ -117,7 +119,14 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
         const token = eventRuleToken(event);
         return token && token === exactToken;
       });
-      const effectiveMatches = strictMatches.length ? strictMatches : matches;
+      const predicateMatches = ruleHasStructuralPredicates(rule)
+        ? matches.filter((event: any) => rulePredicatesMatchEvent(event, rule))
+        : [];
+      const effectiveMatches = strictMatches.length
+        ? strictMatches
+        : ruleHasStructuralPredicates(rule)
+          ? predicateMatches
+          : matches;
 
       const detections = effectiveMatches.length;
       const blocked = effectiveMatches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'blocked').length;
@@ -139,7 +148,7 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
       const id = `${bucket}:${index}:${semanticRuleFingerprint(rule)}`;
       return { id, bucket, index, rule, label: summary, detections, blocked, warned, allowed, impactScore, coverage, falsePositiveRate, tags, conditionSummary, exactToken, topAgents, topTools, topDomains, timeline: Array.from(timelineMap.entries()).map(([day, count]) => ({ day, count })), recentEvents, falsePositiveCandidates, enabled: rule?.enabled !== false };
     }));
-  }, [RULE_BUCKETS, policyDoc, filteredEvents, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, eventOutcomeStatus, formatRuleFieldLabel, semanticRuleFingerprint]);
+  }, [RULE_BUCKETS, policyDoc, filteredEvents, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, eventOutcomeStatus, formatRuleFieldLabel, semanticRuleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent]);
 
   const bucketCounts = useMemo(() => RULE_BUCKETS.reduce((acc: Record<string, number>, bucket) => { acc[bucket] = (policyDoc[bucket] || []).length; return acc; }, {} as Record<string, number>), [RULE_BUCKETS, policyDoc]);
   const bucketRows = useMemo(() => {
