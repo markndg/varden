@@ -48,6 +48,26 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, onSave
   useEffect(() => { requestAnimationFrame(() => { scrollSelectedRuleIntoView(); resetRuleEditorScroll(); setHighlightedRuleKey(ruleKey(selectedBucket, selectedRuleIndex)); window.setTimeout(() => setHighlightedRuleKey(''), 1800); }); }, [selectedBucket, selectedRuleIndex]);
   useEffect(() => { setHighlightedFields(activeRuleDefinedFields(activeRule)); }, [activeRule]);
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const directBucket = params.get('bucket') || '';
+    const directIndexRaw = params.get('index');
+    const directIndex = directIndexRaw !== null ? Number(directIndexRaw) : NaN;
+    if (
+      directBucket
+      && RULE_BUCKETS.includes(directBucket as any)
+      && Number.isInteger(directIndex)
+      && directIndex >= 0
+      && directIndex < (workingPolicy[directBucket] || []).length
+    ) {
+      setSelectedBucket(directBucket);
+      setSelectedRuleIndex(directIndex);
+      requestAnimationFrame(() => {
+        scrollSelectedRuleIntoView(directBucket, directIndex);
+        resetRuleEditorScroll();
+      });
+      return;
+    }
+
     const wantedToken = String(ruleFocusToken || '').trim();
     const wanted = String(ruleFocus || '').trim().toLowerCase();
     if (!wantedToken && !wanted) return;
