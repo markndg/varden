@@ -49,4 +49,5 @@ mcp = [
 ]
 test = [
   "pytest>=8",
+  "mcp[cli]>=1.2",
 ]
