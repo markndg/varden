@@ -56,6 +56,7 @@ That makes it useful for teams building internal agents, copilots, orchestration
 - local SQLite-backed start for instant evaluation
 - self-host docs and Docker Compose deployment
 - demo agent scripts in `demos/`
+- optional **`varden-mcp`** console command ([Model Context Protocol](https://modelcontextprotocol.io/) server for Cursor, Claude Code, and other MCP hosts); install with `pip install -e ".[mcp]"` — see [`varden_mcp/README.md`](varden_mcp/README.md)
 - Rust and Java SDK starter clients for platform parity
 
 ---
@@ -64,7 +65,7 @@ That makes it useful for teams building internal agents, copilots, orchestration
 
 ### 1) Create a virtual environment and install
 
-Clone this repository and install in editable mode (**not on PyPI yet**—`pip install varden` will follow). The distribution name will be **`varden`**; import paths are `varden`, `varden_sdk`, `varden_langchain`, and `varden_monitor`.
+Clone this repository and install in editable mode (**not on PyPI yet**—`pip install varden` will follow). The distribution name will be **`varden`**; import paths are `varden`, `varden_sdk`, `varden_langchain`, `varden_monitor`, and `varden_mcp` (MCP server code; install the **`[mcp]`** extra to run `varden-mcp`).
 
 ```bash
 python -m venv .venv
@@ -156,6 +157,14 @@ varden session . -- cursor .
 - On macOS, if `cursor` is not on your normal `PATH`, the shim tries known paths under `Cursor.app`.
 
 Exit the subshell to tear down the temporary shim directory.
+
+---
+
+## `varden-mcp`: MCP server for agent hosts
+
+After `pip install -e ".[mcp]"`, the **`varden-mcp`** command runs a [Model Context Protocol](https://modelcontextprotocol.io/) server over stdio so MCP-capable tools (Cursor, Claude Code, and others) can call the control plane: health, events, alerts, dashboard overview, policy read/update/validate, guard/log, workflows, and jobs.
+
+Configuration is environment-only (`VARDEN_BASE_URL`, `VARDEN_API_KEY`, `VARDEN_TIMEOUT`, optional `VARDEN_MCP_AGENT_NAME`). Full install notes, host snippets, and the tool list live in **[`varden_mcp/README.md`](varden_mcp/README.md)**.
 
 ---
 
