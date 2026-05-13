@@ -150,7 +150,13 @@ class LocalAuth:
             return None
 
     def require_role(self, api_key: str | None = None, bearer_token: str | None = None, min_role: str = "viewer"):
-        record = self.authenticate_api_key(api_key) if api_key else self.verify_bearer_token(bearer_token) if bearer_token else None
+        record = None
+        if api_key:
+            record = self.authenticate_api_key(api_key)
+        if record is None and bearer_token:
+            record = self.verify_bearer_token(bearer_token)
+        if record is None and bearer_token:
+            record = self.authenticate_api_key(bearer_token)
         if not record:
             return False, "invalid credentials", None
         record = dict(record)

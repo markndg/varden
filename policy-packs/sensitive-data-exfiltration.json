@@ -1,20 +1,8 @@
 {
   "name": "sensitive-data-exfiltration",
-  "description": "Blocks or warns on secrets, PII, financial data, internal data, and source-internal material leaving through HTTP or LLM paths.",
+  "description": "Blocks high-severity data paths (cardholder, financial, LLM secret disclosure, risky paste/tunnel uploads); warns on other secret-like or source-internal HTTP egress for review.",
   "template": {
     "block": [
-      {
-        "title": "Block secrets sent over HTTP",
-        "name": "block_http_secrets_exfiltration",
-        "enabled": true,
-        "priority": 100,
-        "type": "http_request",
-        "classifier:secrets": true,
-        "field:domain": {
-          "exists": true
-        },
-        "description": "Blocks outbound HTTP requests containing likely secrets or credentials."
-      },
       {
         "title": "Block credit card data sent over HTTP",
         "name": "block_http_credit_card_exfiltration",
@@ -38,18 +26,6 @@
           "exists": true
         },
         "description": "Blocks outbound HTTP requests containing financial data."
-      },
-      {
-        "title": "Block internal source material sent over HTTP",
-        "name": "block_http_source_internal_exfiltration",
-        "enabled": true,
-        "priority": 95,
-        "type": "http_request",
-        "classifier:source_internal": true,
-        "field:domain": {
-          "exists": true
-        },
-        "description": "Blocks outbound requests containing internally sourced repository, storage, CRM, or document data."
       },
       {
         "title": "Block secrets in LLM calls",
@@ -95,6 +71,30 @@
       }
     ],
     "warn": [
+      {
+        "title": "Warn on likely secrets in outbound HTTP",
+        "name": "warn_http_secrets_exfiltration",
+        "enabled": true,
+        "priority": 94,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Warns when outbound HTTP carries secret-like material to external hosts (review before hard blocking)."
+      },
+      {
+        "title": "Warn on source-internal material in outbound HTTP",
+        "name": "warn_http_source_internal_exfiltration",
+        "enabled": true,
+        "priority": 93,
+        "type": "http_request",
+        "classifier:source_internal": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Warns when internally sourced context is sent externally for human review."
+      },
       {
         "title": "Warn on PII",
         "name": "warn_pii_content",

@@ -101,10 +101,12 @@
           "contains": "telegram"
         },
         "description": "Blocks Telegram bot/API destinations commonly used as exfiltration drops."
-      },
+      }
+    ],
+    "warn": [
       {
-        "title": "Block secrets to any external domain",
-        "name": "block_secrets_to_external_domain",
+        "title": "Warn on likely secrets to any external domain",
+        "name": "warn_secrets_to_external_domain",
         "enabled": true,
         "priority": 100,
         "type": "http_request",
@@ -112,10 +114,8 @@
         "field:domain": {
           "exists": true
         },
-        "description": "Blocks likely credentials from leaving over HTTP."
-      }
-    ],
-    "warn": [
+        "description": "Warns when outbound HTTP carries secret-like material to external hosts (review before hard blocking)."
+      },
       {
         "title": "Warn on raw GitHub egress",
         "name": "warn_raw_github_egress",

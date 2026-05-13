@@ -24,7 +24,7 @@ Issues = "https://github.com/markndg/varden/issues"
 Changelog = "https://github.com/markndg/varden/commits/main"
 
 [tool.setuptools.packages.find]
-include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*"]
+include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*", "varden_mcp*"]
 
 
 [tool.setuptools.package-data]
@@ -35,12 +35,17 @@ include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*"]
 varden = "varden.cli:main"
 varden-monitor = "varden_monitor.cli:main"
 varden-session = "varden_monitor.session:main"
+varden-mcp = "varden_mcp.server:main"
 
 
 [project.optional-dependencies]
 langchain = [
   "langchain>=0.2",
   "langchain-core>=0.2"
+]
+mcp = [
+  "mcp[cli]>=1.2",
+  "httpx>=0.27",
 ]
 test = [
   "pytest>=8",
