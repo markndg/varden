@@ -21,7 +21,7 @@ Each JSON file uses the template envelope accepted by the UI:
 
 - `baseline-operational-safety.json`: one-click baseline combining the crucial controls from the other packs.
 - `agent-prompt-injection.json`: indirect prompt injection and tool-output injection indicators.
-- `sensitive-data-exfiltration.json`: secrets, PII, financial data, internal data, and high-risk outbound destinations.
+- `sensitive-data-exfiltration.json`: cardholder and financial HTTP exfiltration stay blocked; generic outbound HTTP with secret-like or source-internal classifiers is warn-tier (matches `demos/flagged_data_agent.py`).
 - `destructive-tools-and-infra.json`: destructive shell, filesystem, Kubernetes, Terraform, cloud, package, and database actions.
 - `database-safety.json`: destructive SQL, unbounded writes, privilege changes, broad reads, schema enumeration, and obfuscation.
 - `network-egress-and-tunnels.json`: cloud metadata, paste sites, tunnels, webhooks, messaging exfil paths, and general HTTP monitoring.

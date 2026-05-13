@@ -303,7 +303,7 @@ function normalizeEventRow(event: any): EventRow & { matched_rule_label?: string
     id: Number(event?.id || action?.id || 0),
     timestamp: Number(event?.timestamp || action?.timestamp || 0),
     tool: action?.tool,
-    agent_name: action?.agent_name,
+    agent_name: action?.agent_name || event?.agent_name || null,
     status: storedStatus,
     outcome: eventOutcomeStatus({ ...event, status: storedStatus, decision_action: decisionAction, effective_action: effectiveAction }),
     decision_action: decisionAction,

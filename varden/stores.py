@@ -314,7 +314,7 @@ class EventStore:
                 "id": e["id"],
                 "timestamp": e["timestamp"],
                 "tool": action.get("tool"),
-                "agent_name": action.get("agent_name"),
+                "agent_name": action.get("agent_name") or e.get("agent_name"),
                 "status": e["status"],
                 "decision_action": decision.get("action"),
                 "effective_action": decision.get("effective_action") or decision.get("action"),

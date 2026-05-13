@@ -38,18 +38,6 @@
         "description": "Blocks attempts to reveal hidden system or policy instructions."
       },
       {
-        "title": "Block secrets sent over HTTP",
-        "name": "baseline_block_http_secrets_exfiltration",
-        "enabled": true,
-        "priority": 100,
-        "type": "http_request",
-        "classifier:secrets": true,
-        "field:domain": {
-          "exists": true
-        },
-        "description": "Blocks outbound HTTP requests containing likely secrets or credentials."
-      },
-      {
         "title": "Block credit card data sent over HTTP",
         "name": "baseline_block_http_credit_card_exfiltration",
         "enabled": true,
@@ -276,6 +264,18 @@
       }
     ],
     "warn": [
+      {
+        "title": "Warn on likely secrets in outbound HTTP",
+        "name": "baseline_warn_http_secrets_exfiltration",
+        "enabled": true,
+        "priority": 94,
+        "type": "http_request",
+        "classifier:secrets": true,
+        "field:domain": {
+          "exists": true
+        },
+        "description": "Warns when outbound HTTP carries secret-like material to external hosts (review before hard blocking)."
+      },
       {
         "title": "Warn on instruction override language",
         "name": "baseline_warn_instruction_override_language",

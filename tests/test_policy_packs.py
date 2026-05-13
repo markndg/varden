@@ -65,6 +65,28 @@ def test_baseline_blocks_obvious_operational_safety_issues(tmp_path):
         assert decision.action == "block", action
 
 
+def test_flagged_data_demo_http_is_warn_in_shipped_exfiltration_packs(tmp_path):
+    """Align with demos/flagged_data_agent.py: outbound partner POST with internal/secret-like classifiers must warn, not block."""
+    body = {
+        "title": "Q2 incident review",
+        "notes": "internal only customer data for internal review",
+        "owner": "ops@example.com",
+        "classification": "confidential",
+    }
+    action = Action(
+        type="http_request",
+        tool="httpx",
+        url="https://partner.example/api/report",
+        domain="partner.example",
+        method="POST",
+        args={"body": body},
+        classifiers={"internal": True, "secrets": True, "pii": True, "source_internal": True},
+    )
+    for name in ("sensitive-data-exfiltration.json", "baseline-operational-safety.json"):
+        engine = engine_for_pack(PACK_DIR / name, tmp_path)
+        assert engine.evaluate(action).action == "warn", name
+
+
 def test_topic_packs_match_representative_cases(tmp_path):
     cases = [
         (
