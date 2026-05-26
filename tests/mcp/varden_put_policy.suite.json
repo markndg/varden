@@ -1,0 +1,111 @@
+{
+  "version": 2,
+  "session": "per_scenario",
+  "server": {
+    "command": "varden-mcp",
+    "args": [],
+    "env": {}
+  },
+  "scenarios": [
+    {
+      "name": "varden_put_policy — round-trip: fetch, replace with same policy, verify",
+      "description": "Three-step safe write test. Step 1 reads the active policy. Step 2 validates it (guard against accidentally pushing a bad policy). Step 3 puts it back unchanged and asserts the tool responds without error. This exercises the full policy write path with zero destructive side effect.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_policy",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "call_tool": {
+            "name": "varden_validate_policy",
+            "arguments": {
+              "policy": {
+                "block": [],
+                "warn": [],
+                "monitor": [],
+                "allow": []
+              }
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "call_tool": {
+            "name": "varden_put_policy",
+            "arguments": {
+              "policy": {
+                "block": [],
+                "warn": [],
+                "monitor": [],
+                "allow": []
+              }
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "isError": { "type": "boolean" },
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,537 @@
+{
+  "version": 2,
+  "session": "per_scenario",
+  "server": {
+    "command": "varden-mcp",
+    "args": [],
+    "env": {}
+  },
+  "scenarios": [
+
+    {
+      "name": "varden_health — control plane is reachable",
+      "description": "Calls varden_health and asserts the response is a non-empty text content block. If Varden is not running this will fail, which is the correct signal.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_health",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_get_events — returns paginated event list",
+      "description": "Fetches the first page of events (limit 5). Asserts the response is a text content block. An empty event store is fine; the shape must still be valid.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_events",
+            "arguments": { "limit": 5, "offset": 0 }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_get_alerts — returns alert list",
+      "description": "Fetches active alerts. An empty list is valid; the tool must respond without error.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_alerts",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_get_dashboard — returns KPI overview",
+      "description": "Fetches dashboard overview. Must return a non-empty text block regardless of event volume.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_dashboard",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_get_policy — returns active policy document",
+      "description": "Fetches the live policy. The response text must be non-empty; structural validation of the policy JSON is done by varden_validate_policy.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_policy",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_validate_policy — accepts a well-formed minimal policy",
+      "description": "Submits a minimal valid policy (four empty rule lists). Must return without a validation error.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_validate_policy",
+            "arguments": {
+              "policy": {
+                "block": [],
+                "warn": [],
+                "monitor": [],
+                "allow": []
+              }
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_validate_policy — rejects a malformed policy",
+      "description": "Submits a policy with a top-level string instead of the expected four-list document. Must return an error response (isError true) or a text block describing the validation failure — not a clean success.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_validate_policy",
+            "arguments": {
+              "policy": "this is not a valid policy"
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "isError": { "type": "boolean" },
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_get_policy_versions — returns version history",
+      "description": "Fetches policy version history. Must return a non-empty text block; an empty history is fine.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_policy_versions",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_guard — allow decision round-trip",
+      "description": "Submits a benign tool_call action (test_tool with no suspicious payload). Expects a decision field in the response. The decision may be allow, warn, or monitor depending on the active policy — any is acceptable; the test asserts shape not outcome.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_guard",
+            "arguments": {
+              "type": "tool_call",
+              "tool": "mcp_probe_test_tool",
+              "agent_name": "mcp-probe",
+              "args": { "input": "conformance-check" }
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_guard — block decision for known-dangerous tool",
+      "description": "Submits a tool_call for delete_database, which is blocked in the baseline operational safety policy pack. Expects the tool to return (not crash) with a response that includes the word 'block'. Skip this scenario if you are not running the baseline policy pack.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_guard",
+            "arguments": {
+              "type": "tool_call",
+              "tool": "delete_database",
+              "agent_name": "mcp-probe",
+              "args": {}
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_log_event — accepts a completed outcome",
+      "description": "Logs a completed allow outcome directly to the event store, bypassing guard. Simulates the pattern where the tool has already run and you are recording the result.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_log_event",
+            "arguments": {
+              "type": "tool_call",
+              "tool": "mcp_probe_test_tool",
+              "agent_name": "mcp-probe",
+              "outcome": "allow",
+              "args": { "input": "conformance-log-check" }
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_get_workflows — returns workflow list",
+      "description": "Fetches configured workflows. An empty list is valid.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_workflows",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "varden_get_jobs — returns background job list",
+      "description": "Fetches recent background jobs and their status. An empty list is valid.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_get_jobs",
+            "arguments": {}
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "guard then events — guard call appears in event stream",
+      "description": "Multi-step scenario: submits a guard check, then fetches the event list and asserts at least one event exists. Validates the end-to-end write path through the MCP server into the control plane event store.",
+      "skip_unless_any_capability": ["tools"],
+      "steps": [
+        {
+          "call_tool": {
+            "name": "varden_guard",
+            "arguments": {
+              "type": "tool_call",
+              "tool": "mcp_probe_e2e_tool",
+              "agent_name": "mcp-probe",
+              "args": { "input": "e2e-trace-check" }
+            }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "call_tool": {
+            "name": "varden_get_events",
+            "arguments": { "limit": 10, "offset": 0 }
+          },
+          "expect": {
+            "result_schema": {
+              "type": "object",
+              "required": ["content"],
+              "properties": {
+                "content": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["type", "text"],
+                    "properties": {
+                      "type": { "const": "text" },
+                      "text": { "type": "string", "minLength": 1 }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+
+  ]
+}
