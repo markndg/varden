@@ -1,0 +1,98 @@
+name: MCP conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  mcp-conformance:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Varden
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install Varden with MCP extras
+        run: pip install -e ".[mcp]"
+
+      - name: Bootstrap policy
+        run: |
+          python -c "
+          import json, pathlib
+          p = pathlib.Path('policy-packs/baseline-operational-safety.json')
+          pathlib.Path('policy.json').write_text(
+            json.dumps(json.loads(p.read_text(encoding='utf-8'))['template'], indent=2) + '\n',
+            encoding='utf-8'
+          )
+          "
+
+      - name: Start Varden control plane
+        run: |
+          python -m varden.api --config examples/dev.env &
+          echo "VARDEN_PID=$!" >> $GITHUB_ENV
+
+      - name: Wait for control plane
+        run: |
+          for i in $(seq 1 20); do
+            if curl -sf http://127.0.0.1:8000/health > /dev/null; then
+              echo "Varden is up"; exit 0
+            fi
+            echo "Waiting... ($i/20)"; sleep 1
+          done
+          echo "Varden did not start in time"; exit 1
+
+      # The Action installs the binary, runs the suite or conformance, and
+      # handles SARIF upload + artifact upload itself. Don't duplicate those.
+
+      - name: Built-in MCP conformance
+        uses: markndg/mcp-probe@v0.2.0
+        env:
+          VARDEN_BASE_URL: http://127.0.0.1:8000
+          VARDEN_API_KEY: admin-demo-key
+        with:
+          server-command: varden-mcp
+          version: v0.2.0
+          artifact-name: mcp-probe-conformance
+          junit: mcp-probe-results/conformance.xml
+          sarif: mcp-probe-results/conformance.sarif
+          report: mcp-probe-results/conformance.json
+
+      - name: Functional suite
+        uses: markndg/mcp-probe@v0.2.0
+        env:
+          VARDEN_BASE_URL: http://127.0.0.1:8000
+          VARDEN_API_KEY: admin-demo-key
+        with:
+          server-command: varden-mcp
+          suite: tests/mcp/varden_functional.suite.json
+          version: v0.2.0
+          artifact-name: mcp-probe-functional
+          junit: mcp-probe-results/functional.xml
+          sarif: mcp-probe-results/functional.sarif
+          report: mcp-probe-results/functional.json
+
+      - name: Policy round-trip suite
+        uses: markndg/mcp-probe@v0.2.0
+        env:
+          VARDEN_BASE_URL: http://127.0.0.1:8000
+          VARDEN_API_KEY: admin-demo-key
+        with:
+          server-command: varden-mcp
+          suite: tests/mcp/varden_put_policy.suite.json
+          version: v0.2.0
+          artifact-name: mcp-probe-put-policy
+          junit: mcp-probe-results/put_policy.xml
+          sarif: mcp-probe-results/put_policy.sarif
+          report: mcp-probe-results/put_policy.json
+
+      - name: Stop Varden
+        if: always()
+        run: kill $VARDEN_PID || true
