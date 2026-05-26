@@ -49,9 +49,7 @@ jobs:
           done
           echo "Varden did not start in time"; exit 1
 
-      # The Action installs the binary, runs the suite or conformance, and
-      # handles SARIF upload + artifact upload itself. Don't duplicate those.
-
+      # SARIF upload enabled here only — one upload per job per tool is the limit.
       - name: Built-in MCP conformance
         uses: markndg/mcp-probe@v0.2.0
         env:
@@ -64,7 +62,10 @@ jobs:
           junit: mcp-probe-results/conformance.xml
           sarif: mcp-probe-results/conformance.sarif
           report: mcp-probe-results/conformance.json
+          upload-sarif: "true"
+          upload-artifact: "true"
 
+      # SARIF upload disabled — artifact only.
       - name: Functional suite
         uses: markndg/mcp-probe@v0.2.0
         env:
@@ -78,7 +79,10 @@ jobs:
           junit: mcp-probe-results/functional.xml
           sarif: mcp-probe-results/functional.sarif
           report: mcp-probe-results/functional.json
+          upload-sarif: "false"
+          upload-artifact: "true"
 
+      # SARIF upload disabled — artifact only.
       - name: Policy round-trip suite
         uses: markndg/mcp-probe@v0.2.0
         env:
@@ -92,6 +96,8 @@ jobs:
           junit: mcp-probe-results/put_policy.xml
           sarif: mcp-probe-results/put_policy.sarif
           report: mcp-probe-results/put_policy.json
+          upload-sarif: "false"
+          upload-artifact: "true"
 
       - name: Stop Varden
         if: always()
