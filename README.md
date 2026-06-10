@@ -2,6 +2,8 @@
 
 <img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
+Using Varden? Open a blank issue titled "Using this" — I read everything.
+
 **Project links:** [Source](https://github.com/markndg/varden) · [Issues](https://github.com/markndg/varden/issues) · [Security](https://github.com/markndg/varden/security)
 
 **Varden is a self-hosted runtime firewall for AI agents.**
