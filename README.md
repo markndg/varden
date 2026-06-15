@@ -2,7 +2,9 @@
 
 ![Varden](https://github.com/markndg/varden/raw/main/varden/web/assets/varden-icon.png)
 
-![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg) [![Release](https://img.shields.io/github/v/release/markndg/varden?style=flat-square&color=111111&label=release)](https://github.com/markndg/varden/releases) [![Build](https://img.shields.io/github/actions/workflow/status/markndg/varden/ci.yml?style=flat-square&label=build)](https://github.com/markndg/varden/actions) [![Platforms](https://img.shields.io/badge/platforms-linux%20·%20macOS%20·%20windows-111111?style=flat-square)](https://github.com/markndg/varden) [![Python](https://img.shields.io/badge/built%20with-Python-3776AB?style=flat-square)](https://www.python.org) [![Commercial licence](https://img.shields.io/badge/commercial%20licence-available-green?style=flat-square)](https://github.com/markndg/varden/blob/main/COMMERCIAL.md)
+Using Varden? Open a blank issue titled "Using this" — I read everything.
+
+**Project links:** [Source](https://github.com/markndg/varden) · [Issues](https://github.com/markndg/varden/issues) · [Security](https://github.com/markndg/varden/security)
 
 > Using Varden? I read everything — [open a blank issue titled "Using this"](https://github.com/markndg/varden/issues/new)
 Your developers are using Cursor. It's calling APIs, running git commands,
