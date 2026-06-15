@@ -1,6 +1,6 @@
 # Varden
 
-![Varden](https://github.com/markndg/varden/raw/main/varden/web/assets/varden-icon.png)
+<img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
 Using Varden? Open a blank issue titled "Using this" — I read everything.
 
@@ -87,7 +87,7 @@ dashboard with classifiers, risk scores, and a full trace.
 
 Know which rules are working, which are over-firing, and where your coverage gaps are.
 
-![Varden rule impact — heatmap of live policy impact with drilldown](docs/rule-impact-screenshot.png)
+![Varden rule impact — heatmap of live policy impact with drilldown](docs/rule-impact.png)
 
 Every rule shows its detection count, coverage percentage, false positive proxy, and 
 which agents and tools it's touching. The drilldown panel shows the most recent 
