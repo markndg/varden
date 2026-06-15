@@ -183,7 +183,13 @@ tools = protect_tools(tools, agent_name='support-agent')
 Pre-execution allow / warn / block on every tool call, with full trace visibility in the
 dashboard. Drop-in — no changes to your agent architecture.
 
----
+**Demos:**
+
+```bash
+python demos/langchain/allow_warn_block_demo.py
+python demos/langchain/sql_guard_demo.py
+python demos/langchain/exfiltration_demo.py
+```
 
 ## `varden session`: wrap any CLI tool
 
