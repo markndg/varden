@@ -1,6 +1,6 @@
 # Varden
 
-<img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
+<img src="https://github.com/markndg/varden/raw/main/varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
 Using Varden? Open a blank issue titled "Using this" — I read everything.
 
@@ -103,7 +103,7 @@ infrastructure to be evaluated by someone else's service.
 Varden runs on your infrastructure. Your policy file, your data, your control plane.
 No traffic leaves unless you decide it does.
 
-![Varden rules — view and configure rules](docs/rules-config.png)
+![Varden rules config — view and configure rules](docs/rules-config.png)
 
 ---
 
