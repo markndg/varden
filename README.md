@@ -1,6 +1,6 @@
 # Varden
 
-![Varden](https://github.com/markndg/varden/raw/main/varden/web/assets/varden-icon.png)
+<img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg) [![Release](https://img.shields.io/github/v/release/markndg/varden?style=flat-square&color=111111&label=release)](https://github.com/markndg/varden/releases) [![Build](https://img.shields.io/github/actions/workflow/status/markndg/varden/ci.yml?style=flat-square&label=build)](https://github.com/markndg/varden/actions) [![Platforms](https://img.shields.io/badge/platforms-linux%20·%20macOS%20·%20windows-111111?style=flat-square)](https://github.com/markndg/varden) [![Python](https://img.shields.io/badge/built%20with-Python-3776AB?style=flat-square)](https://www.python.org) [![Commercial licence](https://img.shields.io/badge/commercial%20licence-available-green?style=flat-square)](https://github.com/markndg/varden/blob/main/COMMERCIAL.md)
 
@@ -85,7 +85,7 @@ dashboard with classifiers, risk scores, and a full trace.
 
 Know which rules are working, which are over-firing, and where your coverage gaps are.
 
-![Varden rule impact — heatmap of live policy impact with drilldown](docs/rule-impact-screenshot.png)
+![Varden rule impact — heatmap of live policy impact with drilldown](docs/rule-impact.png)
 
 Every rule shows its detection count, coverage percentage, false positive proxy, and 
 which agents and tools it's touching. The drilldown panel shows the most recent 
