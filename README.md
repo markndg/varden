@@ -1,6 +1,6 @@
 # Varden
 
-<img src="varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
+<img src="https://github.com/markndg/varden/raw/main/varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
 ![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg) [![Release](https://img.shields.io/github/v/release/markndg/varden?style=flat-square&color=111111&label=release)](https://github.com/markndg/varden/releases) [![Build](https://img.shields.io/github/actions/workflow/status/markndg/varden/ci.yml?style=flat-square&label=build)](https://github.com/markndg/varden/actions) [![Platforms](https://img.shields.io/badge/platforms-linux%20·%20macOS%20·%20windows-111111?style=flat-square)](https://github.com/markndg/varden) [![Python](https://img.shields.io/badge/built%20with-Python-3776AB?style=flat-square)](https://www.python.org) [![Commercial licence](https://img.shields.io/badge/commercial%20licence-available-green?style=flat-square)](https://github.com/markndg/varden/blob/main/COMMERCIAL.md)
 
@@ -101,7 +101,7 @@ infrastructure to be evaluated by someone else's service.
 Varden runs on your infrastructure. Your policy file, your data, your control plane.
 No traffic leaves unless you decide it does.
 
-![Varden rules — view and configure rules](docs/rules-config.png)
+![Varden rules config — view and configure rules](docs/rules-config.png)
 
 ---
 
