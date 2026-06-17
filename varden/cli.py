@@ -29,13 +29,51 @@ def _post_json(url: str, payload: dict | None = None, api_key: str = 'admin-demo
     with urllib.request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode('utf-8'))
 
+def _bootstrap_policy(policy_path: Path = Path("policy.json")) -> None:
+    if policy_path.exists():
+        return
+    # Try package resource first (PyPI install)
+    try:
+        import importlib.resources as pkg_resources
+        resource = pkg_resources.files("varden").joinpath("policy-packs/baseline-operational-safety.json")
+        data = json.loads(resource.read_text(encoding="utf-8"))
+        policy_path.write_text(json.dumps(data["template"], indent=2) + "\n", encoding="utf-8")
+        print(f"Bootstrapped {policy_path} from baseline policy pack.")
+        return
+    except Exception:
+        pass
+    # Fallback for source repo layout
+    repo_pack = Path(__file__).parent.parent / "policy-packs" / "baseline-operational-safety.json"
+    if repo_pack.exists():
+        data = json.loads(repo_pack.read_text(encoding="utf-8"))
+        policy_path.write_text(json.dumps(data["template"], indent=2) + "\n", encoding="utf-8")
+        print(f"Bootstrapped {policy_path} from source policy pack.")
+        return
+    # Last resort: embed a minimal working policy
+    minimal = {
+        "block": [
+            {"type": "tool_call", "tool": "delete_database"},
+            {"type": "tool_call", "field:args.args": {"contains": "delete_database"}},
+        ],
+        "warn": [
+            {"classifier:internal": True},
+            {"classifier:secrets": True},
+            {"classifier:pii": True},
+        ],
+        "monitor": [
+            {"type": "http_request"},
+        ],
+        "allow": []
+    }
+    policy_path.write_text(json.dumps(minimal, indent=2) + "\n", encoding="utf-8")
+    print(f"Bootstrapped {policy_path} from embedded baseline.")
+
 
 def run_demo(host: str = '127.0.0.1', port: int = 8000, open_browser: bool = True) -> int:
+    _bootstrap_policy()
     env = os.environ.copy()
     env.setdefault('VARDEN_API_KEY', env.get('VARDEN_API_KEY', 'admin-demo-key'))
-    env.setdefault('VARDEN_API_KEY', env.get('VARDEN_API_KEY', 'admin-demo-key'))
     base_url = f'http://{host}:{port}'
-    env.setdefault('VARDEN_BASE_URL', env.get('VARDEN_BASE_URL', base_url))
     env.setdefault('VARDEN_BASE_URL', env.get('VARDEN_BASE_URL', base_url))
     cmd = [sys.executable, '-m', 'uvicorn', 'varden.api:app', '--host', host, '--port', str(port)]
     proc = subprocess.Popen(cmd, env=env)

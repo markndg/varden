@@ -23,16 +23,23 @@ one does something unexpected.
 ## Try it now
 
 ```bash
-# 1. Install
+pip install varden
+varden demo
+```
+
+That's it. Varden starts, bootstraps a baseline policy, runs demo agents, and opens the dashboard showing blocked, warned, and monitored actions.
+
+**Or clone and run from source:**
+```bash
 git clone https://github.com/markndg/varden
 cd varden
 python -m venv .venv && source .venv/bin/activate
 pip install -e .
+varden demo
+```
 
-# 2. Start Varden
-python -m varden.api --config examples/dev.env
-
-# 3. In a second terminal — wrap Cursor
+**Wrap your CLI tools with Varden session:**
+```bash
 export VARDEN_BASE_URL=http://127.0.0.1:8000
 export VARDEN_API_KEY=admin-demo-key
 varden session . -- cursor .

@@ -7,7 +7,14 @@ import sys
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+
+try:
+    from mcp.server.fastmcp import FastMCP
+except ImportError:
+    raise SystemExit(
+        "The MCP server requires the mcp extra.\n"
+        "Run: pip install varden[mcp]"
+    )
 
 from varden_mcp._client import get_client
 
