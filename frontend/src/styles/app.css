@@ -1388,6 +1388,7 @@ button { cursor: pointer; }
 .traceNode__card { fill: rgba(8, 18, 32, .98); stroke-width: 1.5; }
 .traceNode__card--danger { stroke: rgba(255,107,122,.62); }
 .traceNode__card--warn { stroke: rgba(255,191,90,.62); }
+.traceNode__card--monitor { stroke: rgba(77,163,255,.72); }
 .traceNode__card--ok { stroke: rgba(93,225,164,.52); }
 .traceNode__title { fill: var(--text); font-size: 14px; font-weight: 700; }
 .traceNode__meta, .traceNode__risk { fill: #b9c9ea; font-size: 12px; }
@@ -1585,6 +1586,7 @@ button { cursor: pointer; }
 }
 .timelineChart__segment--danger { background: linear-gradient(180deg, rgba(255,107,122,.95), rgba(255,107,122,.7)); }
 .timelineChart__segment--warn { background: linear-gradient(180deg, rgba(255,191,90,.95), rgba(255,191,90,.72)); }
+.timelineChart__segment--monitor { background: linear-gradient(180deg, rgba(77,163,255,.95), rgba(77,163,255,.72)); }
 .timelineChart__segment--ok { background: linear-gradient(180deg, rgba(93,225,164,.95), rgba(76,224,181,.68)); }
 .timelineChart__label {
   font-size: 11px;
