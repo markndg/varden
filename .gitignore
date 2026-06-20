@@ -47,3 +47,5 @@ Thumbs.db
 frontend/package-lock.json
 varden_alerts.jsonl
 TODO-OSS.md
+
+.pypirc
