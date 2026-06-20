@@ -3,7 +3,5 @@ Varden
 Copyright (c) 2026 Mark Griffiths
 
 Licensing summary:
-- Core platform and frontend: AGPL-3.0-or-later
-- SDKs (Python, Java, Rust): Apache License 2.0
+- Released under Apache License 2.0
 
-See LICENSE, COMMERCIAL.md, and TRADEMARK.md for details.

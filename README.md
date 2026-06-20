@@ -2,19 +2,31 @@
 
 <img src="https://github.com/markndg/varden/raw/main/varden/web/assets/varden-icon.png" alt="Varden logo" width="128" />
 
-Using Varden? Open a blank issue titled "Using this" — I read everything.
+![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
+[![Release](https://img.shields.io/github/v/release/markndg/varden?style=flat-square&color=111111&label=release)](https://github.com/markndg/varden/releases)
+[![Build](https://img.shields.io/github/actions/workflow/status/markndg/varden/ci.yml?style=flat-square&label=build)](https://github.com/markndg/varden/actions)
+[![Platforms](https://img.shields.io/badge/platforms-linux%20·%20macOS%20·%20windows-111111?style=flat-square)](https://github.com/markndg/varden/releases)
+[![Agent Governance](https://img.shields.io/badge/agent-governance-8B5CF6?style=flat-square)](https://github.com/markndg/varden)
+
+> Using Varden? Drop a note — I read everything: [open a blank issue titled "Using this"](https://github.com/markndg/varden/issues/new)
 
 **Project links:** [Source](https://github.com/markndg/varden) · [Issues](https://github.com/markndg/varden/issues) · [Security](https://github.com/markndg/varden/security)
 
-> Using Varden? I read everything — [open a blank issue titled "Using this"](https://github.com/markndg/varden/issues/new)
+
 Your developers are using Cursor. It's calling APIs, running git commands,
 talking to external services, executing shell commands.
 
 Do you know what it's doing?
 
 Now multiply that by a team of ten, all running AI agents with MCP access to your
-infrastructure. Nobody has a list of what those agents can touch. Nobody sees it when
-one does something unexpected.
+infrastructure. 
+Nobody has a complete inventory of what those agents can touch.
+Nobody sees it when one does something unexpected.
+Nobody knows when a new capability quietly appears.
+
+A runtime governance layer for AI agents, tools and MCP servers.
+
+**Varden observes, governs, and audits agent activity in real time.**
 
 **Varden is the thing watching.**
 
@@ -236,8 +248,5 @@ and disable the dev bootstrap auth.
 
 ## Licence
 
-**Core platform and dashboard:** AGPL-3.0
-**SDKs** (`sdks/python`, `sdks/java`, `sdks/rust`): Apache-2.0
+Licensed under the Apache License 2.0. See LICENSE.
 
-Commercial licence available for teams that cannot accept AGPL obligations —
-see [COMMERCIAL.md](COMMERCIAL.md).
