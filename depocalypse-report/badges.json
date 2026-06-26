@@ -1,0 +1,153 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-06-20T16:24:22.466Z",
+  "classification": {
+    "score": 0,
+    "title": "Cornetto Clean",
+    "rarity": "legendary-clean",
+    "badgeSlug": "score-000-cornetto-clean"
+  },
+  "achievements": [
+    {
+      "id": "proper-little-project",
+      "title": "Proper Little Project",
+      "rarity": "legendary",
+      "description": "Small. Tidy. Suspicious only because it is so quiet.",
+      "reason": "Only 0 unique packages, no install scripts, no exotic sources, no duplicates.",
+      "earned": true,
+      "triggerMetrics": {
+        "totalUniquePackages": 0,
+        "score": 0,
+        "installs": 0,
+        "exotic": 0
+      },
+      "svgPath": "badges/achievement-proper-little-project.svg"
+    },
+    {
+      "id": "corporate-seance",
+      "title": "Corporate Séance",
+      "rarity": "rare",
+      "description": "Licences? In this economy? Speak to the void instead.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "critical-pub-discussion",
+      "title": "Critical Pub Discussion",
+      "rarity": "uncommon",
+      "description": "Multiple groups, multiple versions, nobody can hear themselves think.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "cursed-but-efficient",
+      "title": "Cursed But Efficient",
+      "rarity": "rare",
+      "description": "Deep tree. Few packages. The maths is suspiciously fine.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "dependency-necromancer",
+      "title": "Dependency Necromancer",
+      "rarity": "cursed",
+      "description": "Pulling old packages out of their npm graves.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "downloaded-from-a-forum",
+      "title": "Downloaded From A Forum",
+      "rarity": "rare",
+      "description": "Found on a forum, copied across, installed without reading.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "duplicate-sanctuary",
+      "title": "Duplicate Sanctuary",
+      "rarity": "uncommon",
+      "description": "At this point you are simply collecting them.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "install-script-summoner",
+      "title": "Install Script Summoner",
+      "rarity": "cursed",
+      "description": "Ten or more packages run code during install. The household trembles.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "left-pad-memorial-edition",
+      "title": "Left Pad Memorial Edition",
+      "rarity": "legendary",
+      "description": "Includes left-pad. In this household? In 2026?",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "national-infrastructure",
+      "title": "National Infrastructure",
+      "rarity": "cursed",
+      "description": "Critical to too many things. Cannot be safely turned off.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "northern-line",
+      "title": "Northern Line",
+      "rarity": "uncommon",
+      "description": "An impressively long line. Eventually it loops back on itself.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "stackoverflow-folk-archive",
+      "title": "StackOverflow Folk Archive",
+      "rarity": "uncommon",
+      "description": "Built from answers, rituals, and one accepted comment from 2014.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "technical-sorcery",
+      "title": "Technical Sorcery",
+      "rarity": "rare",
+      "description": "Dependency tree deep enough to contain a small civilisation.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "vhs-rental",
+      "title": "VHS Rental",
+      "rarity": "common",
+      "description": "Convenient, regional, slightly grainy. Please rewind before returning.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    },
+    {
+      "id": "video-nasty",
+      "title": "Video Nasty",
+      "rarity": "illegal-after-watershed",
+      "description": "Banned in three regions. Watch only with the lights on.",
+      "reason": "Not earned in this scan.",
+      "earned": false,
+      "triggerMetrics": {}
+    }
+  ]
+}

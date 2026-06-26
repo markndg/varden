@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="terminal">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Depocalypse — varden</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: #06140a;
+  color: #9bff8d;
+  font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace;
+  line-height: 1.5;
+  min-height: 100vh;
+  padding: 32px 24px 64px;
+}
+h1, h2, h3 {
+  font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace;
+  color: #9bff8d;
+  margin: 0 0 12px;
+}
+h1 { font-size: 48px; letter-spacing: 0.08em; }
+h2 { font-size: 22px; margin-top: 0; letter-spacing: 0.04em; }
+a { color: #9bff8d; }
+code { font-family: 'Menlo', 'Consolas', monospace; background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 4px; color: #9bff8d; }
+.muted { color: #3f7a3a; }
+.small { font-size: 13px; }
+.hero { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 32px; flex-wrap: wrap; }
+.brand { display: flex; align-items: center; gap: 18px; }
+.logo { font-size: 56px; color: #ff5f5f; line-height: 1; }
+.tagline { color: #3f7a3a; margin: 4px 0 0; letter-spacing: 0.04em; }
+.meta { display: grid; grid-template-columns: auto auto; gap: 6px 16px; font-size: 13px; }
+.meta .mlabel { color: #3f7a3a; margin-right: 8px; }
+.meta .mvalue { color: #9bff8d; }
+.meta > div { display: contents; }
+/* ----- Cinematic title card (crimson-gothic studio / VHS rental sleeve) ----- */
+.title-card {
+  position: relative;
+  background: #08200d;
+  border: 1px solid #3f7a3a;
+  padding: 0;
+  border-radius: 14px;
+  margin-bottom: 28px;
+  overflow: hidden;
+  isolation: isolate;
+}
+.title-card::before {
+  content: "";
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.025) 0 1px, transparent 1px 3px),
+    radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%);
+  mix-blend-mode: overlay;
+  z-index: 1;
+}
+.title-card > * { position: relative; z-index: 2; }
+.cert-strip {
+  display: flex; align-items: center; gap: 16px;
+  padding: 10px 18px;
+  background: rgba(0,0,0,0.45);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  font-size: 11px; letter-spacing: 0.22em; text-transform: uppercase;
+  color: #3f7a3a;
+}
+.cert-rating {
+  display: inline-block;
+  background: #ffd24a;
+  color: #100404;
+  font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace;
+  font-weight: 700;
+  font-size: 22px;
+  padding: 2px 12px;
+  border-radius: 4px;
+  letter-spacing: 0.05em;
+  box-shadow: 0 0 0 2px #000 inset;
+}
+.cert-meta { flex: 1; }
+.film-title { display: flex; align-items: center; gap: 22px; padding: 36px 28px 18px; }
+.film-emoji { font-size: 88px; line-height: 1; filter: drop-shadow(0 0 12px rgba(255,45,45,0.4)); }
+.film-level { color: #3f7a3a; font-size: 11px; letter-spacing: 0.3em; }
+.film-name { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 56px; color: #ff5f5f; line-height: 1.05; margin: 6px 0 8px; letter-spacing: 0.04em; text-shadow: 0 0 18px rgba(255,45,45,0.35); }
+.film-desc { color: #9bff8d; opacity: 0.92; font-style: italic; }
+.secretmark { margin-top: 10px; display: inline-block; padding: 4px 10px; border: 1px dashed #ff5f5f; color: #ff5f5f; font-size: 11px; letter-spacing: 0.25em; }
+.film-score { padding: 8px 28px 28px; }
+.gauge-bg { width: 100%; height: 18px; background: rgba(255,255,255,0.08); border-radius: 999px; overflow: hidden; margin-bottom: 10px; border: 1px solid rgba(255,255,255,0.08); }
+.gauge-fill { height: 100%; background: linear-gradient(90deg,#1e4a1e,#9bff8d,#ff5f5f); }
+.gauge-number { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 56px; color: #ff5f5f; line-height: 1; }
+.gauge-number .of { font-size: 22px; color: #3f7a3a; }
+.gauge-number .raw { font-size: 13px; color: #3f7a3a; letter-spacing: 0.1em; margin-left: 8px; font-family: 'Menlo', monospace; }
+.gauge-threshold { color: #3f7a3a; margin-top: 4px; font-size: 13px; }
+.gauge-threshold .ok { color: #6cffa0; }
+.gauge-threshold .fail { color: #ff5f5f; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; margin-bottom: 28px; }
+.card { background: #08200d; border: 1px solid rgba(255,255,255,0.06); padding: 14px 16px; border-radius: 10px; }
+.cardlabel { font-size: 11px; letter-spacing: 0.15em; color: #3f7a3a; text-transform: uppercase; }
+.cardvalue { font-size: 22px; color: #9bff8d; font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; margin-top: 4px; }
+.block { background: #08200d; border: 1px solid rgba(255,255,255,0.06); padding: 22px 24px; border-radius: 12px; margin-bottom: 22px; }
+.vhs.block { background: linear-gradient(180deg, #08200d 0%, rgba(0,0,0,0.4) 100%); border: 1px solid rgba(255,255,255,0.08); }
+.vhsgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+.vhsstat { background: rgba(0,0,0,0.35); border-left: 3px solid #ff5f5f; padding: 10px 14px; border-radius: 4px; }
+.vhslabel { font-size: 10px; letter-spacing: 0.24em; text-transform: uppercase; color: #3f7a3a; }
+.vhsvalue { color: #9bff8d; margin-top: 4px; font-size: 14px; }
+.prophecies { display: grid; gap: 10px; }
+.prophecy { background: rgba(255,255,255,0.03); border: 1px dashed rgba(255,255,255,0.1); padding: 10px 14px; border-radius: 6px; }
+.prophecy .plabel { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; color: #9bff8d; font-size: 14px; letter-spacing: 0.1em; }
+.prophecy .pvalue { color: #9bff8d; opacity: 0.9; margin-top: 4px; font-size: 14px; }
+.scanner { border-left: 3px solid #9bff8d; }
+.scanner-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 24px; margin-bottom: 12px; }
+.feat-row { margin: 12px 0; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.feat { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 12px; background: rgba(255,255,255,0.08); }
+.feat.on { background: rgba(0,200,120,0.2); color: #7dffb0; }
+.missing-signals { margin: 8px 0 0; padding-left: 20px; font-size: 13px; }
+.conf-high { color: #7dffb0; }
+.conf-medium { color: #ffd24a; }
+.conf-low { color: #ff5f5f; }
+.eco-detected { margin: 8px 0; font-size: 13px; }
+.collectible { background: linear-gradient(180deg, #08200d 0%, rgba(0,0,0,0.5) 100%); }
+.collect-row { display: grid; grid-template-columns: 1fr 1.4fr 1fr; gap: 16px; margin: 16px 0 12px; align-items: stretch; }
+.collect-card { border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 18px 14px; text-align: center; background: rgba(0,0,0,0.3); display: flex; flex-direction: column; justify-content: center; gap: 4px; }
+.collect-card.current { border: 2px solid #ff5f5f; background: rgba(0,0,0,0.55); box-shadow: 0 0 28px rgba(255,45,45,0.25); }
+.collect-card.legendary-clean { border-color: #ffd24a; }
+.collect-card.current.legendary-clean { box-shadow: 0 0 32px rgba(255,210,74,0.45); }
+.collect-card.locked { color: #3f7a3a; font-style: italic; }
+.collect-card-arrow { font-size: 10px; letter-spacing: 0.22em; color: #3f7a3a; text-transform: uppercase; }
+.collect-card-score { font-family: 'Menlo', monospace; font-size: 36px; color: #9bff8d; }
+.collect-card-score.small { font-size: 22px; }
+.collect-badge-emoji { font-size: 48px; line-height: 1; }
+.collect-badge-emoji.small { font-size: 30px; }
+.collect-card-title { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 18px; color: #ff5f5f; }
+.collect-card-title.small { font-size: 14px; color: #9bff8d; }
+.collect-card-sub { color: #3f7a3a; font-size: 12px; }
+.collect-card-rarity { font-size: 10px; letter-spacing: 0.2em; color: #3f7a3a; text-transform: uppercase; }
+.collect-locked { color: #3f7a3a; padding: 12px; font-size: 13px; }
+.collect-distance { color: #9bff8d; margin: 6px 0; }
+.collect-distance .ok { color: #6cffa0; }
+.badge-showcase { display: flex; flex-direction: column; gap: 14px; margin: 18px 0 12px; }
+.badge-label { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 11px; letter-spacing: 0.28em; text-transform: uppercase; color: #9bff8d; margin-bottom: 6px; }
+.badge-frame { display: inline-block; background: #000; border-radius: 8px; overflow: hidden; max-width: 460px; box-shadow: 0 6px 20px rgba(0,0,0,0.45); }
+.badge-frame img { display: block; width: 100%; height: auto; }
+.badge-frame.poster { max-width: 100%; margin-top: 8px; }
+.badge-copy { display: flex; align-items: center; gap: 10px; margin-top: 8px; flex-wrap: wrap; }
+.badge-copy code { background: rgba(0,0,0,0.55); padding: 6px 10px; border-radius: 4px; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #9bff8d; border: 1px solid rgba(255,255,255,0.08); }
+.badge-copy-btn { background: #ff5f5f; color: #100404; border: none; padding: 6px 14px; border-radius: 4px; cursor: pointer; font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; }
+.badge-copy-btn:hover { background: #9bff8d; }
+.badge-poster { background: rgba(0,0,0,0.2); padding: 10px 14px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.08); }
+.badge-poster summary { cursor: pointer; font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; letter-spacing: 0.22em; text-transform: uppercase; font-size: 12px; color: #3f7a3a; }
+.badge-poster[open] summary { color: #9bff8d; margin-bottom: 6px; }
+.collect-motto { color: #3f7a3a; text-align: center; margin: 4px 0 0; }
+.chastise .headline { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 20px; color: #ff5f5f; margin: 0 0 12px; }
+.chastise ul { padding-left: 18px; margin: 0; }
+.chastise li { margin: 4px 0; }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: #3f7a3a; font-weight: 500; padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.1); letter-spacing: 0.1em; text-transform: uppercase; font-size: 11px; }
+td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; }
+td.name { color: #9bff8d; font-family: 'Menlo', monospace; }
+.factors { display: grid; gap: 10px; }
+.factor .frow { display: flex; justify-content: space-between; font-size: 14px; }
+.factor .flabel { color: #9bff8d; }
+.factor .fvalue { color: #3f7a3a; font-family: 'Menlo', monospace; }
+.factor .fbarbg { background: rgba(255,255,255,0.07); height: 8px; border-radius: 999px; overflow: hidden; margin-top: 4px; }
+.factor .fbar { height: 100%; background: linear-gradient(90deg,#1e4a1e,#9bff8d,#ff5f5f); }
+.factor .fdetail { font-size: 12px; margin-top: 4px; }
+.licenses { display: grid; gap: 8px; }
+.licrow { display: grid; grid-template-columns: 140px 1fr 40px; align-items: center; gap: 10px; font-size: 13px; }
+.liclabel { color: #9bff8d; font-family: 'Menlo', monospace; }
+.licbarbg { background: rgba(255,255,255,0.06); height: 10px; border-radius: 999px; overflow: hidden; }
+.licbar { height: 100%; background: #9bff8d; }
+.licnum { text-align: right; color: #3f7a3a; font-family: 'Menlo', monospace; }
+.whylist { display: grid; gap: 12px; }
+.whyitem { background: rgba(255,255,255,0.03); padding: 10px 12px; border-radius: 8px; }
+.whyname { color: #9bff8d; margin-bottom: 4px; font-family: 'Menlo', monospace; font-size: 13px; }
+.whyitem code { display: block; margin-top: 4px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+#graph { font-family: 'Menlo', monospace; font-size: 13px; max-height: 540px; overflow: auto; padding: 8px 4px; }
+.tnode { padding: 2px 0; }
+.thead { cursor: pointer; display: flex; gap: 6px; align-items: center; user-select: none; }
+.thead:hover .tlabel { color: #ff5f5f; }
+.ttoggle { color: #3f7a3a; width: 14px; display: inline-block; }
+.tlabel { color: #9bff8d; }
+.kind-dev > .thead .tlabel { color: #3f7a3a; }
+.kind-optional > .thead .tlabel { font-style: italic; }
+.tchildren { padding-left: 18px; border-left: 1px solid rgba(255,255,255,0.06); margin-left: 6px; }
+.tchildren.collapsed { display: none; }
+.tmore { color: #3f7a3a; padding: 4px 0; }
+.remediation { padding-left: 18px; }
+.remediation li { margin: 6px 0; }
+footer { text-align: center; color: #3f7a3a; margin-top: 32px; font-size: 13px; }
+/* Collectible badges earned */
+.achv-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 16px; }
+.achv-card { background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.08); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.achv-card.earned { border-color: #ff5f5f; box-shadow: 0 0 24px rgba(255,45,45,0.18); }
+.achv-card.legendary { border-color: #ffd24a; box-shadow: 0 0 24px rgba(255,210,74,0.2); }
+.achv-card.locked { opacity: 0.55; }
+.achv-head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.achv-title { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; color: #ff5f5f; font-size: 16px; }
+.achv-card.locked .achv-title { color: #3f7a3a; }
+.achv-rarity { font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase; color: #3f7a3a; }
+.achv-reason { font-size: 13px; color: #9bff8d; opacity: 0.85; }
+.achv-svg img { width: 100%; height: auto; border-radius: 6px; background: #000; display: block; }
+.achv-snippet { font-family: 'Menlo', monospace; font-size: 11px; color: #3f7a3a; background: rgba(255,255,255,0.04); border-radius: 4px; padding: 6px 8px; word-break: break-all; }
+.achv-section { font-size: 13px; letter-spacing: 0.22em; color: #3f7a3a; margin: 22px 0 10px; text-transform: uppercase; }
+.achv-card.near-miss { border-color: rgba(255,210,74,0.35); background: rgba(40,30,4,0.45); opacity: 0.95; }
+.achv-card.near-miss .achv-title { color: #ffd24a; }
+.achv-card.locked .achv-title { color: #3f7a3a; }
+.achv-silhouette { aspect-ratio: 4 / 1; background: linear-gradient(180deg, rgba(0,0,0,0.6), rgba(0,0,0,0.3)); border: 1px dashed rgba(255,255,255,0.18); border-radius: 6px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+.achv-silhouette-mark { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 36px; color: rgba(255,255,255,0.18); letter-spacing: 0.1em; }
+.achv-silhouette-label { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; font-size: 11px; letter-spacing: 0.32em; color: #3f7a3a; }
+.achv-card.near-miss .achv-silhouette { border-color: rgba(255,210,74,0.4); }
+.achv-card.near-miss .achv-silhouette-mark { color: rgba(255,210,74,0.55); }
+.achv-card.near-miss .achv-silhouette-label { color: #ffd24a; }
+.achv-progress { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; font-size: 12px; }
+.achv-progress li { display: grid; grid-template-columns: 110px 1fr; gap: 8px; color: #9bff8d; }
+.achv-progress-label { color: #3f7a3a; letter-spacing: 0.16em; font-size: 10px; text-transform: uppercase; align-self: center; }
+.terse-list { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; }
+.terse-chip { font-family: 'Menlo', monospace; font-size: 11px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.08); border-radius: 4px; padding: 2px 8px; color: #9bff8d; }
+/* Archetype */
+.archetype { background: linear-gradient(135deg, #08200d 0%, rgba(0,0,0,0.5) 100%); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+.archetype-title { font-family: 'IBM Plex Mono', 'Menlo', 'Consolas', monospace; color: #ff5f5f; font-size: 28px; letter-spacing: 0.04em; margin: 0 0 10px; }
+.archetype-section { color: #3f7a3a; font-size: 11px; letter-spacing: 0.28em; text-transform: uppercase; margin: 12px 0 4px; }
+.archetype p { margin: 0; color: #9bff8d; }
+/* Cursed chain */
+.cursed { background: rgba(40,4,4,0.55); border: 1px solid rgba(255,80,80,0.35); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+.cursed-trail { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-family: 'Menlo', monospace; font-size: 14px; margin: 12px 0; }
+.cursed-step { background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.1); padding: 4px 10px; border-radius: 4px; color: #9bff8d; }
+.cursed-step.has-marks { border-color: #ff5f5f; color: #ff5f5f; }
+.cursed-marks { font-size: 10px; color: #3f7a3a; letter-spacing: 0.18em; margin-left: 4px; }
+.cursed-arrow { color: #3f7a3a; }
+.cursed-comment { font-style: italic; color: #ff5f5f; margin-top: 8px; }
+/* Blast radius */
+.blast-table td.num { font-family: 'Menlo', monospace; text-align: right; color: #9bff8d; }
+.blast-table td.note { color: #3f7a3a; font-size: 12px; }
+/* Search */
+.search { background: #08200d; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 22px 24px; margin-bottom: 22px; }
+.search input { width: 100%; padding: 10px 14px; background: rgba(0,0,0,0.45); color: #9bff8d; border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; font-family: 'Menlo', monospace; font-size: 14px; }
+.search-results { margin-top: 12px; max-height: 320px; overflow: auto; display: grid; gap: 6px; }
+.search-result { background: rgba(0,0,0,0.35); padding: 8px 12px; border-radius: 6px; font-family: 'Menlo', monospace; font-size: 13px; }
+.search-result .path { color: #3f7a3a; font-size: 11px; margin-top: 2px; white-space: pre-wrap; word-break: break-all; }
+.search-empty { color: #3f7a3a; font-style: italic; padding: 8px; }
+
+  body::before {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none;
+    background:
+      repeating-linear-gradient(0deg, rgba(0,0,0,0.18) 0 1px, transparent 1px 3px),
+      radial-gradient(ellipse at center, transparent 60%, rgba(0,0,0,0.45) 100%);
+    mix-blend-mode: multiply;
+    z-index: 9999;
+  }
+  body::after {
+    content: "";
+    position: fixed; inset: 0; pointer-events: none;
+    background-image: radial-gradient(rgba(255,255,255,0.04) 1px, transparent 1.2px);
+    background-size: 3px 3px;
+    opacity: 0.5;
+    mix-blend-mode: overlay;
+    z-index: 9998;
+  }
+
+      h1 { text-shadow: 0 0 12px rgba(155,255,141,0.55); }
+      .film-name { text-shadow: 0 0 18px rgba(155,255,141,0.35); }
+    </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="brand">
+      <div class="logo">❯_</div>
+      <div>
+        <h1>DEPOCALYPSE</h1>
+        <p class="tagline">// THIS IS A PUBLIC INFORMATION FILM • DO NOT PANIC</p>
+      </div>
+    </div>
+    <div class="meta">
+      <div><span class="mlabel">PROJECT</span><span class="mvalue">varden@0.0.0</span></div>
+      <div><span class="mlabel">TOOL</span><span class="mvalue">npm v3</span></div>
+      <div><span class="mlabel">GENERATED</span><span class="mvalue">2026-06-20T16:24:22.466Z</span></div>
+    </div>
+  </header>
+
+  <!-- Cinematic title card — the hero of the report. -->
+  <section class="title-card">
+    <div class="cert-strip">
+      <div class="cert-rating">U</div>
+      <div class="cert-meta">DEPOCALYPSE · A DEPENDENCY HORROR · BRITISH BOARD OF NPM CLASSIFICATION</div>
+    </div>
+    <div class="film-title">
+      <div class="film-emoji">🍦</div>
+      <div>
+        <div class="film-level">CLASSIFICATION 000 · LEGENDARY-CLEAN</div>
+        <div class="film-name">CORNETTO CLEAN</div>
+        <div class="film-desc">The gold standard. Clean, funny, and somehow still alive.</div>
+        
+      </div>
+    </div>
+    <div class="film-score">
+      <div class="gauge-bg"><div class="gauge-fill" style="width:0%"></div></div>
+      <div class="gauge-number">0<span class="of">/100</span> <span class="raw">raw 0.0 · lower is better</span></div>
+      <div class="gauge-threshold">Threshold 80 · <span class="ok">PASS</span></div>
+    </div>
+  </section>
+
+  
+  <section class="block collectible">
+    <h2>Collectible classification</h2>
+    <p class="muted small">Every score from 0 to 100 unlocks a different badge. Lower is better. Cornetto Trilogy (0/1/2) is rare and earned, not given.</p>
+
+    <div class="badge-showcase">
+      <div class="badge-readme">
+        <div class="badge-label">README badge — drop into any README <span class="muted small">(premium PNG (atlas))</span>:</div>
+        <a class="badge-frame" href="badges/readme.png"><img src="badges/readme.png" alt="Cornetto Clean README badge" /></a>
+        <div class="badge-copy">
+          <code id="badge-md">![Depocalypse — Cornetto Clean (0/100)](depocalypse-report/badges/readme.png)</code>
+          <button type="button" class="badge-copy-btn" data-copy-target="badge-md">Copy markdown</button>
+        </div>
+      </div>
+      <details class="badge-poster">
+        <summary>Show collector poster (1200×300)</summary>
+        <a class="badge-frame poster" href="badges/poster.svg"><img src="badges/poster.svg" alt="Cornetto Clean collector poster" /></a>
+        <p class="muted small">The cinematic 1200×300 poster sits in <code>badges/poster.svg</code>. Use it for blog posts, release notes, and screenshots.</p>
+      </details>
+    </div>
+
+    <div class="collect-row">
+      <div class="collect-card adjacent locked"><div class="collect-card-arrow">← cleaner</div><div class="collect-locked">Gold standard. Nothing cleaner.</div></div>
+      
+    <div class="collect-card current legendary-clean">
+      <div class="collect-badge-emoji">🍦</div>
+      <div class="collect-card-score">000</div>
+      <div class="collect-card-title">Cornetto Clean</div>
+      <div class="collect-card-sub">The gold standard</div>
+      <div class="collect-card-rarity">legendary-clean</div>
+    </div>
+      
+    <div class="collect-card adjacent legendary-clean">
+      <div class="collect-card-arrow">worse →</div>
+      <div class="collect-badge-emoji small">🚓</div>
+      <div class="collect-card-score small">001</div>
+      <div class="collect-card-title small">Greater Good</div>
+    </div>
+    </div>
+    <p class="collect-distance">Distance to Cornetto Clean: <strong><span class="ok">0 — achieved</span></strong></p>
+    <p class="collect-motto"><em>Every dependency removed is one step closer to the Cornetto.</em></p>
+  </section>
+
+  
+  <section class="block collectible">
+    <h2>Collectible badges earned</h2>
+    <p class="muted small">Achievement badges are awarded deterministically from actual scan metrics. 1 of 15 earned for <em>varden</em>.</p>
+    <div class="achv-grid"><div class="achv-card earned legendary">
+  <div class="achv-head">
+    <div class="achv-title">🍦 Proper Little Project</div>
+    <div class="achv-rarity">legendary</div>
+  </div>
+  <div class="achv-reason">Only 0 unique packages, no install scripts, no exotic sources, no duplicates.</div>
+  <a class="achv-svg" href="badges/achievement-proper-little-project.svg"><img loading="lazy" src="badges/achievement-proper-little-project.svg" alt="Proper Little Project badge"/></a>
+  <div class="achv-snippet">![Proper Little Project](badges/achievement-proper-little-project.svg)</div>
+</div></div>
+    <h3 class="achv-section">Near misses</h3>
+    <div class="achv-grid"><div class="achv-card near-miss">
+  <div class="achv-head">
+    <div class="achv-title">💾 Downloaded From A Forum</div>
+    <div class="achv-rarity">rare</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">NEAR MISS</div>
+  </div>
+  <ul class="achv-progress">
+    <li><span class="achv-progress-label">Current</span><span>0/3 git-sourced packages</span></li>
+    <li><span class="achv-progress-label">Requires</span><span>≥ 3 packages installed from git URLs</span></li>
+    <li><span class="achv-progress-label">How to earn</span><span>Replace another dependency with a git+ssh URL from somebody&#39;s fork.</span></li>
+  </ul>
+</div>
+<div class="achv-card near-miss">
+  <div class="achv-head">
+    <div class="achv-title">🗂 Duplicate Sanctuary</div>
+    <div class="achv-rarity">uncommon</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">NEAR MISS</div>
+  </div>
+  <ul class="achv-progress">
+    <li><span class="achv-progress-label">Current</span><span>no duplicates yet</span></li>
+    <li><span class="achv-progress-label">Requires</span><span>≥ 4 versions of one package</span></li>
+    <li><span class="achv-progress-label">How to earn</span><span>Add one more conflicting peer range and let npm pick a fourth version.</span></li>
+  </ul>
+</div>
+<div class="achv-card near-miss">
+  <div class="achv-head">
+    <div class="achv-title">🕯 Dependency Necromancer</div>
+    <div class="achv-rarity">cursed</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">NEAR MISS</div>
+  </div>
+  <ul class="achv-progress">
+    <li><span class="achv-progress-label">Current</span><span>0/5 deprecated packages</span></li>
+    <li><span class="achv-progress-label">Requires</span><span>≥ 5 deprecated packages</span></li>
+    <li><span class="achv-progress-label">How to earn</span><span>Add (or fail to remove) more retired packages like request, left-pad, node-uuid, tslint.</span></li>
+  </ul>
+</div></div>
+    <h3 class="achv-section">Locked</h3>
+    <div class="achv-grid"><div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">🕴 Corporate Séance</div>
+    <div class="achv-rarity">rare</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Licences? In this economy? Speak to the void instead.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">🍺 Critical Pub Discussion</div>
+    <div class="achv-rarity">uncommon</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Multiple groups, multiple versions, nobody can hear themselves think.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">🕯 Cursed But Efficient</div>
+    <div class="achv-rarity">rare</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Deep tree. Few packages. The maths is suspiciously fine.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">⚗ Install Script Summoner</div>
+    <div class="achv-rarity">cursed</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Ten or more packages run code during install. The household trembles.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">🪦 Left Pad Memorial Edition</div>
+    <div class="achv-rarity">legendary</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Includes left-pad. In this household? In 2026?</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">🏛 National Infrastructure</div>
+    <div class="achv-rarity">cursed</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Critical to too many things. Cannot be safely turned off.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">🚇 Northern Line</div>
+    <div class="achv-rarity">uncommon</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">An impressively long line. Eventually it loops back on itself.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">📜 StackOverflow Folk Archive</div>
+    <div class="achv-rarity">uncommon</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Built from answers, rituals, and one accepted comment from 2014.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">🔮 Technical Sorcery</div>
+    <div class="achv-rarity">rare</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Dependency tree deep enough to contain a small civilisation.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">📼 VHS Rental</div>
+    <div class="achv-rarity">common</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Convenient, regional, slightly grainy. Please rewind before returning.</div>
+</div>
+<div class="achv-card locked">
+  <div class="achv-head">
+    <div class="achv-title">📼 Video Nasty</div>
+    <div class="achv-rarity">illegal-after-watershed</div>
+  </div>
+  <div class="achv-silhouette">
+    <div class="achv-silhouette-mark">?</div>
+    <div class="achv-silhouette-label">LOCKED</div>
+  </div>
+  <div class="achv-reason">Banned in three regions. Watch only with the lights on.</div>
+</div></div>
+  </section>
+
+  
+  <section class="archetype">
+    <div class="archetype-section">Dependency archetype</div>
+    <h2 class="archetype-title">The Shed Maintainer</h2>
+    <div class="archetype-section">Why</div>
+    <p>Score 0, only 0 packages, no drama.</p>
+    <div class="archetype-section">Survival advice</div>
+    <p>Keep the shed tidy. Resist the urge to add a build tool to test if your test runner has a test runner.</p>
+  </section>
+
+  
+
+  
+
+  <!-- Scanner confidence sits below the cinematic content so the hero stays the hero. -->
+  
+  <section class="block scanner">
+    <h2>Scanner</h2>
+    <div class="scanner-grid">
+      <div><span class="mlabel">ECOSYSTEM</span><span class="mvalue">JavaScript / TypeScript</span></div>
+      <div><span class="mlabel">SCAN CONFIDENCE</span><span class="mvalue conf conf-high">high</span></div>
+      <div><span class="mlabel">SCORE CONFIDENCE</span><span class="mvalue conf conf-high">high</span></div>
+      <div><span class="mlabel">LOCKFILE</span><span class="mvalue">package-lock.json</span></div>
+    </div>
+    <div class="eco-detected"><strong>Also detected:</strong> Python (low)</div>
+    <div class="feat-row"><span class="mlabel">SUPPORTED</span><span class="feat on">direct deps</span><span class="feat on">dev deps</span><span class="feat on">transitives</span><span class="feat on">graph</span><span class="feat on">install scripts</span><span class="feat on">licenses</span><span class="feat on">exotic sources</span><span class="feat on">duplicates</span><span class="feat on">max depth</span><span class="feat on">install size</span></div>
+    <ul class="missing-signals"><li class="muted">no package.json</li></ul>
+    
+  </section>
+
+  
+  <section class="search">
+    <h2>How did we get here?</h2>
+    <p class="muted small">Search for any package in the dependency tree. The path back to a workspace root is precomputed; no server required.</p>
+    <input id="pkg-search" type="search" placeholder="Search packages — e.g. lodash" autocomplete="off" spellcheck="false" />
+    <div id="pkg-results" class="search-results"></div>
+  </section>
+
+  
+  <section class="block vhs">
+    <h2>On the back of the box</h2>
+    <div class="vhsgrid"><div class="vhsstat"><div class="vhslabel">Certificate</div><div class="vhsvalue">U — Approved by everyone, including the kettle.</div></div><div class="vhsstat"><div class="vhslabel">Survival probability</div><div class="vhsvalue">100%</div></div><div class="vhsstat"><div class="vhslabel">Time until npm install regret</div><div class="vhsvalue">no regret detected. Suspiciously calm.</div></div><div class="vhsstat"><div class="vhslabel">Recommended backup maintainers</div><div class="vhsvalue">1 person, ideally on different continents</div></div><div class="vhsstat"><div class="vhslabel">Recommended audience</div><div class="vhsvalue">General release. Suitable with cup of tea.</div></div></div>
+  </section>
+
+  <section class="cards">
+    <div class="card"><div class="cardlabel">Direct deps</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Dev deps</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Optional deps</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Peer deps</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Transitive</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Total unique</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Max depth</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Duplicates</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Install scripts</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Git deps</div><div class="cardvalue">0</div></div>
+    <div class="card"><div class="cardlabel">Install dir</div><div class="cardvalue">(skipped)</div></div>
+    <div class="card"><div class="cardlabel">Lockfile</div><div class="cardvalue">85 B</div></div>
+  </section>
+
+  
+  <section class="block">
+    <h2>Prophecies & portents</h2>
+    <div class="prophecies"><div class="prophecy"><div class="plabel">Architectural Regret Forecast</div><div class="pvalue">Calm and settled. Pack a jumper anyway.</div></div><div class="prophecy"><div class="plabel">Supply Chain Séance</div><div class="pvalue">Channel clear. Spirits at rest.</div></div><div class="prophecy"><div class="plabel">Dependency Necromancy Index</div><div class="pvalue">0/100 — no corpses reanimating today.</div></div><div class="prophecy"><div class="plabel">Likelihood of Junior Dev Panic</div><div class="pvalue">Low. They might even enjoy this.</div></div><div class="prophecy"><div class="plabel">Probability somebody added this from Stack Overflow at 2am</div><div class="pvalue">0% — you appear to have read the docs.</div></div></div>
+  </section>
+
+  <section class="block">
+    <h2>Developer Chastisement</h2>
+    <div class="chastise">
+      <p class="headline">🍦  Cornetto Clean — score 0/100. The gold standard. Clean, funny, and somehow still alive.</p>
+      <ul><li>A perfect zero. Cornetto Clean. We did not believe this was possible. Pour yourself a Cornetto.</li></ul>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2>Score factors</h2>
+    <div class="factors">
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Total unique packages</div>
+          <div class="fvalue">0.0 / 25</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0 unique packages installed</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Transitive bloat ratio</div>
+          <div class="fvalue">0.0 / 15</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0.0x transitive packages per direct dependency</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Duplicate installs</div>
+          <div class="fvalue">0.0 / 15</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0 packages installed at multiple versions</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Packages with install scripts</div>
+          <div class="fvalue">0.0 / 10</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0 packages run scripts on install</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Git, tarball, or file-sourced packages</div>
+          <div class="fvalue">0.0 / 12</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0 packages not from the registry</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Known deprecated / retired packages</div>
+          <div class="fvalue">0.0 / 12</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0 packages match retired-name heuristics</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Maximum dependency depth</div>
+          <div class="fvalue">0.0 / 10</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">nested up to 0 levels deep</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Install directory size on disk</div>
+          <div class="fvalue">0.0 / 10</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">Not surfaced by this scanner (no penalty applied).</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Packages with no declared license</div>
+          <div class="fvalue">0.0 / 8</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0 packages declare no license</div>
+      </div>
+      <div class="factor">
+        <div class="frow">
+          <div class="flabel">Suspicious package names</div>
+          <div class="fvalue">0.0 / 8</div>
+        </div>
+        <div class="fbarbg"><div class="fbar" style="width:0%"></div></div>
+        <div class="fdetail muted">0 names matched typo / risky-word heuristics</div>
+      </div></div>
+  </section>
+
+  <section class="block">
+    <h2>Dependency graph (top of tree)</h2>
+    <p class="muted small">Click nodes to expand or collapse. Depth limited for readability.</p>
+    <div id="graph"></div>
+  </section>
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  <footer>
+    <p>Generated by <strong>Depocalypse</strong>. Uses deterministic risk heuristics, not full vulnerability scanning. <span class="muted">Stay spooky.</span></p>
+  </footer>
+
+<script>
+const DATA = {"name":"varden","version":"0.0.0","children":[]};
+const PACKAGE_INDEX = [];
+
+function renderTree(container, node, depth) {
+  const el = document.createElement('div');
+  el.className = 'tnode depth-' + depth + (node.kind ? ' kind-' + node.kind : '');
+  const head = document.createElement('div');
+  head.className = 'thead';
+  const toggle = document.createElement('span');
+  toggle.className = 'ttoggle';
+  toggle.textContent = node.children && node.children.length ? '▸' : '·';
+  const label = document.createElement('span');
+  label.className = 'tlabel';
+  label.textContent = node.name + '@' + node.version + (node.kind && node.kind !== 'prod' ? ' (' + node.kind + ')' : '');
+  head.appendChild(toggle);
+  head.appendChild(label);
+  el.appendChild(head);
+  if (node.children && node.children.length) {
+    const list = document.createElement('div');
+    list.className = 'tchildren collapsed';
+    for (const c of node.children) renderTree(list, c, depth + 1);
+    if (node.truncated) {
+      const more = document.createElement('div');
+      more.className = 'tmore';
+      more.textContent = '… more truncated for size';
+      list.appendChild(more);
+    }
+    el.appendChild(list);
+    head.addEventListener('click', () => {
+      list.classList.toggle('collapsed');
+      toggle.textContent = list.classList.contains('collapsed') ? '▸' : '▾';
+    });
+  }
+  container.appendChild(el);
+}
+const graphEl = document.getElementById('graph');
+if (graphEl && DATA) {
+  renderTree(graphEl, DATA, 0);
+  const top = graphEl.querySelector('.tchildren');
+  if (top) { top.classList.remove('collapsed'); const tg = graphEl.querySelector('.ttoggle'); if (tg) tg.textContent = '▾'; }
+}
+
+
+const searchEl = document.getElementById('pkg-search');
+const resultsEl = document.getElementById('pkg-results');
+function escapeHtml(s){return String(s).replace(/[&<>"']/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+function runSearch(q){
+  if (!resultsEl) return;
+  const norm = (q||'').trim().toLowerCase();
+  if (!norm) { resultsEl.innerHTML = '<div class="search-empty">Start typing a package name to see how it ended up in your tree.</div>'; return; }
+  const matches = PACKAGE_INDEX.filter((p) => p.name.toLowerCase().includes(norm) || p.key.toLowerCase().includes(norm)).slice(0, 40);
+  if (matches.length === 0) { resultsEl.innerHTML = '<div class="search-empty">No matching packages.</div>'; return; }
+  resultsEl.innerHTML = matches.map((m) => {
+    const path = m.paths[0] ? '<div class="path">' + escapeHtml(m.paths[0]) + '</div>' : '<div class="path">(workspace-linked or root)</div>';
+    return '<div class="search-result"><div>' + escapeHtml(m.name) + '@' + escapeHtml(m.version) + '</div>' + path + '</div>';
+  }).join('');
+}
+if (searchEl) {
+  searchEl.addEventListener('input', (e) => runSearch(e.target.value));
+  runSearch('');
+}
+
+// Tiny copy-to-clipboard for the README badge markdown.
+for (const btn of document.querySelectorAll('.badge-copy-btn')) {
+  btn.addEventListener('click', () => {
+    const target = document.getElementById(btn.getAttribute('data-copy-target'));
+    if (!target) return;
+    const text = target.textContent || '';
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch {}
+      document.body.removeChild(ta);
+    }
+    const orig = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => { btn.textContent = orig; }, 1400);
+  });
+}
+</script>
+</body>
+</html>

@@ -24,13 +24,18 @@ def test_policy_pack_directory_is_populated():
     expected = {
         "agent-prompt-injection.json",
         "baseline-operational-safety.json",
+        "credential-and-identity-abuse.json",
         "database-safety.json",
+        "deployment-cli-safety.json",
         "destructive-tools-and-infra.json",
         "excessive-agency-and-workflow-escalation.json",
         "host-shell-safety.json",
+        "llm-cost-governance.json",
+        "mcp-server-safety.json",
         "monitoring-foundation.json",
         "network-egress-and-tunnels.json",
         "sensitive-data-exfiltration.json",
+        "supply-chain-and-ci-integrity.json",
     }
     assert expected.issubset({path.name for path in PACK_FILES})
 
@@ -137,6 +142,34 @@ def test_topic_packs_match_representative_cases(tmp_path):
                 },
             ),
             "warn",
+        ),
+        (
+            "deployment-cli-safety.json",
+            Action(
+                type="tool_call",
+                tool="shell.execute",
+                args={"argv_join": "supabase db reset --linked", "argv": ["supabase", "db", "reset", "--linked"]},
+            ),
+            "block",
+        ),
+        (
+            "mcp-server-safety.json",
+            Action(type="tool_call", tool="varden_put_policy", args={}),
+            "warn",
+        ),
+        (
+            "network-egress-and-tunnels.json",
+            Action(type="http_request", url="http://127.0.0.1:8080/admin"),
+            "block",
+        ),
+        (
+            "credential-and-identity-abuse.json",
+            Action(
+                type="tool_call",
+                tool="shell.execute",
+                args={"argv_join": "cat .env", "argv": ["cat", ".env"]},
+            ),
+            "block",
         ),
     ]
 

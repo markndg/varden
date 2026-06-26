@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="300" viewBox="0 0 1200 300" role="img" aria-label="Depocalypse classification 0 — Cornetto Clean">
+  <title>Depocalypse classification 0 — Cornetto Clean</title>
+  <desc>Cornetto Clean — The gold standard. The gold standard. Clean, funny, and somehow still alive.</desc>
+  <defs>
+    
+    <filter id="b0-grain" x="0" y="0" width="100%" height="100%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.620" numOctaves="2" seed="4" stitchTiles="stitch"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.068 0"/>
+      <feComposite in2="SourceGraphic" operator="in"/>
+    </filter>
+    <filter id="b0-emboss">
+      <feGaussianBlur stdDeviation="0.6"/>
+    </filter>
+    
+    <linearGradient id="b0-bgshade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#031a08" stop-opacity="1"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.35"/>
+    </linearGradient>
+    <linearGradient id="b0-glass" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity="0.16"/>
+      <stop offset="0.5" stop-color="#fff" stop-opacity="0.02"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.25"/>
+    </linearGradient>
+    <pattern id="b0-scanlines" patternUnits="userSpaceOnUse" width="3" height="3">
+      <rect width="3" height="3" fill="transparent"/>
+      <rect width="3" height="1" fill="#000" fill-opacity="0.35"/>
+    </pattern>
+    <pattern id="b0-halftone" patternUnits="userSpaceOnUse" width="6" height="6">
+      <circle cx="3" cy="3" r="1.1" fill="#7dff8a" fill-opacity="0.18"/>
+    </pattern>
+    <pattern id="b0-rust" patternUnits="userSpaceOnUse" width="40" height="40">
+      <circle cx="6" cy="9" r="2" fill="#7a3a10" fill-opacity="0.55"/>
+      <circle cx="22" cy="30" r="3" fill="#5a2a08" fill-opacity="0.55"/>
+      <circle cx="33" cy="14" r="1.5" fill="#a85a2a" fill-opacity="0.4"/>
+      <circle cx="14" cy="22" r="1" fill="#3a1a08" fill-opacity="0.5"/>
+    </pattern>
+    <pattern id="b0-tape" patternUnits="userSpaceOnUse" width="80" height="80" patternTransform="rotate(-12)">
+      <rect width="80" height="80" fill="#062612"/>
+      <rect x="0" y="0" width="40" height="80" fill="#0a0a0a"/>
+    </pattern>
+    <pattern id="b0-parchment" patternUnits="userSpaceOnUse" width="80" height="80">
+      <rect width="80" height="80" fill="#062612"/>
+      <path d="M0 20 Q20 22 40 18 T80 22" stroke="#8a6a3a" stroke-opacity="0.18" fill="none" stroke-width="0.6"/>
+      <path d="M0 55 Q25 50 50 60 T80 55" stroke="#8a6a3a" stroke-opacity="0.14" fill="none" stroke-width="0.4"/>
+    </pattern>
+    <radialGradient id="b0-glow" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#7dff8a" stop-opacity="0.6"/>
+      <stop offset="0.6" stop-color="#7dff8a" stop-opacity="0.08"/>
+      <stop offset="1" stop-color="#7dff8a" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="b0-vignette" cx="50%" cy="50%" r="75%">
+      <stop offset="0.55" stop-color="#000" stop-opacity="0"/>
+      <stop offset="1" stop-color="#000" stop-opacity="0.55"/>
+    </radialGradient>
+    <clipPath id="b0-clip"><rect width="1200" height="300" rx="14" ry="14"/></clipPath>
+  </defs>
+  <g>
+    
+    <g clip-path="url(#b0-clip)">
+      <rect width="1200" height="300" fill="url(#b0-bgshade)"/>
+      <!-- Art panel -->
+      <g>
+        <rect width="380" height="300" fill="#04140a"/>
+        
+        
+    <g>
+      <rect x="14" y="14" width="352" height="272" fill="#031a0a" stroke="#7dff8a" stroke-opacity="0.4" stroke-width="1"/>
+      <rect x="14" y="14" width="352" height="272" fill="url(#b0-scanlines)" opacity="0.35"/>
+      <text x="20" y="50" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#7dff8a" fill-opacity="0.95">&gt; depocalypse --scan</text><text x="20" y="72" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#7dff8a" fill-opacity="0.7">[ ok ] manifests       parsed</text><text x="20" y="94" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#7dff8a" fill-opacity="0.7">[ ok ] lockfile        parsed</text><text x="20" y="116" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#7dff8a" fill-opacity="0.7">[ ok ] dependency tree clean</text><text x="20" y="138" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#7dff8a" fill-opacity="0.7">[ ok ] residual horror neg</text><text x="20" y="160" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#7dff8a" fill-opacity="0.7">&gt; ./classify --rare</text>
+      <g transform="translate(110 70)">
+    <g stroke="#ff4848" stroke-width="3" fill="#ff4848" stroke-linecap="round" stroke-linejoin="round" opacity="0.9">
+      <path d="M70 130 Q60 100 60 70 L60 30 Q60 22 68 22 Q76 22 76 30 L76 70" fill="#ff4848"/>
+      <path d="M80 70 L80 22 Q80 14 88 14 Q96 14 96 22 L96 70" fill="#ff4848"/>
+      <path d="M100 70 L100 26 Q100 18 108 18 Q116 18 116 26 L116 72" fill="#ff4848"/>
+      <path d="M120 78 L120 38 Q120 30 128 30 Q136 30 136 38 L136 84" fill="#ff4848"/>
+      <path d="M50 110 Q40 120 40 130 L40 150 Q40 158 48 158 L130 158 Q140 158 140 148 L140 110 Q130 96 110 100 Q92 104 70 100 Q56 96 50 110 Z" fill="#ff4848"/>
+      <line x1="70" y1="120" x2="120" y2="120" stroke="#400" stroke-width="2"/>
+      <line x1="78" y1="135" x2="118" y2="135" stroke="#400" stroke-width="2"/>
+    </g></g>
+      <circle cx="40" cy="278" r="3" fill="#ff4848"/>
+      <text x="50" y="282" font-family="ui-monospace,Menlo,monospace" font-size="10" fill="#3a8a55">REC</text>
+    </g>
+        <rect width="380" height="300" fill="url(#b0-vignette)"/>
+        
+    <g transform="translate(24 24) rotate(-6)">
+      <rect x="0" y="0" width="240" height="38" fill="none" stroke="#ff4848" stroke-width="2.5" stroke-opacity="0.85"/>
+      <rect x="3" y="3" width="234" height="32" fill="none" stroke="#ff4848" stroke-width="1" stroke-opacity="0.4"/>
+      <text x="120" y="25" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-weight="700" font-size="18" letter-spacing="0.25em" fill="#ff4848" fill-opacity="0.9">GOLD STANDARD</text>
+    </g>
+      </g>
+      
+    <g transform="translate(380 0)">
+      
+      <text x="34" y="56" font-family="ui-monospace,'Courier New',Menlo,monospace" font-size="12" letter-spacing="0.42em" fill="#7dff8a">DEPOCALYPSE · CLASSIFICATION 000</text>
+      <line x1="34" y1="68" x2="546" y2="68" stroke="#7dff8a" stroke-opacity="0.45" stroke-width="1"/>
+      <text x="34" y="138" font-family="Georgia,'Times New Roman',serif" font-size="54" font-weight="700" fill="#cfffcf" letter-spacing="0.02em">CORNETTO CLEAN</text>
+      <text x="34" y="166" font-family="ui-sans-serif,system-ui,Helvetica,Arial,sans-serif" font-size="16" font-weight="600" fill="#ff4848" letter-spacing="0.18em">THE GOLD STANDARD</text>
+      <text x="34" y="172" font-family="Georgia,'Times New Roman',serif" font-size="14" fill="#3a8a55" letter-spacing="0.01em">
+        <tspan x="34" dy="0">The gold standard. Clean, funny, and somehow still</tspan><tspan x="34" dy="18">alive.</tspan>
+      </text>
+    </g>
+      
+    <g transform="translate(960 0)">
+      <rect width="240" height="300" fill="#062612"/>
+      <rect width="240" height="300" fill="url(#b0-halftone)" opacity="0.6"/>
+      <rect width="240" height="300" fill="url(#b0-vignette)"/>
+      <rect x="0" y="0" width="6" height="300" fill="#7dff8a"/>
+      <text x="120" y="56" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="11" letter-spacing="0.45em" fill="#7dff8a">SCORE</text>
+      <text x="120" y="172" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-size="148" font-weight="700" fill="#cfffcf" letter-spacing="-0.02em">00</text>
+      <text x="120" y="200" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="12" letter-spacing="0.4em" fill="#3a8a55">/ 100 · LOWER BETTER</text>
+      
+    <g transform="translate(75 221)">
+      <rect width="90" height="26" fill="#7dff8a" rx="3" ry="3"/>
+      <text x="45" y="18" text-anchor="middle" font-family="Georgia,'Times New Roman',serif" font-weight="700" font-size="15" letter-spacing="0.3em" fill="#0a0a0a">U</text>
+    </g>
+    <text x="120" y="262" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="9" letter-spacing="0.3em" fill="#3a8a55">LEGENDARY-CLEAN</text>
+      <text x="120" y="286" text-anchor="middle" font-family="ui-monospace,Menlo,monospace" font-size="10" letter-spacing="0.35em" fill="#3a8a55">DEPOCALYPSE · LOWER IS BETTER</text>
+    </g>
+      
+      <rect width="1200" height="300" fill="url(#b0-glass)" pointer-events="none"/>
+    </g>
+    <rect width="1200" height="300" rx="14" ry="14" fill="none" stroke="#7dff8a" stroke-opacity="0.35" stroke-width="2"/>
+    <!-- Grain layer kept outside the main clip for crispness on text. -->
+    <rect width="1200" height="300" rx="14" ry="14" fill="#000" filter="url(#b0-grain)" pointer-events="none"/>
+    
+  </g>
+</svg>

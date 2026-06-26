@@ -75,6 +75,103 @@
           "contains": "publish"
         },
         "description": "Blocks package publish operations when payload includes likely secrets."
+      },
+      {
+        "title": "Block curl-pipe-shell execution via host monitor",
+        "name": "block_curl_pipe_shell_execution_shell_execute",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "description": "Blocks remote script execution patterns frequently used in compromises. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "curl"
+        }
+      },
+      {
+        "title": "Block wget-pipe-bash execution via host monitor",
+        "name": "block_wget_pipe_bash_execution_shell_execute",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "description": "Blocks remote shell bootstrap patterns via wget pipelines. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "wget"
+        }
+      },
+      {
+        "title": "Block npm preinstall script injection via host monitor",
+        "name": "block_npm_preinstall_script_injection_shell_execute",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "description": "Blocks suspicious package script manipulation often used for supply-chain persistence. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "preinstall"
+        }
+      },
+      {
+        "title": "Block dependency lockfile deletion via host monitor",
+        "name": "block_dependency_lockfile_deletion_shell_execute",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "description": "Blocks lockfile deletion attempts that can mask dependency drift. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "package-lock.json"
+        }
+      },
+      {
+        "title": "Block CI secret export command via host monitor",
+        "name": "block_ci_secret_export_command_shell_execute",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "description": "Blocks explicit handling of CI auth tokens in tool command payloads. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "GITHUB_TOKEN"
+        }
+      },
+      {
+        "title": "Block release publish with embedded secrets via host monitor",
+        "name": "block_release_publish_with_secrets_shell_execute",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "classifier:secrets": true,
+        "description": "Blocks package publish operations when payload includes likely secrets. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "publish"
+        }
+      },
+      {
+        "title": "Block curl pipe sh via host monitor",
+        "name": "block_curl_pipe_sh_shell_execute",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "| sh"
+        },
+        "description": "Blocks curl|sh remote execution via monitor."
+      },
+      {
+        "title": "Block wget pipe bash via host monitor",
+        "name": "block_wget_pipe_bash_shell_execute",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "| bash"
+        },
+        "description": "Blocks wget|bash via monitor."
       }
     ],
     "warn": [
@@ -121,6 +218,54 @@
           "contains": ".github/workflows"
         },
         "description": "Warns on CI workflow modifications that should receive explicit maintainer scrutiny."
+      },
+      {
+        "title": "Warn on dependency update without lockfile signal via host monitor",
+        "name": "warn_dependency_update_lockfile_signal_shell_execute",
+        "enabled": true,
+        "priority": 82,
+        "type": "tool_call",
+        "description": "Warns on dependency updates that may require lockfile review. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "npm install"
+        }
+      },
+      {
+        "title": "Warn on direct install from arbitrary URL via host monitor",
+        "name": "warn_direct_install_from_url_shell_execute",
+        "enabled": true,
+        "priority": 84,
+        "type": "tool_call",
+        "description": "Warns on direct dependency installs from URL sources. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "pip install http"
+        }
+      },
+      {
+        "title": "Warn on force push to protected branches via host monitor",
+        "name": "warn_force_push_protected_branches_shell_execute",
+        "enabled": true,
+        "priority": 85,
+        "type": "tool_call",
+        "description": "Warns on force-push operations that can bypass normal review integrity. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "push --force"
+        }
+      },
+      {
+        "title": "Warn on workflow file modification via host monitor",
+        "name": "warn_workflow_file_modification_shell_execute",
+        "enabled": true,
+        "priority": 80,
+        "type": "tool_call",
+        "description": "Warns on CI workflow modifications that should receive explicit maintainer scrutiny. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": ".github/workflows"
+        }
       }
     ],
     "monitor": [
@@ -145,6 +290,30 @@
           "contains": ".github"
         },
         "description": "Captures commands that touch CI and repository governance paths."
+      },
+      {
+        "title": "Monitor package and release tool activity via host monitor",
+        "name": "monitor_package_release_tool_activity_shell_execute",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "description": "Captures package release activity for provenance and incident response. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "publish"
+        }
+      },
+      {
+        "title": "Monitor CI and workflow touching commands via host monitor",
+        "name": "monitor_ci_workflow_touching_commands_shell_execute",
+        "enabled": true,
+        "priority": 20,
+        "type": "tool_call",
+        "description": "Captures commands that touch CI and repository governance paths. (monitored shell path).",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": ".github"
+        }
       }
     ],
     "allow": []
