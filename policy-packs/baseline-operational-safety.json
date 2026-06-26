@@ -1,6 +1,6 @@
 {
   "name": "baseline-operational-safety",
-  "description": "One-click operational safety baseline covering prompt injection, data exfiltration, destructive tools, SQL abuse, unsafe egress, excessive agency, and monitoring.",
+  "description": "One-click operational safety baseline covering prompt injection, data exfiltration, destructive tools, SQL abuse, unsafe egress, excessive agency, host-shell/monitor paths, and monitoring.",
   "template": {
     "block": [
       {
@@ -101,6 +101,45 @@
         "description": "Blocks Kubernetes resource deletion."
       },
       {
+        "title": "Block recursive delete via host monitor",
+        "name": "baseline_host_block_rm_rf",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "rm -rf"
+        },
+        "description": "Blocks rm -rf from varden session/monitor shells."
+      },
+      {
+        "title": "Block Terraform destroy via host monitor",
+        "name": "baseline_host_block_terraform_destroy",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "terraform destroy"
+        },
+        "description": "Blocks terraform destroy from monitored shells."
+      },
+      {
+        "title": "Block kubectl delete all-namespaces via host monitor",
+        "name": "baseline_host_block_kubectl_delete_all_namespaces",
+        "enabled": true,
+        "priority": 95,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "kubectl delete"
+        },
+        "field:args.argv": {
+          "contains": "--all-namespaces"
+        },
+        "description": "Blocks cluster-wide kubectl delete from monitored shells."
+      },
+      {
         "title": "Block cloud instance termination",
         "name": "baseline_block_cloud_instance_termination",
         "enabled": true,
@@ -179,6 +218,72 @@
           "contains": "metadata.google.internal"
         },
         "description": "Blocks access to GCP metadata credentials."
+      },
+      {
+        "title": "Baseline: Block Azure metadata endpoint",
+        "name": "baseline_block_azure_instance_metadata",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "field:url": {
+          "contains": "metadata.azure.com"
+        },
+        "description": "Blocks Azure instance metadata access."
+      },
+      {
+        "title": "Baseline: Block localhost SSRF",
+        "name": "baseline_block_localhost_ssrf",
+        "enabled": true,
+        "priority": 97,
+        "type": "http_request",
+        "field:url": {
+          "contains": "127.0.0.1"
+        },
+        "description": "Blocks loopback SSRF attempts."
+      },
+      {
+        "title": "Baseline: Block localhost hostname SSRF",
+        "name": "baseline_block_localhost_hostname_ssrf",
+        "enabled": true,
+        "priority": 97,
+        "type": "http_request",
+        "field:url": {
+          "contains": "localhost"
+        },
+        "description": "Blocks localhost hostname SSRF."
+      },
+      {
+        "title": "Baseline: Block webhook.site egress",
+        "name": "baseline_block_webhook_site_egress",
+        "enabled": true,
+        "priority": 91,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "webhook.site"
+        },
+        "description": "Blocks webhook.site exfiltration drops."
+      },
+      {
+        "title": "Baseline: Block requestbin egress",
+        "name": "baseline_block_requestbin_egress",
+        "enabled": true,
+        "priority": 91,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "requestbin"
+        },
+        "description": "Blocks requestbin exfiltration drops."
+      },
+      {
+        "title": "Baseline: Block pipedream egress",
+        "name": "baseline_block_pipedream_egress",
+        "enabled": true,
+        "priority": 90,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "pipedream.net"
+        },
+        "description": "Blocks pipedream webhook exfiltration."
       },
       {
         "title": "Block pastebin egress",
@@ -261,6 +366,39 @@
           "contains": "| sh"
         },
         "description": "Blocks command patterns that execute fetched remote scripts."
+      },
+      {
+        "title": "Baseline: Block developer mode jailbreak",
+        "name": "baseline_block_developer_mode_jailbreak",
+        "enabled": true,
+        "priority": 88,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "developer mode"
+        },
+        "description": "Blocks developer mode jailbreak framing."
+      },
+      {
+        "title": "Baseline: Block XML system tag injection",
+        "name": "baseline_block_xml_system_injection",
+        "enabled": true,
+        "priority": 87,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "<system>"
+        },
+        "description": "Blocks XML-style system prompt override."
+      },
+      {
+        "title": "Baseline: Block disregard prior instructions",
+        "name": "baseline_block_disregard_prior_instructions",
+        "enabled": true,
+        "priority": 86,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "disregard all prior"
+        },
+        "description": "Blocks instruction discard override language."
       }
     ],
     "warn": [
@@ -325,7 +463,8 @@
             "exec_shell",
             "shell.run",
             "powershell",
-            "bash"
+            "bash",
+            "shell.execute"
           ]
         },
         "description": "Warns on shell-capable tools even when no destructive command is detected."
@@ -395,6 +534,61 @@
           "contains": ".github/workflows"
         },
         "description": "Warns when actions modify CI workflows that may alter trust boundaries."
+      },
+      {
+        "title": "Warn on Railway CLI via host monitor",
+        "name": "baseline_host_warn_railway_cli",
+        "enabled": true,
+        "priority": 60,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "railway"
+        },
+        "description": "Warns when Railway CLI is invoked under monitor."
+      },
+      {
+        "title": "Warn on curl from host monitor",
+        "name": "baseline_host_warn_curl",
+        "enabled": true,
+        "priority": 45,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "curl "
+        },
+        "description": "Warns on outbound curl from monitored shells."
+      },
+      {
+        "title": "Baseline: Warn on DAN jailbreak language",
+        "name": "baseline_warn_dan_jailbreak",
+        "enabled": true,
+        "priority": 68,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "DAN mode"
+        },
+        "description": "Warns on DAN-style jailbreak attempts."
+      },
+      {
+        "title": "Baseline: Warn on HTML comment injection",
+        "name": "baseline_warn_html_comment_injection",
+        "enabled": true,
+        "priority": 66,
+        "field:args.args": {
+          "contains": "<!--"
+        },
+        "description": "Warns on HTML comment smuggled instructions."
+      },
+      {
+        "title": "Baseline: Warn on markdown system fence injection",
+        "name": "baseline_warn_markdown_system_fence",
+        "enabled": true,
+        "priority": 64,
+        "field:args.args": {
+          "contains": "```system"
+        },
+        "description": "Warns on markdown system fence override attempts."
       }
     ],
     "monitor": [

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "rawScore": 0,
+  "roundedScore": 0,
+  "classification": {
+    "score": 0,
+    "title": "Cornetto Clean",
+    "subtitle": "The gold standard",
+    "description": "The gold standard. Clean, funny, and somehow still alive.",
+    "rarity": "legendary-clean",
+    "emoji": "🍦",
+    "palette": "cornetto",
+    "certificate": "U",
+    "badgeSlug": "score-000-cornetto-clean"
+  },
+  "nextBetterClassification": null,
+  "nextWorseClassification": {
+    "score": 1,
+    "title": "Greater Good",
+    "subtitle": "Parish watch",
+    "description": "For the greater good. Very tidy. Slightly intense.",
+    "rarity": "legendary-clean",
+    "emoji": "🚓",
+    "palette": "cornetto",
+    "certificate": "U",
+    "badgeSlug": "score-001-greater-good"
+  },
+  "distanceToCornettoTier": 0,
+  "isCornettoTier": true,
+  "isPerfectCornetto": true,
+  "scoreConfidence": "high",
+  "floorApplied": false
+}

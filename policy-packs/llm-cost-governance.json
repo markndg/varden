@@ -1,0 +1,117 @@
+{
+  "name": "llm-cost-governance",
+  "description": "Token budget rules for LLM spend control. Requires TokenBudgetRule engine (docs/token-budget-plan.md).",
+  "template": {
+    "block": [],
+    "warn": [
+      {
+        "title": "Warn on high-frequency LLM calls in trace",
+        "name": "cost_warn_high_frequency_llm_trace",
+        "enabled": true,
+        "priority": 60,
+        "type": "llm_call",
+        "field:metadata.behavior.sequence_length": {
+          "gte": 8
+        },
+        "description": "Warns on denial-of-wallet style LLM call bursts in one trace."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor all LLM calls for cost analytics",
+        "name": "cost_monitor_all_llm_calls",
+        "enabled": true,
+        "priority": 10,
+        "type": "llm_call",
+        "description": "Captures LLM calls for cost analytics."
+      }
+    ],
+    "allow": [],
+    "budget_rules": [
+      {
+        "id": "session-default-cap",
+        "type": "token_budget",
+        "title": "Session token budget (hard cap)",
+        "enabled": true,
+        "limit_usd": 10.0,
+        "window": "session",
+        "hard_cap": true,
+        "model_costs": {
+          "claude-sonnet-4-6": {
+            "input": 3.0,
+            "output": 15.0
+          },
+          "claude-opus-4-6": {
+            "input": 15.0,
+            "output": 75.0
+          },
+          "claude-haiku-4-5": {
+            "input": 0.8,
+            "output": 4.0
+          },
+          "gpt-4o": {
+            "input": 2.5,
+            "output": 10.0
+          }
+        },
+        "description": "Hard session cap per trace_id."
+      },
+      {
+        "id": "daily-workflow-cap",
+        "type": "token_budget",
+        "title": "Daily workflow token budget (soft cap)",
+        "enabled": true,
+        "limit_usd": 50.0,
+        "window": "daily",
+        "hard_cap": false,
+        "model_costs": {
+          "claude-sonnet-4-6": {
+            "input": 3.0,
+            "output": 15.0
+          },
+          "claude-opus-4-6": {
+            "input": 15.0,
+            "output": 75.0
+          },
+          "claude-haiku-4-5": {
+            "input": 0.8,
+            "output": 4.0
+          },
+          "gpt-4o": {
+            "input": 2.5,
+            "output": 10.0
+          }
+        },
+        "description": "Soft daily cap keyed by workflow_id."
+      },
+      {
+        "id": "monthly-workflow-cap",
+        "type": "token_budget",
+        "title": "Monthly workflow token budget (hard cap)",
+        "enabled": false,
+        "limit_usd": 500.0,
+        "window": "monthly",
+        "hard_cap": true,
+        "model_costs": {
+          "claude-sonnet-4-6": {
+            "input": 3.0,
+            "output": 15.0
+          },
+          "claude-opus-4-6": {
+            "input": 15.0,
+            "output": 75.0
+          },
+          "claude-haiku-4-5": {
+            "input": 0.8,
+            "output": 4.0
+          },
+          "gpt-4o": {
+            "input": 2.5,
+            "output": 10.0
+          }
+        },
+        "description": "Optional monthly hard cap. Disabled by default."
+      }
+    ]
+  }
+}

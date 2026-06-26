@@ -1,0 +1,196 @@
+{
+  "name": "deployment-cli-safety",
+  "description": "Warns and blocks high-risk deployment platform CLI usage through varden session/monitor shims.",
+  "template": {
+    "block": [
+      {
+        "title": "Block Vercel project removal via shell",
+        "name": "deploy_block_vercel_remove",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "vercel remove"
+        },
+        "description": "Blocks Vercel project removal."
+      },
+      {
+        "title": "Block Fly app destroy via shell",
+        "name": "deploy_block_fly_destroy",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "fly apps destroy"
+        },
+        "description": "Blocks Fly.io application destruction."
+      },
+      {
+        "title": "Block Supabase db reset via shell",
+        "name": "deploy_block_supabase_db_reset",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "supabase db reset"
+        },
+        "description": "Blocks Supabase database reset."
+      },
+      {
+        "title": "Block Render service delete via shell",
+        "name": "deploy_block_render_delete",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "render services delete"
+        },
+        "description": "Blocks Render service deletion."
+      },
+      {
+        "title": "Block Railway environment delete via shell",
+        "name": "deploy_block_railway_env_delete",
+        "enabled": true,
+        "priority": 96,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "railway environment delete"
+        },
+        "description": "Blocks Railway environment deletion."
+      },
+      {
+        "title": "Block kubectl delete namespace via shell",
+        "name": "deploy_block_kubectl_delete_namespace",
+        "enabled": true,
+        "priority": 95,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "kubectl delete namespace"
+        },
+        "description": "Blocks namespace deletion."
+      },
+      {
+        "title": "Block Docker system prune force via shell",
+        "name": "deploy_block_docker_system_prune",
+        "enabled": true,
+        "priority": 94,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "docker system prune"
+        },
+        "description": "Blocks forced Docker prune.",
+        "field:args.argv": {
+          "contains": "-f"
+        }
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on Vercel deploy via shell",
+        "name": "deploy_warn_vercel_deploy",
+        "enabled": true,
+        "priority": 70,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "vercel deploy"
+        },
+        "description": "Warns on Vercel deploys."
+      },
+      {
+        "title": "Warn on Fly deploy via shell",
+        "name": "deploy_warn_fly_deploy",
+        "enabled": true,
+        "priority": 70,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "fly deploy"
+        },
+        "description": "Warns on Fly deploys."
+      },
+      {
+        "title": "Warn on Supabase link via shell",
+        "name": "deploy_warn_supabase_link",
+        "enabled": true,
+        "priority": 68,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "supabase link"
+        },
+        "description": "Warns on Supabase linking."
+      },
+      {
+        "title": "Warn on Render deploy via shell",
+        "name": "deploy_warn_render_deploy",
+        "enabled": true,
+        "priority": 68,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "render deploy"
+        },
+        "description": "Warns on Render deploys."
+      },
+      {
+        "title": "Warn on Railway up via shell",
+        "name": "deploy_warn_railway_up",
+        "enabled": true,
+        "priority": 65,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "railway up"
+        },
+        "description": "Warns on Railway deploy."
+      },
+      {
+        "title": "Warn on Docker push via shell",
+        "name": "deploy_warn_docker_push",
+        "enabled": true,
+        "priority": 62,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "docker push"
+        },
+        "description": "Warns on docker push."
+      },
+      {
+        "title": "Warn on Terraform apply via shell",
+        "name": "deploy_warn_terraform_apply",
+        "enabled": true,
+        "priority": 72,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "terraform apply"
+        },
+        "description": "Warns on terraform apply."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor deployment CLI invocations",
+        "name": "deploy_monitor_cli_activity",
+        "enabled": true,
+        "priority": 15,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": {
+          "contains": "deploy"
+        },
+        "description": "Captures deploy-related shell.execute invocations."
+      }
+    ],
+    "allow": []
+  }
+}

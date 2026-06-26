@@ -101,6 +101,72 @@
           "contains": "telegram"
         },
         "description": "Blocks Telegram bot/API destinations commonly used as exfiltration drops."
+      },
+      {
+        "title": "Block Azure metadata endpoint",
+        "name": "block_azure_instance_metadata",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "field:url": {
+          "contains": "metadata.azure.com"
+        },
+        "description": "Blocks Azure instance metadata access."
+      },
+      {
+        "title": "Block localhost SSRF",
+        "name": "block_localhost_ssrf",
+        "enabled": true,
+        "priority": 97,
+        "type": "http_request",
+        "field:url": {
+          "contains": "127.0.0.1"
+        },
+        "description": "Blocks loopback SSRF attempts."
+      },
+      {
+        "title": "Block localhost hostname SSRF",
+        "name": "block_localhost_hostname_ssrf",
+        "enabled": true,
+        "priority": 97,
+        "type": "http_request",
+        "field:url": {
+          "contains": "localhost"
+        },
+        "description": "Blocks localhost hostname SSRF."
+      },
+      {
+        "title": "Block webhook.site egress",
+        "name": "block_webhook_site_egress",
+        "enabled": true,
+        "priority": 91,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "webhook.site"
+        },
+        "description": "Blocks webhook.site exfiltration drops."
+      },
+      {
+        "title": "Block requestbin egress",
+        "name": "block_requestbin_egress",
+        "enabled": true,
+        "priority": 91,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "requestbin"
+        },
+        "description": "Blocks requestbin exfiltration drops."
+      },
+      {
+        "title": "Block pipedream egress",
+        "name": "block_pipedream_egress",
+        "enabled": true,
+        "priority": 90,
+        "type": "http_request",
+        "field:domain": {
+          "contains": "pipedream.net"
+        },
+        "description": "Blocks pipedream webhook exfiltration."
       }
     ],
     "warn": [

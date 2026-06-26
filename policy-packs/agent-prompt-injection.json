@@ -70,6 +70,39 @@
           "contains": "reveal your system prompt"
         },
         "description": "Blocks attempts to reveal hidden system or policy instructions."
+      },
+      {
+        "title": "Block developer mode jailbreak",
+        "name": "block_developer_mode_jailbreak",
+        "enabled": true,
+        "priority": 88,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "developer mode"
+        },
+        "description": "Blocks developer mode jailbreak framing."
+      },
+      {
+        "title": "Block XML system tag injection",
+        "name": "block_xml_system_injection",
+        "enabled": true,
+        "priority": 87,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "<system>"
+        },
+        "description": "Blocks XML-style system prompt override."
+      },
+      {
+        "title": "Block disregard prior instructions",
+        "name": "block_disregard_prior_instructions",
+        "enabled": true,
+        "priority": 86,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "disregard all prior"
+        },
+        "description": "Blocks instruction discard override language."
       }
     ],
     "warn": [
@@ -131,6 +164,37 @@
         "priority": 85,
         "field:metadata.behavior.suspicious_sequence": true,
         "description": "Warns when trace context indicates suspicious cross-tool or cross-domain behavior."
+      },
+      {
+        "title": "Warn on DAN jailbreak language",
+        "name": "warn_dan_jailbreak",
+        "enabled": true,
+        "priority": 68,
+        "type": "llm_call",
+        "field:args.args": {
+          "contains": "DAN mode"
+        },
+        "description": "Warns on DAN-style jailbreak attempts."
+      },
+      {
+        "title": "Warn on HTML comment injection",
+        "name": "warn_html_comment_injection",
+        "enabled": true,
+        "priority": 66,
+        "field:args.args": {
+          "contains": "<!--"
+        },
+        "description": "Warns on HTML comment smuggled instructions."
+      },
+      {
+        "title": "Warn on markdown system fence injection",
+        "name": "warn_markdown_system_fence",
+        "enabled": true,
+        "priority": 64,
+        "field:args.args": {
+          "contains": "```system"
+        },
+        "description": "Warns on markdown system fence override attempts."
       }
     ],
     "monitor": [

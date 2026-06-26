@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="120" viewBox="0 0 420 120" role="img" aria-label="Depocalypse achievement — Proper Little Project">
+  <title>Depocalypse achievement — Proper Little Project</title>
+  <desc>Small. Tidy. Suspicious only because it is so quiet.</desc>
+<defs>
+
+<filter id="rfe6617-grain" x="0" y="0" width="100%" height="100%">
+  <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="3"/>
+  <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.22 0"/>
+</filter>
+
+<pattern id="rfe6617-scan" patternUnits="userSpaceOnUse" width="3" height="3">
+  <rect width="3" height="3" fill="transparent"/>
+  <line x1="0" y1="0" x2="3" y2="0" stroke="rgba(125,255,176,0.08)" stroke-width="1"/>
+</pattern>
+
+<filter id="rfe6617-glow" x="-50%" y="-50%" width="200%" height="200%">
+  <feGaussianBlur stdDeviation="6"/>
+</filter>
+</defs>
+  <rect x="0" y="0" width="420" height="120" fill="#16100a"/>
+  <rect x="0" y="0" width="420" height="120" fill="url(#rfe6617-scan)"/>
+  <!-- CRT panel -->
+  <rect x="12" y="12" width="396" height="96" rx="6" fill="rgba(0,0,0,0.35)" stroke="#ffd24a" stroke-width="1.2"/>
+  <!-- Header bar -->
+  <rect x="12" y="12" width="396" height="14" fill="#ffd24a" opacity="0.18"/>
+  <text x="22" y="22" fill="#ffd24a" font-family="ui-monospace, Menlo, monospace" font-size="8" letter-spacing="0.32em">DEPOCALYPSE // SECURE CHANNEL</text>
+  <text x="398" y="22" text-anchor="end" fill="#ffd24a" font-family="ui-monospace, Menlo, monospace" font-size="8" letter-spacing="0.32em">CORNETTO</text>
+
+  <!-- Score column right -->
+  <g transform="translate(310,0)">
+  <g class="bbfc">
+  <rect x="28" y="14" width="44" height="44" rx="7.333333333333333" fill="#ffd24a" stroke="#fff0c2" stroke-width="2"/>
+  <text x="50" y="39.52" text-anchor="middle" dominant-baseline="middle" fill="#100404" font-family="ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace" font-weight="700" font-size="20.2" letter-spacing="0.04em">R18</text>
+</g>
+  <g>
+  <rect x="8" y="80" width="84" height="22" rx="11" fill="#ff6a3a" stroke="#fff0c2"/>
+  <text x="50" y="91.5" text-anchor="middle" dominant-baseline="middle" fill="#ffffff" font-family="ui-monospace, 'SFMono-Regular', Menlo, monospace" font-weight="600" font-size="12.100000000000001" letter-spacing="0.16em">LEGENDARY</text>
+</g>
+</g>
+
+  <!-- Title block left -->
+  <g>
+  <text x="24" y="50" fill="#fff0c2" font-family="'Helvetica Neue','Arial Black','Impact',sans-serif" font-weight="900" font-size="19" letter-spacing="0.02em"><tspan x="24" dy="0">PROPER LITTLE PROJECT</tspan></text>
+  <text x="24" y="62" fill="#7a5a18" font-family="ui-monospace, Menlo, monospace" font-size="9" letter-spacing="0.16em">DEPOCALYPSE ACHIEVEMENT · LEGENDARY</text>
+</g>
+
+  <!-- Stamp -->
+  <g transform="translate(24,84) rotate(-3 65 11)">
+  <rect x="0" y="0" width="130" height="22" fill="none" stroke="#ffd24a" stroke-width="2.5" rx="4" opacity="0.95"/>
+  <text x="65" y="12" text-anchor="middle" dominant-baseline="middle" fill="#ffd24a" font-family="'Impact', 'Arial Black', sans-serif" font-weight="900" font-size="13.64" letter-spacing="0.12em">LEGENDARY</text>
+</g>
+
+  <!-- Motif top-right -->
+  <g filter="url(#rfe6617-glow)" opacity="0.55">
+    <g transform="translate(282,56)">
+  <line x1="14.0" y1="0.0" x2="26.6" y2="0.0" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="12.1" y1="7.0" x2="23.0" y2="13.3" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="7.0" y1="12.1" x2="13.3" y2="23.0" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="0.0" y1="14.0" x2="0.0" y2="26.6" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="-7.0" y1="12.1" x2="-13.3" y2="23.0" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="-12.1" y1="7.0" x2="-23.0" y2="13.3" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="-14.0" y1="0.0" x2="-26.6" y2="0.0" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="-12.1" y1="-7.0" x2="-23.0" y2="-13.3" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="-7.0" y1="-12.1" x2="-13.3" y2="-23.0" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="-0.0" y1="-14.0" x2="-0.0" y2="-26.6" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="7.0" y1="-12.1" x2="13.3" y2="-23.0" stroke="#16100a" stroke-width="2" stroke-linecap="round"/><line x1="12.1" y1="-7.0" x2="23.0" y2="-13.3" stroke="#16100a" stroke-width="2" stroke-linecap="round"/>
+  <circle r="12.6" fill="#ff6a3a" stroke="#16100a" stroke-width="2"/>
+  <circle r="5.6000000000000005" fill="#16100a"/>
+</g>
+  </g>
+
+  <rect x="0" y="0" width="420" height="120" filter="url(#rfe6617-grain)" opacity="0.11"/>
+  <text x="24" y="114" fill="#7a5a18" font-family="ui-monospace, Menlo, monospace" font-size="8" letter-spacing="0.22em">DEPOCALYPSE · ACHIEVEMENT</text>
+
+</svg>
