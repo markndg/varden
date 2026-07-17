@@ -2,6 +2,13 @@ from __future__ import annotations
 import json, time
 from .db import connect
 
+# Evaluation precedence, strongest to weakest. "require_approval" and
+# "sanitise" are Web Shield additions (see docs/web-shield-policy.md):
+# existing policies that never populate these buckets behave identically to
+# before, since an empty/missing bucket is simply skipped.
+MODES = ("block", "require_approval", "sanitise", "warn", "monitor", "allow")
+
+
 class PolicyEngine:
     def __init__(self, db_path: str, initial_policy: dict | None = None):
         self.db_path = db_path
@@ -14,7 +21,7 @@ class PolicyEngine:
         errors = []
         if not isinstance(policy, dict):
             return {"valid": False, "errors": ["policy must be an object"]}
-        for mode in ("block", "warn", "monitor", "allow"):
+        for mode in MODES:
             rules = policy.get(mode, [])
             if not isinstance(rules, list):
                 errors.append(f"{mode} must be a list")
@@ -34,6 +41,9 @@ class PolicyEngine:
                 ]
                 if not predicate_keys:
                     errors.append(f"{mode}[{idx}] must include at least one match condition")
+        from .rules.registry import validate_budget_rules
+
+        errors.extend(validate_budget_rules(policy))
         return {"valid": len(errors) == 0, "errors": errors}
 
     def templates(self):
@@ -94,7 +104,7 @@ class PolicyEngine:
 
 
     def requires_classifiers(self):
-        for mode in ("block", "warn", "monitor", "allow"):
+        for mode in MODES:
             for rule in self.policy.get(mode, []):
                 if any(str(k).startswith("classifier:") for k in rule):
                     return True
@@ -102,26 +112,41 @@ class PolicyEngine:
 
     def requires_risk(self):
         risk_keys = {"min_risk_score", "field:risk_score", "field:metadata.scan.depth", "field:metadata.decision_latency_ms", "field:metadata.behavior.suspicious_sequence", "field:metadata.behavior.previous_blocked", "classifier:sql_query", "classifier:sql_dangerous", "classifier:sql_unbounded_write", "classifier:sql_privilege_change", "classifier:sql_schema_enumeration", "classifier:sql_sensitive_table", "classifier:sql_union_access", "classifier:sql_select_star", "classifier:sql_missing_limit", "classifier:sql_multi_statement", "classifier:sql_comment_obfuscation", "classifier:sql_suspect"}
-        for mode in ("block", "warn", "monitor", "allow"):
+        for mode in MODES:
             for rule in self.policy.get(mode, []):
                 for key in rule:
                     if key in risk_keys or str(key).endswith("risk_score"):
                         return True
         return False
 
-    def publish(self, version_id: int):
+    def publish(self, version_id: int, policy_file: str | None = None):
         with connect(self.db_path) as conn:
-            row = conn.execute("SELECT id FROM policy_versions WHERE id = ?", (version_id,)).fetchone()
+            row = conn.execute(
+                "SELECT id, policy_json FROM policy_versions WHERE id = ?",
+                (version_id,),
+            ).fetchone()
             if not row:
                 return {"published_version": None, "error": "version not found"}
+            try:
+                candidate = json.loads(row["policy_json"])
+            except json.JSONDecodeError:
+                return {"published_version": None, "error": "corrupt policy_json in version"}
+            validation = self.validate(candidate)
+            if not validation["valid"]:
+                return {"published_version": None, "error": "invalid policy", "validation": validation}
             conn.execute("UPDATE policy_versions SET status = 'archived' WHERE status = 'published'")
             conn.execute("UPDATE policy_versions SET status = 'published' WHERE id = ?", (version_id,))
             conn.commit()
-        return {"published_version": version_id}
+        self.update_policy(candidate)
+        if policy_file:
+            from .fsutil import atomic_write_json
+
+            atomic_write_json(policy_file, candidate)
+        return {"published_version": version_id, "policy": candidate}
 
     def evaluate(self, action):
         from .models import Decision
-        for mode in ("block", "warn", "monitor", "allow"):
+        for mode in MODES:
             for rule in self.policy.get(mode, []):
                 if isinstance(rule, dict) and rule.get("enabled") is False:
                     continue

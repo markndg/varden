@@ -32,7 +32,7 @@ class AppConfig:
     public_base_url: str = "http://127.0.0.1:8000"
     backup_dir: str = "backups"
     enable_dev_bootstrap: bool = True
-    scan_mode: str = "deep"
+    scan_mode: str = "fast"
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -70,7 +70,7 @@ class AppConfig:
             public_base_url = os.getenv("VARDEN_PUBLIC_BASE_URL",f"http://{host}:{port}"),
             backup_dir=os.getenv("VARDEN_BACKUP_DIR", "backups"),
             enable_dev_bootstrap=os.getenv("VARDEN_ENABLE_DEV_BOOTSTRAP", "true").lower() == "true",
-            scan_mode=os.getenv("VARDEN_SCAN_MODE", "deep").lower(),
+            scan_mode=os.getenv("VARDEN_SCAN_MODE", "fast").lower(),
         )
 
     @classmethod

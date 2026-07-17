@@ -7,11 +7,14 @@ type ImpactPageProps = {
   onOpenRules: (bucket: string, label: string, token?: string, index?: number) => void;
   helpers: {
     RULE_BUCKETS: readonly string[];
+    POLICY_BUCKETS: readonly string[];
+    BUDGET_RULES_BUCKET: string;
     pickFirstNonEmptyBucket: (policy: any) => any;
     ensurePolicyDoc: (doc: any) => any;
     dedupePolicyDoc: (doc: any) => any;
     normalizeEventRow: (row: any) => any;
     summarizeRule: (rule: any) => string;
+    summarizeBudgetRule: (rule: any) => string;
     summarizeRuleConditions: (rule: any, max?: number) => string[];
     deriveMatchedRuleLabel: (event: any) => string | null;
     semanticRuleFingerprint: (rule: any) => string;
@@ -27,8 +30,8 @@ type ImpactPageProps = {
 };
 
 export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, helpers }: ImpactPageProps) {
-  const { RULE_BUCKETS, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus } = helpers;
-  const [activeBucket, setActiveBucket] = useState<typeof RULE_BUCKETS[number]>(pickFirstNonEmptyBucket(ensurePolicyDoc(policy)));
+  const { RULE_BUCKETS, POLICY_BUCKETS, BUDGET_RULES_BUCKET, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeBudgetRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus } = helpers;
+  const [activeBucket, setActiveBucket] = useState<string>(pickFirstNonEmptyBucket(ensurePolicyDoc(policy)));
   const [windowMode, setWindowMode] = useState<'recent' | 'all'>('recent');
   const [analyticsMode, setAnalyticsMode] = useState<'impact' | 'detections' | 'fp'>('impact');
   const [selectedRuleId, setSelectedRuleId] = useState<string>('');
@@ -96,7 +99,8 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
       return semanticRuleFingerprint(matchedRule);
     };
 
-    return RULE_BUCKETS.flatMap((bucket) => (policyDoc[bucket] || []).map((rule: any, index: number) => {
+    return [
+      ...RULE_BUCKETS.flatMap((bucket) => (policyDoc[bucket] || []).map((rule: any, index: number) => {
       const summary = summarizeRule(rule);
       const summaryLc = lower(summary);
       const reasonLc = lower(rule?.description || rule?.reason || '');
@@ -147,10 +151,60 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
       const falsePositiveCandidates = effectiveMatches.filter((event: any) => Number(event.risk_score || 0) <= 20 || String(event.domain || '').includes('localhost')).slice(0, 4);
       const id = `${bucket}:${index}:${semanticRuleFingerprint(rule)}`;
       return { id, bucket, index, rule, label: summary, detections, blocked, warned, allowed, impactScore, coverage, falsePositiveRate, tags, conditionSummary, exactToken, topAgents, topTools, topDomains, timeline: Array.from(timelineMap.entries()).map(([day, count]) => ({ day, count })), recentEvents, falsePositiveCandidates, enabled: rule?.enabled !== false };
-    }));
-  }, [RULE_BUCKETS, policyDoc, filteredEvents, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, eventOutcomeStatus, formatRuleFieldLabel, semanticRuleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent]);
+    })),
+      ...(policyDoc.budget_rules || []).map((rule: any, index: number) => {
+        const bucket = BUDGET_RULES_BUCKET;
+        const summary = summarizeBudgetRule(rule);
+        const summaryLc = lower(summary);
+        const matches = filteredEvents.filter((event: any) => {
+          const matched = event?.matched_rule || event?.decision?.matched_rule;
+          if (matched?.type === 'token_budget' && String(matched?.id || '') === String(rule?.id || '')) return true;
+          const label = lower((event as any).matched_rule_label || deriveMatchedRuleLabel(event) || '');
+          const reason = lower(event?.reason || '');
+          return (label && summaryLc && label.includes(summaryLc)) || reason.includes('token budget') || reason.includes(String(rule?.id || '').toLowerCase());
+        });
+        const detections = matches.length;
+        const blocked = matches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'blocked').length;
+        const warned = matches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'warned').length;
+        const allowed = matches.filter((event) => (event.outcome || eventOutcomeStatus(event)) === 'allowed').length;
+        const impactScore = blocked * 1 + warned * 0.65 + allowed * 0.2;
+        const coverage = detections ? (detections / totalEvents) * 100 : 0;
+        const id = `${bucket}:${index}:${semanticRuleFingerprint(rule)}`;
+        return {
+          id,
+          bucket,
+          index,
+          rule,
+          label: summary,
+          detections,
+          blocked,
+          warned,
+          allowed,
+          impactScore,
+          coverage,
+          falsePositiveRate: 0,
+          tags: [rule.window || 'session', rule.hard_cap === false ? 'soft cap' : 'hard cap'],
+          conditionSummary: [`$${Number(rule.limit_usd || 0).toFixed(2)} cap`, `${rule.window || 'session'} window`],
+          exactToken: semanticRuleFingerprint(rule),
+          topAgents: [],
+          topTools: [],
+          topDomains: [],
+          timeline: [],
+          recentEvents: matches.slice(0, 6),
+          falsePositiveCandidates: [],
+          enabled: rule?.enabled !== false,
+        };
+      }),
+    ];
+  }, [RULE_BUCKETS, BUDGET_RULES_BUCKET, policyDoc, filteredEvents, summarizeRule, summarizeBudgetRule, summarizeRuleConditions, deriveMatchedRuleLabel, eventOutcomeStatus, formatRuleFieldLabel, semanticRuleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent]);
 
-  const bucketCounts = useMemo(() => RULE_BUCKETS.reduce((acc: Record<string, number>, bucket) => { acc[bucket] = (policyDoc[bucket] || []).length; return acc; }, {} as Record<string, number>), [RULE_BUCKETS, policyDoc]);
+  const bucketCounts = useMemo(() => {
+    const acc: Record<string, number> = POLICY_BUCKETS.reduce((rows: Record<string, number>, bucket: string) => {
+      rows[bucket] = bucket === BUDGET_RULES_BUCKET ? (policyDoc.budget_rules || []).length : (policyDoc[bucket] || []).length;
+      return rows;
+    }, {} as Record<string, number>);
+    return acc;
+  }, [POLICY_BUCKETS, BUDGET_RULES_BUCKET, policyDoc]);
   const bucketRows = useMemo(() => {
     const rows = ruleRows.filter((row: any) => row.bucket === activeBucket);
     const sorter = analyticsMode === 'detections' ? (left: any, right: any) => right.detections - left.detections : analyticsMode === 'fp' ? (left: any, right: any) => right.falsePositiveRate - left.falsePositiveRate : (left: any, right: any) => right.impactScore - left.impactScore;
@@ -192,9 +246,9 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
             </div>
           </div>
           <div className="bucketTabs impactBucketTabs">
-            {RULE_BUCKETS.map((bucket) => (
-              <button type="button" key={bucket} className={classNames('bucketTab', activeBucket === bucket && 'is-active')} onClick={() => setActiveBucket(bucket)}>
-                <span>{bucket}</span>
+            {POLICY_BUCKETS.map((bucket) => (
+              <button type="button" key={bucket} className={classNames('bucketTab', bucket === BUDGET_RULES_BUCKET && 'bucketTab--budget', activeBucket === bucket && 'is-active')} onClick={() => setActiveBucket(bucket)}>
+                <span>{bucket === BUDGET_RULES_BUCKET ? 'budget' : bucket}</span>
                 <strong>{bucketCounts[bucket] || 0}</strong>
               </button>
             ))}
@@ -213,7 +267,7 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
                 const heatWidth = `${Math.max(8, (heatValue / maxBucketValue) * 100)}%`;
                 return (
                   <button key={row.id} type="button" className={classNames('impactRow', selectedRow?.id === row.id && 'is-active')} onClick={() => setSelectedRuleId(row.id)}>
-                    <div className="impactRow__rule"><span className={`badge badge--${bucketTone(row.bucket)}`}>{row.bucket}</span><div><div className="impactRow__title">{row.label}</div><div className="impactRow__meta">{row.rule?.type || 'any type'} {row.rule?.tool ? `· ${row.rule.tool}` : ''}</div>{row.conditionSummary?.length ? <div className="impactRow__detail">{row.conditionSummary.join(' · ')}</div> : null}</div></div>
+                    <div className="impactRow__rule"><span className={`badge badge--${bucketTone(row.bucket)}`}>{row.bucket === BUDGET_RULES_BUCKET ? 'budget' : row.bucket}</span><div><div className="impactRow__title">{row.label}</div><div className="impactRow__meta">{row.bucket === BUDGET_RULES_BUCKET ? `token_budget · ${row.rule?.window || 'session'}` : `${row.rule?.type || 'any type'} ${row.rule?.tool ? `· ${row.rule.tool}` : ''}`}</div>{row.conditionSummary?.length ? <div className="impactRow__detail">{row.conditionSummary.join(' · ')}</div> : null}</div></div>
                     <div className="impactRow__tags">{row.tags.length ? row.tags.map((tag: string) => <span key={tag} className="badge">{tag}</span>) : <span className="muted">No annotations</span>}</div>
                     <div className="impactHeat"><div className="impactHeat__bar"><div className="impactHeat__fill" style={{ width: heatWidth }} /></div><strong>{analyticsMode === 'fp' ? `${fmtNum(row.falsePositiveRate, 1)}%` : analyticsMode === 'impact' ? fmtNum(row.impactScore, 1) : row.detections}</strong></div>
                     <div className="impactRow__coverage">{fmtNum(row.coverage, 1)}%</div>

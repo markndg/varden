@@ -1,0 +1,29 @@
+{
+  "name": "@varden/web-shield",
+  "version": "0.1.0",
+  "description": "Runtime governance and tool-surface security for browser agents. Framework-neutral SDK for registering WebMCP tools, scanning invocations/outputs, and reporting to a Varden server.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "node --test \"test/**/*.test.js\"",
+    "pretest": "npm run build"
+  },
+  "keywords": ["webmcp", "mcp", "security", "varden", "browser-agent", "prompt-injection"],
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

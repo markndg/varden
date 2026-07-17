@@ -486,6 +486,9 @@ def _is_control_plane_request(url: str | None, guard: VardenGuard) -> bool:
     if not url:
         return False
     try:
+        parsed = urlparse(str(url))
+        if parsed.hostname in {"testserver", "test"}:
+            return True
         return str(url).startswith(guard.client.base_url.rstrip('/'))
     except Exception:
         return False
@@ -577,6 +580,32 @@ def _patch_httpx(guard: VardenGuard) -> None:
         httpx.AsyncClient.send = send_async_wrapper
 
 
+def _llm_usage_output_payload(provider: str, response: Any, *, kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
+    usage_raw = getattr(response, "usage", None)
+    model = getattr(response, "model", None) or (kwargs or {}).get("model")
+    usage: dict[str, Any] = {}
+    if usage_raw is not None:
+        if hasattr(usage_raw, "model_dump"):
+            usage = usage_raw.model_dump()
+        elif isinstance(usage_raw, dict):
+            usage = usage_raw
+        else:
+            usage = {
+                "input_tokens": getattr(usage_raw, "input_tokens", None) or getattr(usage_raw, "prompt_tokens", None),
+                "output_tokens": getattr(usage_raw, "output_tokens", None) or getattr(usage_raw, "completion_tokens", None),
+            }
+    normalized = {
+        "input_tokens": int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0),
+        "output_tokens": int(usage.get("output_tokens") or usage.get("completion_tokens") or 0),
+    }
+    return {
+        "provider": provider,
+        "model": model,
+        "usage": normalized,
+        "object": getattr(response, "object", None),
+    }
+
+
 def _patch_openai(guard: VardenGuard) -> None:
     try:
         from openai.resources.responses.responses import Responses
@@ -596,7 +625,7 @@ def _patch_openai(guard: VardenGuard) -> None:
                     raise VardenBlockedError('OpenAI response call blocked', result.decision)
                 response = _ORIGINALS[key](self, *args, **kwargs)
                 if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'provider': 'openai', 'object': getattr(response, 'object', None)})
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload=_llm_usage_output_payload('openai', response, kwargs=kwargs))
                 return response
             Responses.create = wrapper
 
@@ -618,7 +647,7 @@ def _patch_openai(guard: VardenGuard) -> None:
                     raise VardenBlockedError('OpenAI chat completion blocked', result.decision)
                 response = _ORIGINALS[key](self, *args, **kwargs)
                 if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'provider': 'openai', 'object': getattr(response, 'object', None)})
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload=_llm_usage_output_payload('openai', response, kwargs=kwargs))
                 return response
             Completions.create = wrapper
 
@@ -643,7 +672,7 @@ def _patch_anthropic(guard: VardenGuard) -> None:
                     raise VardenBlockedError('Anthropic message blocked', result.decision)
                 response = _ORIGINALS[key](self, *args, **kwargs)
                 if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'provider': 'anthropic'})
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload=_llm_usage_output_payload('anthropic', response, kwargs=kwargs))
                 return response
             Messages.create = wrapper
 

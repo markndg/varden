@@ -2401,6 +2401,12 @@ button { cursor: pointer; }
   border: 1px solid rgba(163,184,255,.08);
 }
 
+.badge--budget { background: rgba(168, 85, 247, .14); border-color: rgba(168, 85, 247, .34); color: #ead9ff; }
+.bucketTab--budget.is-active { border-color: rgba(168, 85, 247, .45); }
+.logicNode--budget { border-color: rgba(168, 85, 247, .35); }
+.budgetStatusList { display: grid; gap: 8px; }
+.budgetStatusRow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 12px; border: 1px solid rgba(255,255,255,.08); border-radius: 12px; background: rgba(255,255,255,.02); }
+
 .templatePreviewLine .badge {
   flex: 0 0 auto;
   padding: 4px 8px;
@@ -2412,3 +2418,30 @@ button { cursor: pointer; }
   line-height: 1.4;
   margin-top: 4px;
 }
+
+/* Web Shield */
+.button--danger { background: linear-gradient(135deg, rgba(255,107,122,.32), rgba(255,107,122,.12)); border-color: rgba(255,107,122,.4); }
+.webshieldList { display: grid; gap: 8px; max-height: 640px; overflow: auto; }
+.webshieldRow {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  width: 100%;
+  text-align: left;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: rgba(255,255,255,.02);
+  cursor: pointer;
+}
+.webshieldRow.is-active { border-color: rgba(123,97,255,.46); background: rgba(123,97,255,.1); }
+.webshieldRow__dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; background: rgba(93,225,164,.7); }
+.webshieldRow__dot.is-warn { background: rgba(255,191,90,.85); }
+.webshieldRow__dot.is-danger { background: rgba(255,107,122,.9); }
+.webshieldRow__body { display: grid; gap: 4px; flex: 1; min-width: 0; }
+.webshieldRow__headline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.webshieldFinding { border: 1px solid var(--line); border-radius: 14px; padding: 12px; background: rgba(255,255,255,.02); }
+.webshieldFinding__head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.webshieldTimelineRow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.02); }
+.webshieldApprovalRow { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,.02); }
+.webshieldApprovalRow__body { display: grid; gap: 4px; min-width: 0; flex: 1; }

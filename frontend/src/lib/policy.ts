@@ -1,4 +1,4 @@
-import { PolicyDoc, RULE_BUCKETS } from './types';
+import { PolicyDoc, RULE_BUCKETS, BUDGET_RULES_BUCKET } from './types';
 
 function formatRuleFieldLabel(field?: string | null) {
   if (!field) return 'condition';
@@ -36,6 +36,7 @@ export function ensurePolicyDoc(doc: any): PolicyDoc {
     warn: Array.isArray(doc?.warn) ? doc.warn : [],
     monitor: Array.isArray(doc?.monitor) ? doc.monitor : [],
     allow: Array.isArray(doc?.allow) ? doc.allow : [],
+    budget_rules: Array.isArray(doc?.budget_rules) ? doc.budget_rules : [],
   };
 }
 
@@ -68,6 +69,7 @@ export function dedupePolicyDoc(doc: PolicyDoc): PolicyDoc {
     warn: dedupeRules(doc.warn),
     monitor: dedupeRules(doc.monitor),
     allow: dedupeRules(doc.allow),
+    budget_rules: dedupeRules(doc.budget_rules || []),
   };
 }
 
@@ -77,10 +79,36 @@ export function mergePolicyWithoutDuplicates(baseDoc: PolicyDoc, templateDoc: Po
     warn: [...baseDoc.warn, ...templateDoc.warn],
     monitor: [...baseDoc.monitor, ...templateDoc.monitor],
     allow: [...baseDoc.allow, ...templateDoc.allow],
+    budget_rules: [...(baseDoc.budget_rules || []), ...(templateDoc.budget_rules || [])],
   });
 }
 
-export function pickFirstNonEmptyBucket(doc: PolicyDoc): typeof RULE_BUCKETS[number] {
+export function isBudgetRulesBucket(bucket: string) {
+  return bucket === BUDGET_RULES_BUCKET;
+}
+
+export function getBucketRules(doc: PolicyDoc, bucket: string): any[] {
+  if (isBudgetRulesBucket(bucket)) return doc.budget_rules || [];
+  return (doc as any)[bucket] || [];
+}
+
+export function withBucketRules(doc: PolicyDoc, bucket: string, rules: any[]): PolicyDoc {
+  if (isBudgetRulesBucket(bucket)) return { ...doc, budget_rules: rules };
+  return { ...doc, [bucket]: rules };
+}
+
+export function summarizeBudgetRule(rule: any) {
+  if (!rule) return 'New token budget';
+  const label = rule.title || rule.id || 'token budget';
+  const limit = Number(rule.limit_usd ?? 0);
+  const window = rule.window || 'session';
+  const cap = rule.hard_cap === false ? 'soft cap' : 'hard cap';
+  return `${label} · $${limit.toFixed(2)} / ${window} · ${cap}`;
+}
+
+export function pickFirstNonEmptyBucket(doc: PolicyDoc): typeof RULE_BUCKETS[number] | typeof BUDGET_RULES_BUCKET {
+  const budget = (doc.budget_rules || []).length;
+  if (budget > 0) return BUDGET_RULES_BUCKET;
   return RULE_BUCKETS.find((bucket) => (doc[bucket] || []).length > 0) || 'block';
 }
 
@@ -138,6 +166,7 @@ export function coerceRuleInput(value: string, mode: 'text' | 'number' | 'boolea
 
 export function summarizeRule(rule: any) {
   if (!rule) return 'New rule';
+  if (rule.type === 'token_budget' || rule.limit_usd !== undefined) return summarizeBudgetRule(rule);
   return rule.title
     || rule.name
     || rule.description

@@ -76,9 +76,11 @@ export type EventDetail = {
   trace?: TraceSummary | null;
 };
 
-export type PolicyDoc = { block: any[]; warn: any[]; monitor: any[]; allow: any[] };
+export type PolicyDoc = { block: any[]; warn: any[]; monitor: any[]; allow: any[]; budget_rules?: any[] };
 
 export const RULE_BUCKETS = ['block', 'warn', 'monitor', 'allow'] as const;
+export const BUDGET_RULES_BUCKET = 'budget_rules' as const;
+export const POLICY_BUCKETS = [...RULE_BUCKETS, BUDGET_RULES_BUCKET] as const;
 export const RULE_TYPES = ['', 'tool_call', 'http_request', 'llm_call'];
 export const CLASSIFIER_KEYS = ['internal', 'secrets', 'pii', 'financial', 'credit_card', 'source_internal', 'unsafe_keywords'];
 export const ADVANCED_FIELDS = [

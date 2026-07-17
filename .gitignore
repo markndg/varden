@@ -37,6 +37,7 @@ policy.json
 
 # Node / frontend
 frontend/node_modules/
+sdks/js/web-shield/node_modules/
 frontend/dist/
 
 # OS / editor

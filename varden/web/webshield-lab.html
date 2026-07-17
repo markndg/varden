@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Varden Web Shield — Attack Lab</title>
+    <link rel="icon" type="image/png" href="/static/assets/varden-icon.png" />
+    <link rel="stylesheet" href="/static/webshield-lab/lab.css" />
+  </head>
+  <body>
+    <header class="lab-header">
+      <div class="lab-header__brand">
+        <img src="/static/assets/varden-icon.png" alt="" width="28" height="28" />
+        <div>
+          <div class="lab-header__title">Varden Web Shield — Attack Lab</div>
+          <div class="lab-header__subtitle">A safe, local, simulated website that registers 20 WebMCP tools so you can watch detection happen in real time.</div>
+        </div>
+      </div>
+      <div class="lab-header__actions">
+        <span id="conn-status" class="lab-pill lab-pill--pending">checking Varden…</span>
+        <a id="dashboard-link" class="lab-button lab-button--ghost" href="/ui/web-shield" target="_blank" rel="noopener">Open Web Shield dashboard →</a>
+      </div>
+    </header>
+
+    <main class="lab-main">
+      <section class="lab-intro">
+        <p>
+          This page behaves like an ordinary website that exposes tools to a browser agent via
+          <code>document.modelContext.registerTool()</code>. None of the 20 cases below perform any real destructive,
+          financial, credential or exfiltration action — they only demonstrate what Varden Web Shield sees and how it
+          reacts. Every registration and output below is sent to your local Varden server exactly the way a real
+          integration (SDK or browser extension) would send it.
+        </p>
+        <div class="lab-toolbar">
+          <button id="run-all" class="lab-button">Run all 20 cases</button>
+          <button id="reset-session" class="lab-button lab-button--ghost">New session</button>
+          <label class="lab-apikey">
+            API key
+            <input id="api-key-input" type="password" placeholder="auto-detected in dev mode" autocomplete="off" />
+          </label>
+        </div>
+      </section>
+
+      <section id="case-grid" class="lab-grid"></section>
+    </main>
+
+    <footer class="lab-footer">
+      <p>
+        Varden Web Shield: runtime governance and tool-surface security for browser agents. This lab is a detection
+        demonstration, not a sandbox and not a guarantee against every possible attack — see
+        <code>docs/web-shield-limitations.md</code> in the repository for an honest accounting of what this can and
+        cannot do.
+      </p>
+    </footer>
+
+    <script src="/static/webshield-lab/lab.js"></script>
+  </body>
+</html>

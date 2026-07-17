@@ -102,6 +102,53 @@ dashboard with classifiers, risk scores, and a full trace.
 
 ---
 
+## Browser agents now have a tool supply chain
+
+Websites can now dynamically expose tools to browser agents via WebMCP
+(`document.modelContext.registerTool`). That means **tool metadata and tool
+output are untrusted input** — a page can register a tool whose description
+tells an agent to ignore its instructions, call an unrelated wallet tool, or
+exfiltrate data to another origin, and the agent may never know the
+difference.
+
+**Varden Web Shield** detects, governs and audits that surface with the same
+runtime-governance model Varden already uses for tool calls, HTTP requests
+and LLM calls: a layered classifier scans every registration and output for
+prompt injection, Unicode obfuscation, capability mismatch and cross-origin
+data flow; an explainable 0–100 risk score feeds the same policy engine
+(`allow` / `warn` / `sanitise` / `require_approval` / `block`); and every
+decision — plus whether it was actually enforceable in the browser — shows
+up in the dashboard.
+
+```bash
+pip install varden
+varden web-shield demo
+```
+
+The demo starts Varden, seeds a Web Shield dashboard, and opens a
+self-contained attack lab with 20 safe, simulated cases (prompt injection,
+Base64-obfuscated instructions, capability mismatch, cross-origin flows,
+lifecycle manipulation, and more) — no browser extension or external
+accounts required to see detection happen.
+
+```mermaid
+flowchart LR
+    Page[Website: document.modelContext.registerTool] -->|extension or SDK| API[/webshield/* API/]
+    API --> Engine[7-layer classifier + explainable risk score]
+    Engine --> Policy[Varden PolicyEngine: allow / warn / sanitise / require_approval / block]
+    Policy --> Dashboard[Web Shield dashboard: inventory, findings, cross-origin flows, approvals]
+```
+
+Also included: a Chromium MV3 browser extension with an offline-safe local
+fallback scanner, a framework-neutral `@varden/web-shield` JS SDK for
+first-party integrations, and a `varden web-shield evaluate` command that
+reports real precision/recall/latency against a versioned test corpus (not
+just claimed effectiveness). Full docs start at
+[`docs/web-shield.md`](docs/web-shield.md); an honest list of what it
+doesn't do is in [`docs/web-shield-limitations.md`](docs/web-shield-limitations.md).
+
+---
+
 ## Rule impact intelligence
 
 Know which rules are working, which are over-firing, and where your coverage gaps are.
@@ -169,7 +216,7 @@ dashboard immediately.
 
 ## Policy model
 
-Policies are a JSON file with four lists: `block`, `warn`, `monitor`, `allow`.
+Policies are a JSON file with four outcome lists (`block`, `warn`, `monitor`, `allow`) plus optional `budget_rules` for LLM spend caps.
 
 ```json
 {
@@ -182,12 +229,69 @@ Policies are a JSON file with four lists: `block`, `warn`, `monitor`, `allow`.
     {"classifier:internal": true}
   ],
   "monitor": [],
-  "allow": []
+  "allow": [],
+  "budget_rules": [
+    {
+      "id": "session-default-cap",
+      "type": "token_budget",
+      "limit_usd": 10.0,
+      "window": "session",
+      "hard_cap": true
+    }
+  ]
 }
 ```
 
 Rules are evaluated in order: `block → warn → monitor → allow`. First match wins.
+Token budget rules run on `llm_call` actions before execution (pre-check) and after completion via SDK usage logging (post-record).
 Edit visually at `/ui/rules` or directly in the JSON file. Policy versions are tracked.
+
+---
+
+## Token budgets (LLM cost governance)
+
+Cap LLM spend per trace (`session`), workflow (`daily` / `monthly`), or both. Budget rules live in the top-level `budget_rules` array.
+
+- **Pre-check** (`POST /sdk/guard`): projects cost from model + token limits and blocks or warns before the call runs.
+- **Post-record** (`POST /sdk/log`): increments spend from provider `usage` metadata forwarded by the SDK.
+- **CLI**: `varden budget status` lists active budget rows from SQLite.
+
+Import the `llm-cost-governance` policy pack for ready-made budget rules, or add your own `budget_rules` entries.
+
+**Dashboard:** Rules workspace → **budget** tab (full editor). Overview → **Token budgets** panel (live spend). Rule impact → **budget** bucket.
+
+**Demo** (with Varden running on `:8000`):
+
+```bash
+python demos/token_budget_agent.py
+```
+
+---
+
+## Policy pack import
+
+Repository policy packs live in `policy-packs/`. Import them from the dashboard (**Rules → Templates → Import & save**) or via API:
+
+```bash
+curl -X POST http://127.0.0.1:8000/policy/import-pack \
+  -H "x-api-key: admin-demo-key" \
+  -H "content-type: application/json" \
+  -d '{"pack_id":"baseline-operational-safety","mode":"merge"}'
+```
+
+- `GET /policy/packs` — list available packs
+- `GET /policy/packs/{pack_id}` — fetch a pack document
+- `POST /policy/import-pack` — merge or replace into the active policy file
+
+---
+
+## MCP tool inventory
+
+Discover MCP servers registered in Cursor config files and compare tools against your policy coverage gaps.
+
+- **Dashboard**: Overview page → enter an MCP config path (e.g. `~/.cursor/mcp.json`) → **Scan path**, or leave blank and use **Scan defaults**
+- `GET /mcp/inventory` — current indexed servers, tools, and uncovered tools
+- `POST /mcp/scan` — scan MCP configs; body may include `path` (string) or `paths` (array). Omit both to scan defaults (`~/.cursor/mcp.json`, project `.cursor/mcp.json`, and `VARDEN_MCP_CONFIG_PATHS`)
 
 ---
 

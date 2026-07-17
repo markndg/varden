@@ -50,6 +50,7 @@ mcp = [
 test = [
   "pytest>=8",
   "mcp[cli]>=1.2",
+  "hypothesis>=6.100",
 ]
 all = [
   "psycopg[binary]>=3.1",
@@ -74,4 +75,4 @@ varden-mcp = "varden_mcp.server:main"
 include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*", "varden_mcp*"]
 
 [tool.setuptools.package-data]
-"varden" = ["web/**/*", "policy-packs/*.json"]
+"varden" = ["web/**/*", "policy-packs/*.json", "webshield/corpus/*.json"]
