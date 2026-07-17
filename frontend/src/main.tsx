@@ -6,10 +6,11 @@ import { ImpactPage as ImpactPageView } from './components/dashboard/ImpactPage'
 import { DecisionPage as DecisionPageView } from './components/dashboard/DecisionPage';
 import { OverviewPage as OverviewPageView } from './components/dashboard/OverviewPage';
 import { RulesPage as RulesPageView } from './components/dashboard/RulesPage';
-import { ADVANCED_FIELDS, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
+import { WebShieldPage } from './components/dashboard/WebShieldPage';
+import { ADVANCED_FIELDS, BUDGET_RULES_BUCKET, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, POLICY_BUCKETS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
 import { detailIdFromLocation, pageFromLocation, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
 import { averageLatencyFromPoints, classNames, fmtNum, fmtTs, fromDateTimeLocalValue, latencyValueFromPoint, toDateTimeLocalValue } from './lib/format';
-import { coerceRuleInput, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, getRuleOperator, getRuleValue, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, ruleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, safeParsePolicy, semanticRuleFingerprint, setRuleOperatorValue, setRuleSimpleValue, summarizeRule, summarizeRuleConditions } from './lib/policy';
+import { coerceRuleInput, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, getBucketRules, getRuleOperator, getRuleValue, isBudgetRulesBucket, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, ruleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, safeParsePolicy, semanticRuleFingerprint, setRuleOperatorValue, setRuleSimpleValue, summarizeBudgetRule, summarizeRule, summarizeRuleConditions, withBucketRules } from './lib/policy';
 
 
 async function api<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
@@ -403,6 +404,7 @@ function bucketTone(bucket?: string) {
   if (bucket === 'block') return 'danger';
   if (bucket === 'warn') return 'warn';
   if (bucket === 'monitor') return 'monitor';
+  if (bucket === BUDGET_RULES_BUCKET) return 'budget';
   return 'ok';
 }
 
@@ -415,6 +417,10 @@ function Shell() {
   const [policy, setPolicy] = useState<PolicyDoc>(ensurePolicyDoc({}));
   const [policyText, setPolicyText] = useState<string>('');
   const [templates, setTemplates] = useState<any[]>([]);
+  const [policyPacks, setPolicyPacks] = useState<any[]>([]);
+  const [mcpInventory, setMcpInventory] = useState<any>(null);
+  const [mcpLoading, setMcpLoading] = useState(false);
+  const [mcpConfigPath, setMcpConfigPath] = usePersistentState<string>('varden.mcpConfigPath', '');
   const [selectedTraceId, setSelectedTraceId] = useState<string>('');
   const [selectedTrace, setSelectedTrace] = useState<TraceSummary | null>(null);
   const [traceOptions, setTraceOptions] = useState<TraceOption[]>([]);
@@ -508,14 +514,50 @@ function Shell() {
 
   async function refreshPolicy() {
     if (!token) return;
-    const [doc, tpl] = await Promise.all([
+    const [doc, tpl, packs] = await Promise.all([
       api<PolicyDoc>('/policy', {}, token),
       api<any>('/policy/templates', {}, token),
+      api<any>('/policy/packs', {}, token).catch(() => ({ items: [] })),
     ]);
     const normalized = ensurePolicyDoc(doc);
     setPolicy(normalized);
     setPolicyText(JSON.stringify(normalized, null, 2));
     setTemplates(Array.isArray(tpl) ? tpl : Object.entries(tpl || {}).map(([name, template]) => ({ name, template })));
+    setPolicyPacks(Array.isArray(packs?.items) ? packs.items : []);
+  }
+
+  async function importPolicyPack(packId: string, mode: 'merge' | 'replace' = 'merge') {
+    if (!token) return;
+    const result = await api<any>('/policy/import-pack', { method: 'POST', body: JSON.stringify({ pack_id: packId, mode }) }, token);
+    const normalized = dedupePolicyDoc(ensurePolicyDoc(result.policy));
+    setPolicy(normalized);
+    setPolicyText(JSON.stringify(normalized, null, 2));
+    setNotice(`Imported ${packId}`);
+    await refreshPolicy();
+  }
+
+  async function refreshMcpInventory() {
+    if (!token) return;
+    const payload = await api<any>('/mcp/inventory', {}, token);
+    setMcpInventory(payload);
+  }
+
+  async function scanMcpInventory(explicitPaths?: string[]) {
+    if (!token) return;
+    setMcpLoading(true);
+    setError('');
+    try {
+      const trimmed = (explicitPaths || []).map((path) => path.trim()).filter(Boolean);
+      const paths = trimmed.length ? trimmed : (mcpConfigPath.trim() ? [mcpConfigPath.trim()] : []);
+      const body = paths.length ? { paths } : {};
+      const payload = await api<any>('/mcp/scan', { method: 'POST', body: JSON.stringify(body) }, token);
+      setMcpInventory(payload);
+      setNotice(paths.length ? `MCP inventory scan complete (${paths.join(', ')})` : 'MCP inventory scan complete (default paths)');
+    } catch (e: any) {
+      setError(e?.message || 'MCP scan failed');
+    } finally {
+      setMcpLoading(false);
+    }
   }
 
   async function refreshDetail(id: number) {
@@ -532,6 +574,7 @@ function Shell() {
     if (!token) return;
     refreshOverview().catch((e: any) => setError(e?.message || 'Failed to refresh overview'));
     if (page === 'rules' || page === 'coverage' || page === 'impact') refreshPolicy().catch((e: any) => setError(e?.message || 'Failed to load policy'));
+    if (page === 'overview') refreshMcpInventory().catch(() => setMcpInventory(null));
     if (page === 'decision' && detailId) refreshDetail(detailId).catch((e: any) => setError(e?.message || 'Failed to load event'));
   }, [token, page, detailId, routeFocus]);
 
@@ -704,6 +747,7 @@ function Shell() {
           <button className={classNames('nav__item', page === 'impact' && 'is-active')} onClick={() => navigate('impact', '/ui/impact')}>Rule Impact</button>
           <button className={classNames('nav__item', page === 'rules' && 'is-active')} onClick={() => navigate('rules', '/ui/rules')}>Rules Workspace</button>
           <button className={classNames('nav__item', page === 'coverage' && 'is-active')} onClick={() => navigate('coverage', '/ui/coverage-gaps')}>Coverage Gaps</button>
+          <button className={classNames('nav__item', page === 'webshield' && 'is-active')} onClick={() => navigate('webshield', '/ui/web-shield')}>Web Shield</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
         <div className="sidebar__section">
@@ -786,8 +830,8 @@ function Shell() {
         <header className="topbar card">
           <div>
             <div className="eyebrow">Live operations</div>
-            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : 'Trace and flow mission control'}</h1>
-            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
+            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield: browser tool supply chain' : 'Trace and flow mission control'}</h1>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Websites can dynamically register WebMCP tools for browser agents. Varden treats that tool metadata and every tool result as untrusted input, and governs it the same way it governs any other tool call.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -824,6 +868,11 @@ function Shell() {
             onRunDemo={async () => { if (!token) return; try { const payload = await api<any>('/demo/run', { method: 'POST', body: '{}' }, token); setOverview(payload.dashboard); const traces = await refreshTraceList().catch(() => []); const firstTrace = payload.dashboard?.trace_catalogue?.[0]?.trace_id || payload.dashboard?.recent_traces?.[0]?.trace_id || traces?.[0]?.trace_id || ''; if (firstTrace) setSelectedTraceId(firstTrace); setNotice('OSS demo seeded with allow, warn, and block traces'); } catch (e: any) { setError(e?.message || 'Failed to run demo'); } }}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
             onOpenRule={(label: string, bucket?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}&focus=${Date.now()}`)}
+            mcpInventory={mcpInventory}
+            mcpLoading={mcpLoading}
+            mcpConfigPath={mcpConfigPath}
+            setMcpConfigPath={setMcpConfigPath}
+            onScanMcp={scanMcpInventory}
             helpers={{ normalizeEventRow, eventOutcomeStatus, fromDateTimeLocalValue, toDateTimeLocalValue, statusTone, classNames, latencyValueFromPoint, fmtTs, fmtNum, deriveMatchedRuleLabel, averageLatencyFromPoints, ensurePolicyDoc, api, deriveRuleLabelFromRuleObject, eventRuleBucket, displayValue }}
           />
         ) : null}
@@ -834,7 +883,7 @@ function Shell() {
             policy={safeParsePolicy(policyText, policy)}
             onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}`)}
             onOpenRules={(bucket: string, label: string, token?: string, index?: number) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}&bucket=${encodeURIComponent(bucket)}${token ? `&token=${encodeURIComponent(token)}` : ''}${typeof index === 'number' ? `&index=${index}` : ''}&focus=${Date.now()}`)}
-            helpers={{ RULE_BUCKETS, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus, ruleHasStructuralPredicates, rulePredicatesMatchEvent }}
+            helpers={{ RULE_BUCKETS, POLICY_BUCKETS, BUDGET_RULES_BUCKET, pickFirstNonEmptyBucket, ensurePolicyDoc, dedupePolicyDoc, normalizeEventRow, summarizeRule, summarizeBudgetRule, summarizeRuleConditions, deriveMatchedRuleLabel, semanticRuleFingerprint, formatRuleFieldLabel, bucketTone, classNames, fmtNum, statusTone, eventOutcomeStatus, ruleHasStructuralPredicates, rulePredicatesMatchEvent }}
           />
         ) : null}
 
@@ -844,6 +893,8 @@ function Shell() {
             policyText={policyText}
             setPolicyText={setPolicyText}
             templates={templates}
+            policyPacks={policyPacks}
+            onImportPack={importPolicyPack}
             onApplyTemplate={(template) => {
               const merged = ensurePolicyDoc(template?.template || template || {});
               setPolicyText(JSON.stringify(merged, null, 2));
@@ -857,7 +908,7 @@ function Shell() {
             ruleDraft={ruleDraft}
             ruleDraftNonce={routeFocus}
             onBackToDecision={(path: string) => navigate('decision', path)}
-            helpers={{ RULE_BUCKETS, usePersistentState, safeParsePolicy, classNames, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, pickFirstNonEmptyBucket, mergePolicyWithoutDuplicates, semanticRuleFingerprint, summarizeRule, summarizeRuleConditions, getRuleOperator, getRuleValue, coerceRuleInput, setRuleOperatorValue, setRuleSimpleValue, ADVANCED_FIELDS, CLASSIFIER_KEYS, OPERATOR_OPTIONS, bucketTone }}
+            helpers={{ RULE_BUCKETS, POLICY_BUCKETS, BUDGET_RULES_BUCKET, usePersistentState, safeParsePolicy, classNames, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, pickFirstNonEmptyBucket, mergePolicyWithoutDuplicates, semanticRuleFingerprint, summarizeRule, summarizeBudgetRule, summarizeRuleConditions, getRuleOperator, getRuleValue, coerceRuleInput, setRuleOperatorValue, setRuleSimpleValue, isBudgetRulesBucket, getBucketRules, withBucketRules, ADVANCED_FIELDS, CLASSIFIER_KEYS, OPERATOR_OPTIONS, bucketTone, api, token }}
           />
         ) : null}
 
@@ -877,6 +928,14 @@ function Shell() {
             onOpenDecision={(id: number) => navigate('decision', `/ui/decision/${id}?focus=${Date.now()}`)}
             onOpenRules={(draftRule: any) => navigate('rules', `/ui/rules?draft=${encodeURIComponent(JSON.stringify(draftRule || {}))}&focus=${Date.now()}`)}
             helpers={{ RULE_BUCKETS: [...RULE_BUCKETS], summarizeRule, ruleFingerprint, normalizeEventRow, deriveMatchedRuleLabel, formatRiskReasonLabel, fmtNum, fmtTs, classNames }}
+          />
+        ) : null}
+
+        {page === 'webshield' ? (
+          <WebShieldPage
+            token={token}
+            onOpenPolicy={() => navigate('rules', '/ui/rules')}
+            helpers={{ api, classNames, fmtNum, fmtTs, displayValue }}
           />
         ) : null}
       </main>

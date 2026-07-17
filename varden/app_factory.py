@@ -19,17 +19,25 @@ from .auth import LocalAuth, OSS_TENANT_ID
 from .blaze import BlazeRuntime
 from .classification import ClassifierEngine
 from .config import AppConfig
+from .exceptions import PolicyViolation
 from .export import EvidenceExporter
 from .health import HealthChecks
 from .idempotency import IdempotencyStore
 from .intelligence import DecisionIntelligence
 from .metrics import MetricsExporter
-from .models import Action, EventRecord, WorkflowSession
+from .fsutil import atomic_write_json
+from .mcp_inventory import McpInventoryStore, resolve_mcp_scan_paths
+from .models import Action, Decision, EventRecord, WorkflowSession
 from .policy import PolicyEngine
+from .policy_packs import list_policy_packs, load_policy_pack, merge_policy_pack
 from .queue import SQLiteQueue
 from .redaction import redact
 from .ratelimit import BucketConfig, RateLimiter
 from .stores import EventStore, WorkflowStore
+from .token_budget import TokenBudgetStore, simulate_budget_trace
+from .rules.registry import load_budget_rules
+from .webshield.routes import register_webshield_routes
+from .webshield.store import WebShieldStore
 
 
 class EventStreamBroker:
@@ -59,7 +67,10 @@ def create_app(config: AppConfig) -> FastAPI:
     auth = LocalAuth(config.auth_db_path, config.signing_secret)
     initial_policy = json.loads(Path(config.policy_file).read_text(encoding="utf-8")) if Path(config.policy_file).exists() else None
     policy = PolicyEngine(config.db_path, initial_policy)
+    token_budget_store = TokenBudgetStore(config.db_path)
+    mcp_inventory_store = McpInventoryStore(config.db_path)
     idem = IdempotencyStore(config.db_path)
+    webshield_store = WebShieldStore(config.db_path, event_store, policy)
     queue = SQLiteQueue(config.db_path)
     exporter = EvidenceExporter(event_store)
     classifier = ClassifierEngine()
@@ -159,6 +170,32 @@ def create_app(config: AppConfig) -> FastAPI:
         summary["recent_traces"] = [row for row in summary["recent_traces"] if row]
         if not summary["recent_traces"]:
             summary["recent_traces"] = trace_catalogue[:5]
+        budget_rules = policy.get_policy().get("budget_rules") or []
+        rules_by_id = {
+            str(rule.get("id") or ""): rule
+            for rule in budget_rules
+            if isinstance(rule, dict)
+        }
+        active_rows = token_budget_store.list_active_budgets(policy_rules=rules_by_id)
+        enriched_rows = []
+        for row in active_rows:
+            rule = rules_by_id.get(str(row.get("policy_id") or ""), {})
+            limit_usd = float(rule.get("limit_usd") or row.get("limit_usd") or 0)
+            current_usd = float(row.get("current_usd") or 0)
+            enriched_rows.append(
+                {
+                    **row,
+                    "limit_usd": limit_usd,
+                    "title": rule.get("title") or row.get("policy_id"),
+                    "hard_cap": bool(rule.get("hard_cap", True)),
+                    "remaining_usd": max(0.0, limit_usd - current_usd),
+                }
+            )
+        summary["token_budgets"] = {
+            "rules_configured": len(budget_rules),
+            "active_count": len(active_rows),
+            "items": enriched_rows[:12],
+        }
         return summary
 
     def _format_rule_field_label(field_name: str):
@@ -440,6 +477,22 @@ def create_app(config: AppConfig) -> FastAPI:
         action = normalize_action(payload, tenant_id)
         action = enrich_action(action, raw_payload)
         decision = policy.evaluate(action)
+        budget_rules = load_budget_rules(policy.get_policy())
+        if action.type == "llm_call" and budget_rules:
+            try:
+                budget_decision = token_budget_store.pre_check(action, raw_payload, budget_rules)
+            except PolicyViolation as exc:
+                decision = Decision(
+                    action="block",
+                    reason=str(exc),
+                    matched_rule=exc.rule or {"type": "token_budget"},
+                    effective_action="block",
+                )
+            else:
+                if budget_decision and budget_decision.action == "warn" and decision.action in {"allow", "monitor"}:
+                    decision = budget_decision
+                elif budget_decision and budget_decision.action == "block":
+                    decision = budget_decision
         recent_events = event_store.list_events(limit=120, tenant_id=tenant_id)
         trace_events = event_store.list_trace_events(action.trace_id, tenant_id=tenant_id, limit=60) if action.trace_id else []
         action = intelligence.apply_decision_context(action, decision, recent_events=recent_events, trace_events=trace_events)
@@ -485,7 +538,7 @@ def create_app(config: AppConfig) -> FastAPI:
     def sdk_bootstrap():
         return {
             "base_url": config.public_base_url,
-            "bootstrap_api_key": bootstrap_key["api_key"],
+            "bootstrap_api_key": bootstrap_key["api_key"] if config.enable_dev_bootstrap else None,
             "tenant_id": OSS_TENANT_ID,
             "default_policy": policy.get_policy(),
             "scan_mode": current_scan_mode["value"],
@@ -528,6 +581,14 @@ def create_app(config: AppConfig) -> FastAPI:
     @app.get("/ui/coverage-gaps", response_class=HTMLResponse)
     def ui_coverage_gaps():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/web-shield", response_class=HTMLResponse)
+    def ui_web_shield():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/webshield/lab", response_class=HTMLResponse)
+    def webshield_lab_page():
+        return (Path(__file__).parent / "web" / "webshield-lab.html").read_text(encoding="utf-8")
 
     @app.get("/runtime/config")
     def runtime_config(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -680,7 +741,59 @@ def create_app(config: AppConfig) -> FastAPI:
         action = normalize_action(action_payload, record["tenant_id"])
         status = payload.get("status") or status_from_decision(decision_payload.get("action"))
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
+        if action.type == "llm_call" and status != "blocked":
+            try:
+                token_budget_store.post_record(
+                    action,
+                    input_payload=payload.get("input_payload"),
+                    output_payload=payload.get("output_payload"),
+                    rules=load_budget_rules(policy.get_policy()),
+                )
+            except PolicyViolation as exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "logged": True,
+                        "event_id": event_id,
+                        "error": str(exc),
+                        "rule": exc.rule,
+                        "current_usd": exc.current_usd,
+                        "limit_usd": exc.limit_usd,
+                    },
+                )
         return {"logged": True, "event_id": event_id}
+
+    @app.get("/token-budgets")
+    def list_token_budgets(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "analyst", scope="read")
+        policy_doc = policy.get_policy()
+        rules_by_id = {
+            str(rule.get("id") or ""): rule
+            for rule in (policy_doc.get("budget_rules") or [])
+            if isinstance(rule, dict)
+        }
+        items = []
+        for row in token_budget_store.list_active_budgets(policy_rules=rules_by_id):
+            rule = rules_by_id.get(str(row.get("policy_id") or ""), {})
+            limit_usd = float(rule.get("limit_usd") or row.get("limit_usd") or 0)
+            current_usd = float(row.get("current_usd") or 0)
+            items.append(
+                {
+                    **row,
+                    "limit_usd": limit_usd,
+                    "title": rule.get("title") or row.get("policy_id"),
+                    "hard_cap": bool(rule.get("hard_cap", True)),
+                    "remaining_usd": max(0.0, limit_usd - current_usd),
+                }
+            )
+        return {
+            "rules": [rule.to_dict() for rule in load_budget_rules(policy_doc)],
+            "items": items,
+            "summary": {
+                "rules_configured": len(policy_doc.get("budget_rules") or []),
+                "active_count": len(items),
+            },
+        }
 
     @app.get("/policy")
     def get_policy(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -691,6 +804,55 @@ def create_app(config: AppConfig) -> FastAPI:
     def get_policy_templates(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
         require(x_api_key, authorization, "analyst", scope="read")
         return policy.templates()
+
+    @app.get("/policy/packs")
+    def get_policy_packs(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "analyst", scope="read")
+        return {"items": list_policy_packs()}
+
+    @app.get("/policy/packs/{pack_id}")
+    def get_policy_pack(pack_id: str, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "analyst", scope="read")
+        pack_doc = load_policy_pack(pack_id)
+        if not pack_doc:
+            raise HTTPException(status_code=404, detail="policy pack not found")
+        return pack_doc
+
+    @app.post("/policy/import-pack")
+    def import_policy_pack(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "admin", scope="write")
+        pack_id = str(payload.get("pack_id") or payload.get("id") or "")
+        mode = str(payload.get("mode") or "merge")
+        if not pack_id:
+            raise HTTPException(status_code=400, detail="pack_id is required")
+        pack_doc = load_policy_pack(pack_id)
+        if not pack_doc:
+            raise HTTPException(status_code=404, detail="policy pack not found")
+        merged = merge_policy_pack(policy.get_policy(), pack_doc, mode=mode)
+        candidate = merged["policy"]
+        validation = policy.validate(candidate)
+        if not validation["valid"]:
+            raise HTTPException(status_code=400, detail=validation)
+        policy.update_policy(candidate)
+        atomic_write_json(config.policy_file, candidate)
+        snapshot_id = policy.snapshot(f"import-pack:{pack_id}", created_by="control-plane", status="draft")
+        return {"status": "imported", "pack_id": pack_id, "added": merged["added"], "snapshot_id": snapshot_id, "policy": candidate}
+
+    @app.get("/mcp/inventory")
+    def get_mcp_inventory(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "analyst", scope="read")
+        return mcp_inventory_store.inventory(policy=policy.get_policy())
+
+    @app.post("/mcp/scan")
+    def scan_mcp_inventory(payload: dict | None = None, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "admin", scope="write")
+        paths = resolve_mcp_scan_paths(payload)
+        if not paths:
+            raise HTTPException(status_code=400, detail="no MCP config paths to scan; provide path or paths, or create a default Cursor config")
+        missing = [str(path) for path in paths if not path.exists()]
+        if missing:
+            raise HTTPException(status_code=400, detail={"message": "mcp config path not found", "paths": missing})
+        return mcp_inventory_store.scan(paths=paths, policy=policy.get_policy())
 
     @app.post("/policy/validate")
     def validate_policy(candidate: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -706,7 +868,11 @@ def create_app(config: AppConfig) -> FastAPI:
         trace_events = event_store.list_trace_events(trace_id, tenant_id=record["tenant_id"], limit=200)
         if not trace_events:
             raise HTTPException(status_code=404, detail="trace not found")
-        return {"trace_id": trace_id, **policy.simulate_trace(trace_events, candidate)}
+        result = policy.simulate_trace(trace_events, candidate)
+        budget_rules = load_budget_rules(candidate)
+        if budget_rules:
+            result["budget"] = simulate_budget_trace(trace_events, budget_rules)
+        return {"trace_id": trace_id, **result}
 
     @app.put("/policy")
     def put_policy(candidate: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None), idempotency_key: str | None = Header(default=None)):
@@ -719,7 +885,7 @@ def create_app(config: AppConfig) -> FastAPI:
         if not validation["valid"]:
             raise HTTPException(status_code=400, detail=validation)
         policy.update_policy(candidate)
-        Path(config.policy_file).write_text(json.dumps(candidate, indent=2), encoding="utf-8")
+        atomic_write_json(config.policy_file, candidate)
         snapshot_id = policy.snapshot("manual-update", created_by="control-plane", status="draft")
         response = {"status": "updated", "snapshot_id": snapshot_id}
         if idempotency_key:
@@ -734,7 +900,10 @@ def create_app(config: AppConfig) -> FastAPI:
     @app.post("/policy/publish/{version_id}")
     def publish(version_id: int, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
         require(x_api_key, authorization, "admin", scope="write")
-        return policy.publish(version_id)
+        result = policy.publish(version_id, policy_file=config.policy_file)
+        if result.get("published_version") is None:
+            raise HTTPException(status_code=400, detail=result)
+        return result
 
     @app.get("/events")
     def events(limit: int = 50, offset: int = 0, status: str | None = None, tool: str | None = None, agent: str | None = None, search: str | None = None, since: float | None = None, until: float | None = None, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -808,5 +977,7 @@ def create_app(config: AppConfig) -> FastAPI:
     def demo_run(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
         record = require(x_api_key, authorization, "viewer", scope="write")
         return {"scenarios": run_demo_scenarios(record["tenant_id"]), "dashboard": dashboard_bootstrap_payload(record["tenant_id"])}
+
+    register_webshield_routes(app, require=require, webshield_store=webshield_store, idem=idem)
 
     return app

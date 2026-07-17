@@ -1,0 +1,172 @@
+{
+  "name": "webmcp-web-shield",
+  "description": "Varden Web Shield: a safe default enforcement profile for browser WebMCP tool registrations, invocations and outputs. Opt-in only \u2014 importing this pack has no effect unless the Web Shield extension/SDK is actually sending webmcp.* events, and it never changes behaviour for existing non-WebMCP Varden traffic.",
+  "template": {
+    "block": [
+      {
+        "title": "Block critical-risk WebMCP tool registrations",
+        "name": "webshield_block_critical_registration",
+        "enabled": true,
+        "priority": 100,
+        "type": "webmcp.tool_registered",
+        "metadata.risk_band": "critical",
+        "description": "Refuses to register a WebMCP tool whose combined structural, Unicode, instruction-pattern, capability, lifecycle and provenance findings reach the critical risk band."
+      },
+      {
+        "title": "Block critical-risk WebMCP metadata changes",
+        "name": "webshield_block_critical_registration_change",
+        "enabled": true,
+        "priority": 100,
+        "type": "webmcp.tool_registration_changed",
+        "metadata.risk_band": "critical",
+        "description": "Refuses metadata changes to an already-known tool identity when the new metadata itself reaches the critical risk band (e.g. a previously benign tool is rewritten to inject instructions)."
+      },
+      {
+        "title": "Block critically contaminated WebMCP tool output",
+        "name": "webshield_block_critical_output",
+        "enabled": true,
+        "priority": 100,
+        "type": "webmcp.tool_output_scanned",
+        "metadata.risk_band": "critical",
+        "description": "Prevents a tool result from reaching the agent when output scanning finds critical-band contamination (e.g. combined instruction override, cross-tool direction and secret-shaped content)."
+      },
+      {
+        "title": "Block WebMCP invocation on a locally blocked origin",
+        "name": "webshield_block_untrusted_origin_invocation",
+        "enabled": true,
+        "priority": 95,
+        "type": "webmcp.tool_invocation_requested",
+        "metadata.trust_state": "blocked",
+        "description": "Refuses invocation requests for tools owned by an origin an operator has explicitly marked as blocked."
+      },
+      {
+        "title": "Block on detected extension/wrapper tamper",
+        "name": "webshield_block_tamper_detected",
+        "enabled": true,
+        "priority": 100,
+        "type": "webmcp.extension_tamper_detected",
+        "description": "Expresses policy intent to stop activity once the WebMCP wrapper has been defeated. Because tamper is only observable after the fact, Varden honestly records the achieved enforcement as 'unavailable' rather than claiming this block took effect \u2014 see docs/web-shield-limitations.md."
+      }
+    ],
+    "require_approval": [
+      {
+        "title": "Require approval for payment-capable tool invocations",
+        "name": "webshield_approve_payment_invocation",
+        "enabled": true,
+        "priority": 90,
+        "type": "webmcp.tool_invocation_requested",
+        "metadata.mentions_payment": true,
+        "description": "Pauses invocation of any tool whose declared capability profile mentions payment/wallet fields, presenting the request for one-time or session approval before it proceeds."
+      },
+      {
+        "title": "Require approval for first-seen mutating tool invocations",
+        "name": "webshield_approve_first_seen_mutating_invocation",
+        "enabled": true,
+        "priority": 85,
+        "type": "webmcp.tool_invocation_requested",
+        "metadata.mutates_state": true,
+        "metadata.first_seen": true,
+        "description": "Pauses the first invocation of a newly-registered tool that mutates state, giving a human a chance to review it before it can act."
+      },
+      {
+        "title": "Require approval for high-risk WebMCP registrations",
+        "name": "webshield_approve_high_risk_registration",
+        "enabled": true,
+        "priority": 80,
+        "type": "webmcp.tool_registered",
+        "metadata.risk_band": "high",
+        "description": "Pauses registration of a tool that scored in the high risk band, short of an outright block, so an operator can confirm intent."
+      }
+    ],
+    "sanitise": [
+      {
+        "title": "Sanitise suspicious-band WebMCP tool registrations",
+        "name": "webshield_sanitise_suspicious_registration",
+        "enabled": true,
+        "priority": 70,
+        "type": "webmcp.tool_registered",
+        "metadata.risk_band": "suspicious",
+        "description": "Strips unsafe metadata fragments (hidden Unicode, cross-tool orchestration language) from a suspicious-band registration while preserving its safe factual purpose, rather than blocking it outright."
+      },
+      {
+        "title": "Sanitise suspicious tool output before it reaches the agent",
+        "name": "webshield_sanitise_suspicious_output",
+        "enabled": true,
+        "priority": 70,
+        "type": "webmcp.tool_output_scanned",
+        "metadata.risk_band": "suspicious",
+        "description": "Marks suspicious-band tool output for sanitisation/truncation before the agent consumes it."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on guarded-band WebMCP registrations",
+        "name": "webshield_warn_guarded_registration",
+        "enabled": true,
+        "priority": 50,
+        "type": "webmcp.tool_registered",
+        "metadata.risk_band": "guarded",
+        "description": "Surfaces a dashboard/extension warning for tools that are not clearly benign but do not yet meet a stronger action threshold."
+      },
+      {
+        "title": "Warn on modelContext replacement",
+        "name": "webshield_warn_context_replaced",
+        "enabled": true,
+        "priority": 60,
+        "type": "webmcp.context_replaced",
+        "description": "Warns when the page's modelContext object itself is replaced after the extension first observed it \u2014 a signal the page may be trying to defeat instrumentation."
+      },
+      {
+        "title": "Warn on repeated WebMCP tool surface churn",
+        "name": "webshield_warn_surface_changed",
+        "enabled": true,
+        "priority": 55,
+        "type": "webmcp.surface_changed",
+        "description": "Warns on rapid or repeated changes to the set of tools a page exposes, a hallmark of registration-burst or tool-flood behaviour."
+      },
+      {
+        "title": "Warn on cross-origin WebMCP data flow",
+        "name": "webshield_warn_cross_origin_flow",
+        "enabled": true,
+        "priority": 55,
+        "type": "webmcp.cross_origin_flow",
+        "description": "Warns whenever a correlated action chain crosses an origin boundary (e.g. data read on one site is submitted to another)."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor all WebMCP tool registrations",
+        "name": "webshield_monitor_registrations",
+        "enabled": true,
+        "priority": 10,
+        "type": "webmcp.tool_registered",
+        "description": "Captures every WebMCP tool registration for the inventory and timeline views, even when no other rule fires."
+      },
+      {
+        "title": "Monitor all WebMCP tool invocations",
+        "name": "webshield_monitor_invocations",
+        "enabled": true,
+        "priority": 10,
+        "type": "webmcp.tool_invocation_requested",
+        "description": "Captures every WebMCP invocation request so approval history and audit trails stay complete."
+      },
+      {
+        "title": "Monitor all WebMCP tool output scans",
+        "name": "webshield_monitor_outputs",
+        "enabled": true,
+        "priority": 10,
+        "type": "webmcp.tool_output_scanned",
+        "description": "Captures every scanned tool output for the output-contamination timeline."
+      },
+      {
+        "title": "Monitor extension tamper signals",
+        "name": "webshield_monitor_tamper",
+        "enabled": true,
+        "priority": 20,
+        "type": "webmcp.extension_tamper_detected",
+        "description": "Ensures tamper-detection events are always retained even if a stronger block rule from this or another pack already fired."
+      }
+    ],
+    "allow": []
+  }
+}

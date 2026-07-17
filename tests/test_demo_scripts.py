@@ -1,4 +1,4 @@
-from demos import allowed_safe_agent, blocked_tool_agent, flagged_data_agent, database_sql_agent
+from demos import allowed_safe_agent, blocked_tool_agent, flagged_data_agent, database_sql_agent, token_budget_agent
 
 
 def test_demo_modules_expose_run():
@@ -6,6 +6,7 @@ def test_demo_modules_expose_run():
     assert callable(flagged_data_agent.run)
     assert callable(allowed_safe_agent.run)
     assert callable(database_sql_agent.run)
+    assert callable(token_budget_agent.run)
 
 
 def test_demo_defaults_are_localhost():
@@ -13,3 +14,4 @@ def test_demo_defaults_are_localhost():
     assert flagged_data_agent.API_KEY == 'admin-demo-key'
     assert allowed_safe_agent.AGENT_NAME == 'allowed-demo-agent'
     assert database_sql_agent.SQL_TOOL == 'sql.query'
+    assert token_budget_agent.TRACE_ID == 'demo-token-budget-trace'

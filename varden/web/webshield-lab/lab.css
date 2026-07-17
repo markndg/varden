@@ -1,0 +1,108 @@
+:root {
+  --lab-bg: #0b0d16;
+  --lab-panel: rgba(255, 255, 255, 0.04);
+  --lab-line: rgba(163, 184, 255, 0.14);
+  --lab-text: #eef1fb;
+  --lab-muted: #9aa6c9;
+  --lab-accent: #7b61ff;
+  --lab-ok: #4ce0b5;
+  --lab-warn: #ffbf5a;
+  --lab-danger: #ff6b7a;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at top left, #171a2b, var(--lab-bg) 60%);
+  color: var(--lab-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.lab-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 28px;
+  border-bottom: 1px solid var(--lab-line);
+  flex-wrap: wrap;
+}
+.lab-header__brand { display: flex; align-items: center; gap: 12px; }
+.lab-header__title { font-weight: 700; font-size: 16px; }
+.lab-header__subtitle { color: var(--lab-muted); font-size: 13px; max-width: 560px; }
+.lab-header__actions { display: flex; align-items: center; gap: 10px; }
+
+.lab-pill {
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  border: 1px solid var(--lab-line);
+  background: rgba(255,255,255,.04);
+}
+.lab-pill--ok { color: var(--lab-ok); border-color: rgba(76,224,181,.4); background: rgba(76,224,181,.1); }
+.lab-pill--warn { color: var(--lab-warn); border-color: rgba(255,191,90,.4); background: rgba(255,191,90,.1); }
+.lab-pill--danger { color: var(--lab-danger); border-color: rgba(255,107,122,.4); background: rgba(255,107,122,.1); }
+.lab-pill--pending { color: var(--lab-muted); }
+
+.lab-button {
+  border: 1px solid rgba(123,97,255,.4);
+  background: linear-gradient(135deg, rgba(123,97,255,.32), rgba(76,224,181,.14));
+  color: var(--lab-text);
+  padding: 9px 16px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+.lab-button--ghost { background: rgba(255,255,255,.04); border-color: var(--lab-line); }
+.lab-button:disabled { opacity: .5; cursor: default; }
+
+.lab-main { padding: 24px 28px 60px; max-width: 1280px; margin: 0 auto; }
+.lab-intro p { color: var(--lab-muted); line-height: 1.55; max-width: 900px; }
+.lab-toolbar { display: flex; align-items: center; gap: 14px; margin: 16px 0 24px; flex-wrap: wrap; }
+.lab-apikey { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--lab-muted); }
+.lab-apikey input {
+  background: rgba(255,255,255,.04);
+  border: 1px solid var(--lab-line);
+  border-radius: 8px;
+  padding: 7px 10px;
+  color: var(--lab-text);
+  width: 220px;
+}
+
+.lab-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 14px;
+}
+
+.lab-case {
+  border: 1px solid var(--lab-line);
+  border-radius: 16px;
+  background: var(--lab-panel);
+  padding: 16px;
+  display: grid;
+  gap: 10px;
+}
+.lab-case__head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.lab-case__index { color: var(--lab-muted); font-size: 12px; font-weight: 700; }
+.lab-case__title { font-weight: 700; font-size: 14px; margin: 2px 0 4px; }
+.lab-case__desc { color: var(--lab-muted); font-size: 12.5px; line-height: 1.5; min-height: 36px; }
+.lab-case__category { font-size: 11px; color: var(--lab-muted); text-transform: uppercase; letter-spacing: .04em; }
+.lab-case__actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 4px; }
+.lab-case__result { font-size: 12px; color: var(--lab-muted); line-height: 1.5; }
+.lab-case__result strong { color: var(--lab-text); }
+.lab-case.is-benign { border-color: rgba(76,224,181,.22); }
+.lab-case.is-critical { border-color: rgba(255,107,122,.5); }
+.lab-case.is-high { border-color: rgba(255,107,122,.3); }
+.lab-case.is-suspicious, .lab-case.is-guarded { border-color: rgba(255,191,90,.35); }
+
+.lab-footer { padding: 18px 28px 40px; color: var(--lab-muted); font-size: 12px; max-width: 900px; }
+.lab-footer code { color: #c9d3ff; }
+
+code { background: rgba(255,255,255,.06); padding: 1px 5px; border-radius: 6px; font-size: 12px; }

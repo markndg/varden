@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Varden Web Shield</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="popup-header">
+      <div class="popup-title">Varden Web Shield</div>
+      <span id="conn-pill" class="pill pill--pending">checking…</span>
+    </header>
+    <main>
+      <div class="row"><span>Origin</span><strong id="origin">—</strong></div>
+      <div class="row"><span>WebMCP tools observed</span><strong id="tool-count">0</strong></div>
+      <div class="row"><span>Highest risk this tab</span><strong id="risk-band">low</strong></div>
+      <div class="row"><span>Protection mode</span><strong id="protection-mode">observe</strong></div>
+      <div class="row"><span>Queued (offline) events</span><strong id="queued">0</strong></div>
+    </main>
+    <footer>
+      <a id="open-dashboard" href="#" target="_blank" class="button">Open in Web Shield dashboard →</a>
+      <a href="options.html" target="_blank" class="button button--ghost">Settings</a>
+    </footer>
+    <script src="popup.js"></script>
+  </body>
+</html>
