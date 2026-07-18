@@ -264,6 +264,90 @@ def _apply_migrations(conn):
             """
         )
 
+    if 6 not in versions:
+        # Idempotency hardening (docs/web-shield-hardening-review.md #3): the
+        # cache identity must be scoped by tenant/principal/method/route, and
+        # store a body hash (to detect key reuse with a different request)
+        # plus an expiry. Existing rows predate scoping and are simply
+        # unreachable under the new composite key_hash going forward (they
+        # are not "history" — idempotency entries are an ephemeral dedup
+        # cache, not an audit trail, so leaving them as harmless orphans
+        # rather than deleting them is the safest migration).
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(idempotency_keys)").fetchall()}
+        if "body_hash" not in cols:
+            conn.execute("ALTER TABLE idempotency_keys ADD COLUMN body_hash TEXT")
+        if "expires_at" not in cols:
+            conn.execute("ALTER TABLE idempotency_keys ADD COLUMN expires_at REAL")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_idempotency_expires_at ON idempotency_keys(expires_at)")
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (6)")
+
+    if 7 not in versions:
+        # Recursive canonicalisation (docs/web-shield-hardening-review.md #7):
+        # add the structural_hash column alongside the existing exact_hash/
+        # canonical_hash columns (kept for compatibility; canonical_hash now
+        # holds the fully recursive security_normalised_hash). Also adds the
+        # registration-instance-identity columns (docs/web-shield-hardening-review.md #6):
+        # existing rows are migrated in place and marked legacy_instance
+        # since they predate per-instance tracking and cannot retroactively
+        # resolve which frame/session actually produced them.
+        tool_cols = {row[1] for row in conn.execute("PRAGMA table_info(webshield_tools)").fetchall()}
+        if "structural_hash" not in tool_cols:
+            conn.execute("ALTER TABLE webshield_tools ADD COLUMN structural_hash TEXT")
+        if "instance_id" not in tool_cols:
+            conn.execute("ALTER TABLE webshield_tools ADD COLUMN instance_id TEXT")
+        if "frame_id" not in tool_cols:
+            conn.execute("ALTER TABLE webshield_tools ADD COLUMN frame_id TEXT")
+        if "session_id" not in tool_cols:
+            conn.execute("ALTER TABLE webshield_tools ADD COLUMN session_id TEXT")
+        if "instance_provenance" not in tool_cols:
+            conn.execute("ALTER TABLE webshield_tools ADD COLUMN instance_provenance TEXT")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS webshield_tool_instances (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT,
+              instance_id TEXT NOT NULL,
+              identity_key TEXT NOT NULL,
+              owner_origin TEXT NOT NULL,
+              tool_name TEXT NOT NULL,
+              session_id TEXT,
+              frame_id TEXT,
+              registration_source TEXT,
+              exact_hash TEXT,
+              canonical_hash TEXT,
+              structural_hash TEXT,
+              tool_json TEXT,
+              status TEXT NOT NULL DEFAULT 'active',
+              legacy_instance INTEGER NOT NULL DEFAULT 0,
+              first_seen_at REAL NOT NULL,
+              last_seen_at REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_webshield_instances_id ON webshield_tool_instances(tenant_id, instance_id);
+            CREATE INDEX IF NOT EXISTS idx_webshield_instances_identity ON webshield_tool_instances(tenant_id, identity_key);
+            """
+        )
+        # Backfill: give every pre-existing logical tool row a synthetic
+        # legacy instance rather than leaving it with zero instances (which
+        # would look, in the API/dashboard, like it was never registered).
+        # legacy_instance=1 marks it honestly as unable to resolve which
+        # session/frame actually produced it — never inventing that provenance.
+        existing_tools = conn.execute("SELECT * FROM webshield_tools").fetchall()
+        for tool_row in existing_tools:
+            legacy_instance_id = f"legacy-{tool_row['tenant_id'] or 'default'}-{tool_row['identity_key']}"
+            conn.execute(
+                """INSERT OR IGNORE INTO webshield_tool_instances
+                   (tenant_id, instance_id, identity_key, owner_origin, tool_name, session_id, frame_id,
+                    registration_source, exact_hash, canonical_hash, structural_hash, tool_json, status,
+                    legacy_instance, first_seen_at, last_seen_at)
+                   VALUES (?,?,?,?,?,NULL,NULL,NULL,?,?,?,?,?,1,?,?)""",
+                (
+                    tool_row["tenant_id"], legacy_instance_id, tool_row["identity_key"], tool_row["owner_origin"],
+                    tool_row["tool_name"], tool_row["exact_hash"], tool_row["canonical_hash"], tool_row["structural_hash"],
+                    tool_row["tool_json"], tool_row["status"], tool_row["first_seen_at"], tool_row["last_seen_at"],
+                ),
+            )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (7)")
+
 class _AutoCloseConnection(sqlite3.Connection):
     """sqlite3.Connection used as a context manager only commits/rolls back
     on ``__exit__`` — it does *not* close the underlying file descriptor.

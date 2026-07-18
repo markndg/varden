@@ -60,7 +60,7 @@ def _strip_hidden_chars(text: str) -> str:
 def normalize_for_identity(text: str | None) -> str:
     """NFKC-normalise and strip hidden/control characters for identity comparison.
 
-    Used to build the *sanitised canonical hash* so cosmetic or obfuscation-only
+    Used to build the *security-normalised hash* so cosmetic or obfuscation-only
     edits (zero-width insertion, alternate compatibility form) do not appear as
     a "new" tool identity while still being flagged as a finding in their own right.
     """
@@ -70,6 +70,89 @@ def normalize_for_identity(text: str | None) -> str:
     normalized = unicodedata.normalize("NFKC", text)
     normalized = _strip_hidden_chars(normalized)
     return " ".join(normalized.split()).strip().lower()
+
+
+_MAX_CANONICALIZE_DEPTH = 25
+
+
+def _security_normalize(value: Any, depth: int = 0) -> Any:
+    """Recursively normalise every security-relevant text fragment in an
+    arbitrary (possibly hostile) nested structure, for security-hash
+    purposes only — never for storage or display.
+
+    Rules (docs/web-shield-hardening-review.md #7):
+      * every string leaf (dict keys included) is Unicode/zero-width/whitespace
+        normalised via ``normalize_for_identity``, so e.g. a schema property
+        description obfuscated with zero-width characters normalises the same
+        as its clean equivalent;
+      * dict keys are normalised but never merged/overwritten even if two
+        distinct original keys normalise to the same string — collapsing them
+        into an ordinary dict would silently discard one of the two values,
+        which this function must never do. Instead maps become a sorted list
+        of ``[normalized_key, normalized_value]`` pairs, so duplicates remain
+        individually visible to the hash;
+      * arrays preserve their original order (order can be semantically
+        meaningful — e.g. an ordered list of steps or examples);
+      * non-string primitives (numbers, booleans, ``None``) keep a
+        type-tagged wrapper so ``1``, ``"1"`` and ``True`` can never collide;
+      * recursion is depth-bounded so hostile deeply-nested input cannot
+        cause unbounded recursion or a crash.
+    """
+
+    if depth > _MAX_CANONICALIZE_DEPTH:
+        return {"__truncated__": True}
+    if isinstance(value, str):
+        return normalize_for_identity(value)
+    if isinstance(value, bool):
+        return {"__bool__": value}
+    if isinstance(value, (int, float)):
+        return {"__num__": value}
+    if value is None:
+        return {"__null__": True}
+    if isinstance(value, dict):
+        pairs = [(normalize_for_identity(str(k)), _security_normalize(v, depth + 1)) for k, v in value.items()]
+        # Sort by normalized key only: values may be dicts/lists, which are
+        # unorderable in Python and would raise TypeError if used as a sort
+        # tiebreaker. Original insertion order is a stable, deterministic
+        # tiebreaker for two distinct keys that normalise to the same string.
+        pairs.sort(key=lambda pair: pair[0])
+        return {"__map__": [[k, v] for k, v in pairs]}
+    if isinstance(value, (list, tuple)):
+        return {"__seq__": [_security_normalize(v, depth + 1) for v in value]}
+    return {"__other__": str(value)}
+
+
+@dataclass
+class ToolHashes:
+    """The three distinct hashes computed over a ``WebMCPToolDefinition``.
+
+    See docs/web-shield-hardening-review.md #7 for the full rationale. Each
+    hash answers a different question and must not be substituted for
+    another:
+
+    * ``observed_hash`` — did the exact, byte/value-level observed
+      representation change at all (including whitespace-only or
+      zero-width-only edits)? Used for tamper/drift forensics where every
+      byte matters.
+    * ``structural_hash`` — did the *transport-level* representation change,
+      independent of non-semantic fields (the observation timestamp) but
+      without any text normalisation? Two observations that differ only in
+      when they were captured hash identically.
+    * ``security_normalised_hash`` — did anything *security-relevant*
+      change, after recursively normalising Unicode/zero-width/whitespace
+      obfuscation across every text-bearing field (name, title, description,
+      schema keys/descriptions/examples/defaults, annotations, extension
+      metadata)? Used for lifecycle drift detection and trust/metadata
+      pinning so obfuscation-only edits cannot evade detection while
+      genuine content changes are never silently normalised away.
+    """
+
+    observed_hash: str
+    structural_hash: str
+    security_normalised_hash: str
+
+    def to_dict(self) -> dict[str, str]:
+        return asdict(self)
 
 
 @dataclass
@@ -142,28 +225,45 @@ class WebMCPToolDefinition:
         """Stable identity for a tool within an origin, independent of metadata drift."""
         return f"{self.owner_origin}::{normalize_for_identity(self.name)}"
 
-    def _sanitized_projection(self) -> dict[str, Any]:
+    def _security_relevant_fields(self) -> dict[str, Any]:
+        """Every field that can carry an attacker-controlled security-relevant
+        payload — i.e. everything except transport/observation bookkeeping
+        (origin/timestamps/registration provenance, which are handled by
+        identity and provenance scoring separately, not by content hashing)."""
+
         return {
-            "name": normalize_for_identity(self.name),
-            "title": normalize_for_identity(self.title),
-            "description": normalize_for_identity(self.description),
+            "name": self.name,
+            "title": self.title,
+            "description": self.description,
             "input_schema": self.input_schema or {},
             "annotations": self.annotations or {},
+            "extension_metadata": self.extension_metadata or {},
         }
 
-    def compute_hashes(self) -> tuple[str, str]:
-        """Return (exact_observed_hash, sanitised_canonical_hash).
+    def compute_hashes(self) -> "ToolHashes":
+        """Return the three canonical hashes (see ``ToolHashes``).
 
-        Both hashes exclude ``registered_at``: it is an observation timestamp,
+        All three exclude ``registered_at``: it is an observation timestamp,
         not tool metadata, and including it would make the hash of otherwise
         byte-identical metadata differ on every observation, defeating its
         purpose for lifecycle diffing ("did the metadata actually change?").
         """
         payload = self.to_dict()
         payload.pop("registered_at", None)
-        exact = sha256_hex(_canonical_json(payload))
-        canonical = sha256_hex(_canonical_json(self._sanitized_projection()))
-        return exact, canonical
+        observed_hash = sha256_hex(_canonical_json(payload))
+
+        structural_payload = dict(payload)
+        structural_payload.pop("registration_source", None)
+        structural_hash = sha256_hex(_canonical_json(structural_payload))
+
+        security_normalised_hash = sha256_hex(
+            _canonical_json(_security_normalize(self._security_relevant_fields()))
+        )
+        return ToolHashes(
+            observed_hash=observed_hash,
+            structural_hash=structural_hash,
+            security_normalised_hash=security_normalised_hash,
+        )
 
 
 @dataclass
@@ -192,11 +292,36 @@ class RiskDriver:
 
 
 @dataclass
+class RiskComponents:
+    """Explicit decomposition of a risk score (docs/web-shield-hardening-review.md #5).
+
+    Origin trust may reduce ``provenance_risk`` only. It must never reduce
+    ``content_risk`` (prompt-injection / exfiltration / credential-access /
+    payment / security-bypass language), ``capability_risk`` (mutation,
+    sensitive-schema, declared-vs-inferred capability mismatch),
+    ``lifecycle_risk`` (registration anomalies, confusable names) or
+    ``impact_risk`` (output contamination, cross-origin flow, resource
+    abuse). A confirmed critical finding in any of those four components
+    therefore remains critical regardless of trust state.
+    """
+
+    content_risk: int = 0
+    capability_risk: int = 0
+    lifecycle_risk: int = 0
+    provenance_risk: int = 0
+    impact_risk: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class RiskResult:
     score: int
     band: str
     profile_version: str
     drivers: list[RiskDriver] = field(default_factory=list)
+    components: RiskComponents = field(default_factory=RiskComponents)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -204,6 +329,7 @@ class RiskResult:
             "band": self.band,
             "profile_version": self.profile_version,
             "drivers": [d.to_dict() for d in self.drivers],
+            "components": self.components.to_dict(),
         }
 
 
@@ -253,6 +379,7 @@ class ScanResult:
     capability: CapabilityProfile
     exact_hash: str
     canonical_hash: str
+    structural_hash: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -262,7 +389,44 @@ class ScanResult:
             "capability": self.capability.to_dict(),
             "exact_hash": self.exact_hash,
             "canonical_hash": self.canonical_hash,
+            "structural_hash": self.structural_hash,
+            "observed_hash": self.exact_hash,
+            "security_normalised_hash": self.canonical_hash,
         }
+
+
+#: The three possible outcomes for a single candidate fragment (a sentence,
+#: bullet, semicolon-clause, line, or HTML comment) considered for removal.
+#: See docs/web-shield-hardening-review.md #9 and varden/webshield/sanitize.py.
+SANITIZE_DECISION_SAFE = "safe_to_sanitise"
+SANITIZE_DECISION_UNSAFE = "unsafe_to_sanitise"
+SANITIZE_DECISION_NO_OP = "no_sanitisation_needed"
+
+
+@dataclass
+class FragmentDecision:
+    """The full audit trail for one candidate fragment within a sanitised field.
+
+    Every sanitisation must be individually explainable: which exact text was
+    considered, what (if anything) was removed, which deterministic rule(s)
+    fired, how confident the classifier is, and — critically — whether
+    removing this fragment could have changed what the tool actually does
+    (``semantics_changed``). A fragment is only ever removed outright
+    (``safe_to_sanitise``); this codebase never rewrites/paraphrases text, so
+    "resulting_fragment" for a safe removal is always the empty string.
+    """
+
+    field_path: str
+    original_fragment: str
+    resulting_fragment: str
+    decision: str  # safe_to_sanitise | unsafe_to_sanitise | no_sanitisation_needed
+    rule_ids: list[str] = field(default_factory=list)
+    confidence: float = 1.0
+    reason: str = ""
+    semantics_changed: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -271,6 +435,7 @@ class SanitizeResult:
     diff: dict[str, dict[str, Any]]
     unrepairable_fields: list[str]
     blocked: bool
+    decisions: list[FragmentDecision] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -278,6 +443,7 @@ class SanitizeResult:
             "diff": self.diff,
             "unrepairable_fields": self.unrepairable_fields,
             "blocked": self.blocked,
+            "decisions": [d.to_dict() for d in self.decisions],
         }
 
 

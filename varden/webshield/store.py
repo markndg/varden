@@ -30,6 +30,26 @@ POLICY_TO_ENFORCEMENT = {
 }
 
 
+def _version_gte(reported: str, minimum: str) -> bool:
+    """Loose semver comparison for extension/server capability negotiation.
+
+    Non-numeric / empty components compare as 0 so a missing or malformed
+    extension_version is treated as older than any real minimum rather than
+    crashing the health endpoint.
+    """
+
+    def parts(value: str) -> list[int]:
+        out: list[int] = []
+        for piece in str(value or "0").split("."):
+            digits = "".join(ch for ch in piece if ch.isdigit())
+            out.append(int(digits) if digits else 0)
+        while len(out) < 3:
+            out.append(0)
+        return out[:3]
+
+    return parts(reported) >= parts(minimum)
+
+
 def _webmcp_agent_label(owner_origin: str | None) -> str:
     """Varden's dashboard (Overview recent activity, Decision page, Sankey
     flows) shows ``action.agent_name`` wherever it needs a human-readable
@@ -61,6 +81,7 @@ def _row_to_tool(row) -> dict[str, Any]:
         "api_surface": row["api_surface"],
         "exact_hash": row["exact_hash"],
         "canonical_hash": row["canonical_hash"],
+        "structural_hash": row["structural_hash"] if "structural_hash" in row.keys() else None,
         "tool": json.loads(row["tool_json"]),
         "risk_score": row["risk_score"],
         "risk_band": row["risk_band"],
@@ -205,6 +226,76 @@ class WebShieldStore:
         row = self._get_tool_row(tenant_id, identity_key)
         return _row_to_tool(row) if row else None
 
+    # ------------------------------------------------------ registration instances
+    #
+    # docs/web-shield-hardening-review.md #6: ``webshield_tools`` is keyed
+    # purely by logical identity (owner_origin + normalised name) and holds
+    # exactly one row per identity — fine as a "latest known state" summary,
+    # but insufficient as the sole record of truth, because two different
+    # frames (or two different sessions) registering a tool with the same
+    # name silently overwrite each other's row/history. ``webshield_tool_instances``
+    # is the source of truth for "is this the same registration, or a new
+    # one", scoped by (tenant, identity_key, session_id, frame_id) — never by
+    # a page-supplied instance identifier.
+
+    def _get_active_instance(self, tenant_id: str | None, identity_key: str, session_id: str | None, frame_id: str | None) -> dict[str, Any] | None:
+        with connect(self.db_path) as conn:
+            row = conn.execute(
+                """SELECT * FROM webshield_tool_instances
+                   WHERE tenant_id IS ? AND identity_key = ? AND session_id IS ? AND frame_id IS ? AND status='active'
+                   ORDER BY id DESC LIMIT 1""",
+                (tenant_id, identity_key, session_id, frame_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def _upsert_instance(
+        self, tenant_id: str | None, *, instance_id: str, identity_key: str, owner_origin: str, tool_name: str,
+        session_id: str | None, frame_id: str | None, registration_source: str | None,
+        exact_hash: str, canonical_hash: str, structural_hash: str, tool_json: str, is_new: bool,
+    ) -> None:
+        now = time.time()
+        with connect(self.db_path) as conn:
+            if is_new:
+                conn.execute(
+                    """INSERT INTO webshield_tool_instances
+                       (tenant_id, instance_id, identity_key, owner_origin, tool_name, session_id, frame_id,
+                        registration_source, exact_hash, canonical_hash, structural_hash, tool_json, status,
+                        legacy_instance, first_seen_at, last_seen_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?, 'active', 0, ?, ?)""",
+                    (tenant_id, instance_id, identity_key, owner_origin, tool_name, session_id, frame_id,
+                     registration_source, exact_hash, canonical_hash, structural_hash, tool_json, now, now),
+                )
+            else:
+                conn.execute(
+                    """UPDATE webshield_tool_instances SET exact_hash=?, canonical_hash=?, structural_hash=?,
+                       tool_json=?, status='active', last_seen_at=? WHERE tenant_id IS ? AND instance_id=?""",
+                    (exact_hash, canonical_hash, structural_hash, tool_json, now, tenant_id, instance_id),
+                )
+            conn.commit()
+
+    def list_instances(self, tenant_id: str | None, identity_key: str) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            rows = conn.execute(
+                "SELECT * FROM webshield_tool_instances WHERE tenant_id IS ? AND identity_key = ? ORDER BY first_seen_at ASC",
+                (tenant_id, identity_key),
+            ).fetchall()
+        return [
+            {
+                "instance_id": r["instance_id"],
+                "session_id": r["session_id"],
+                "frame_id": r["frame_id"],
+                "registration_source": r["registration_source"],
+                "exact_hash": r["exact_hash"],
+                "canonical_hash": r["canonical_hash"],
+                "structural_hash": r["structural_hash"],
+                "status": r["status"],
+                "legacy_instance": bool(r["legacy_instance"]),
+                "first_seen_at": r["first_seen_at"],
+                "last_seen_at": r["last_seen_at"],
+            }
+            for r in rows
+        ]
+
     def _existing_tool_names(self, tenant_id: str | None, owner_origin: str, exclude_identity_key: str) -> list[str]:
         with connect(self.db_path) as conn:
             rows = conn.execute(
@@ -338,8 +429,15 @@ class WebShieldStore:
         self.touch_session(tenant_id, session_id, tab_id=tab_id, top_origin=tool.top_origin, extension_version=extension_version, sdk_version=sdk_version)
 
         identity_key = tool.identity_key()
-        existing = self._get_tool_row(tenant_id, identity_key)
-        first_seen = existing is None
+        existing = self._get_tool_row(tenant_id, identity_key)  # logical-tool aggregate (dashboard "latest known state")
+        # Instance identity (docs/web-shield-hardening-review.md #6): scoped by
+        # session_id + frame_id, never by anything the page supplies. This is
+        # what "first_seen" and metadata-drift ("did THIS registration's
+        # metadata change") must be evaluated against — not the shared
+        # aggregate row, which a *different* frame's registration could have
+        # last written.
+        existing_instance = self._get_active_instance(tenant_id, identity_key, session_id, frame_id)
+        first_seen = existing_instance is None
         trust_state = self.get_trust(tenant_id, tool.owner_origin)
 
         context = ScanContext(
@@ -348,8 +446,8 @@ class WebShieldStore:
             session_started_at=session_started_at,
             session_already_active=session_already_active,
             existing_tool_names=self._existing_tool_names(tenant_id, tool.owner_origin, identity_key),
-            previous_exact_hash=existing["exact_hash"] if existing else None,
-            previous_canonical_hash=existing["canonical_hash"] if existing else None,
+            previous_exact_hash=existing_instance["exact_hash"] if existing_instance else None,
+            previous_canonical_hash=existing_instance["canonical_hash"] if existing_instance else None,
             first_seen=first_seen,
             registration_count_recent=self._recent_registration_count(tenant_id, tool.owner_origin),
             trust_state=trust_state,
@@ -357,32 +455,41 @@ class WebShieldStore:
         )
         result = scan_registration(tool, context)
         sanitized = sanitize_tool(tool)
-        exact_hash, canonical_hash = result.exact_hash, result.canonical_hash
+        exact_hash, canonical_hash, structural_hash = result.exact_hash, result.canonical_hash, result.structural_hash
+        tool_json = json.dumps(tool.to_dict(), default=str)
 
-        metadata_changed = bool(existing) and existing["canonical_hash"] != canonical_hash
+        metadata_changed = bool(existing_instance) and existing_instance["canonical_hash"] != canonical_hash
         event_type = "webmcp.tool_registered" if first_seen else (
             "webmcp.tool_registration_changed" if metadata_changed else "webmcp.tool_registered"
+        )
+
+        instance_id = existing_instance["instance_id"] if existing_instance else str(uuid.uuid4())
+        self._upsert_instance(
+            tenant_id, instance_id=instance_id, identity_key=identity_key, owner_origin=tool.owner_origin,
+            tool_name=tool.name, session_id=session_id, frame_id=frame_id, registration_source=tool.registration_source,
+            exact_hash=exact_hash, canonical_hash=canonical_hash, structural_hash=structural_hash,
+            tool_json=tool_json, is_new=existing_instance is None,
         )
 
         now = time.time()
         with connect(self.db_path) as conn:
             if existing:
                 conn.execute(
-                    """UPDATE webshield_tools SET exact_hash=?, canonical_hash=?, tool_json=?, risk_score=?, risk_band=?,
+                    """UPDATE webshield_tools SET exact_hash=?, canonical_hash=?, structural_hash=?, tool_json=?, risk_score=?, risk_band=?,
                        findings_json=?, trust_state=?, status='active', registration_count=registration_count+1,
                        last_seen_at=?, updated_at=? WHERE id=?""",
-                    (exact_hash, canonical_hash, json.dumps(tool.to_dict(), default=str), result.risk.score, result.risk.band,
+                    (exact_hash, canonical_hash, structural_hash, tool_json, result.risk.score, result.risk.band,
                      json.dumps([f.to_dict() for f in result.findings]), trust_state, now, now, existing["id"]),
                 )
             else:
                 conn.execute(
                     """INSERT INTO webshield_tools
-                       (tenant_id, identity_key, owner_origin, top_origin, tool_name, api_surface, exact_hash, canonical_hash,
+                       (tenant_id, identity_key, owner_origin, top_origin, tool_name, api_surface, exact_hash, canonical_hash, structural_hash,
                         tool_json, risk_score, risk_band, findings_json, trust_state, status, registration_count,
                         first_seen_at, last_seen_at, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'active',1,?,?,?)""",
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'active',1,?,?,?)""",
                     (tenant_id, identity_key, tool.owner_origin, tool.top_origin, tool.name, tool.api_surface,
-                     exact_hash, canonical_hash, json.dumps(tool.to_dict(), default=str), result.risk.score, result.risk.band,
+                     exact_hash, canonical_hash, structural_hash, tool_json, result.risk.score, result.risk.band,
                      json.dumps([f.to_dict() for f in result.findings]), trust_state, now, now, now),
                 )
             conn.commit()
@@ -391,6 +498,7 @@ class WebShieldStore:
             "session_id": session_id, "tab_id": tab_id, "frame_id": frame_id,
             "top_origin": tool.top_origin, "owner_origin": tool.owner_origin,
             "script_source_origin": script_source_origin, "tool_name": tool.name, "identity_key": identity_key,
+            "instance_id": instance_id,
             "exact_hash": exact_hash, "canonical_hash": canonical_hash,
             "previous_exact_hash": context.previous_exact_hash, "previous_canonical_hash": context.previous_canonical_hash,
             "phase": "registration", "api_surface": tool.api_surface,
@@ -412,24 +520,59 @@ class WebShieldStore:
             "enforcement_capable": enforcement_capable,
         }
         event = self._log_event(tenant_id, event_type, session_id=session_id, tool_name=tool.name, owner_origin=tool.owner_origin, risk_score=result.risk.score, metadata=metadata)
-        return {"event": event, "identity_key": identity_key, "scan": result.to_dict(), "sanitizer": sanitized.to_dict(), "first_seen": first_seen, "metadata_changed": metadata_changed}
+        return {
+            "event": event, "identity_key": identity_key, "instance_id": instance_id,
+            "scan": result.to_dict(), "sanitizer": sanitized.to_dict(),
+            "first_seen": first_seen, "metadata_changed": metadata_changed,
+        }
 
-    def unregister_tool(self, tenant_id: str | None, *, session_id: str, identity_key: str, enforcement_capable: bool = True) -> dict[str, Any]:
+    def unregister_tool(
+        self, tenant_id: str | None, *, session_id: str, identity_key: str,
+        frame_id: str | None = None, enforcement_capable: bool = True,
+    ) -> dict[str, Any]:
+        """Mark the matching registration instance(s) inactive.
+
+        When ``frame_id`` is supplied (the normal extension/SDK path), only
+        the instance scoped to this exact session+frame is targeted, so one
+        frame unregistering its tool never affects another frame's identical-
+        named registration (docs/web-shield-hardening-review.md #6). Callers
+        that omit ``frame_id`` (legacy callers, or a session-wide cleanup)
+        fall back to targeting every instance for this identity_key in this
+        session — never instances belonging to other sessions.
+        """
+
+        now = time.time()
         with connect(self.db_path) as conn:
             row = conn.execute("SELECT * FROM webshield_tools WHERE tenant_id IS ? AND identity_key=?", (tenant_id, identity_key)).fetchone()
-            if row:
-                conn.execute("UPDATE webshield_tools SET status='inactive', updated_at=? WHERE id=?", (time.time(), row["id"]))
-                conn.commit()
+            if frame_id is not None:
+                conn.execute(
+                    "UPDATE webshield_tool_instances SET status='unregistered', last_seen_at=? WHERE tenant_id IS ? AND identity_key=? AND session_id IS ? AND frame_id IS ? AND status='active'",
+                    (now, tenant_id, identity_key, session_id, frame_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE webshield_tool_instances SET status='unregistered', last_seen_at=? WHERE tenant_id IS ? AND identity_key=? AND session_id IS ? AND status='active'",
+                    (now, tenant_id, identity_key, session_id),
+                )
+            remaining_active = conn.execute(
+                "SELECT COUNT(*) AS n FROM webshield_tool_instances WHERE tenant_id IS ? AND identity_key=? AND status='active'",
+                (tenant_id, identity_key),
+            ).fetchone()["n"]
+            if row and remaining_active == 0:
+                conn.execute("UPDATE webshield_tools SET status='inactive', updated_at=? WHERE id=?", (now, row["id"]))
+            conn.commit()
         tool_name = row["tool_name"] if row else None
         owner_origin = row["owner_origin"] if row else None
         recent_count = self._recent_registration_count(tenant_id, owner_origin) if owner_origin else 0
         metadata = {
-            "session_id": session_id, "identity_key": identity_key, "tool_name": tool_name, "owner_origin": owner_origin,
+            "session_id": session_id, "identity_key": identity_key, "frame_id": frame_id,
+            "tool_name": tool_name, "owner_origin": owner_origin,
             "phase": "lifecycle", "risk_band": "guarded" if recent_count > 5 else "low",
             "registration_count_recent": recent_count, "enforcement_capable": enforcement_capable,
+            "remaining_active_instances": remaining_active,
         }
         event = self._log_event(tenant_id, "webmcp.tool_unregistered", session_id=session_id, tool_name=tool_name, owner_origin=owner_origin, risk_score=20 if recent_count > 5 else 0, metadata=metadata)
-        return {"event": event}
+        return {"event": event, "remaining_active_instances": remaining_active}
 
     def record_context_replaced(self, tenant_id: str | None, *, session_id: str, top_origin: str, details: dict[str, Any] | None = None) -> dict[str, Any]:
         metadata = {"session_id": session_id, "top_origin": top_origin, "phase": "lifecycle", "risk_band": "high", "details": redact_webmcp_value(details or {})}
@@ -566,6 +709,8 @@ class WebShieldStore:
         events = self.list_events(tenant_id, identity_key=identity_key, limit=500)
         return {
             "tool": _row_to_tool(row),
+            "logical_tool_id": identity_key,
+            "instances": self.list_instances(tenant_id, identity_key),
             "timeline": events,
             "invocation_history": [e for e in events if e.get("phase", "").startswith("invocation")],
             "output_findings": [f for e in events if e.get("phase") == "output" for f in (e.get("findings") or [])],
@@ -717,20 +862,74 @@ class WebShieldStore:
     # ------------------------------------------------------------- config
 
     def config(self, tenant_id: str | None) -> dict[str, Any]:
+        from .risk import RISK_PROFILE_VERSION
+
         policy = self.policy_engine.get_policy() or {}
-        enabled = bool(policy.get("webmcp_rules") or policy.get("require_approval") or policy.get("sanitise"))
+        # Web Shield is "enabled" only when the operator has imported a pack
+        # (or written rules) that actually match webmcp.* events. Empty
+        # require_approval/sanitise buckets alone do not count — those exist
+        # as empty lists in every modern policy file and must not silently
+        # flip this flag.
+        has_webmcp_rule = False
+        for bucket in ("block", "require_approval", "sanitise", "warn", "monitor", "allow"):
+            for rule in policy.get(bucket) or []:
+                if isinstance(rule, dict) and str(rule.get("type") or "").startswith("webmcp."):
+                    has_webmcp_rule = True
+                    break
+            if has_webmcp_rule:
+                break
         return {
             "config_version": CONFIG_VERSION,
-            "enabled": enabled,
-            "mode": "enforce" if enabled else "observe",
-            "risk_profile_version": "1",
+            "enabled": has_webmcp_rule,
+            "mode": "enforce" if has_webmcp_rule else "observe",
+            "risk_profile_version": RISK_PROFILE_VERSION,
+            # Capability negotiation (docs/web-shield-hardening-review.md #15):
+            # an older extension connecting to a hardened server can read
+            # these fields and decide whether it can operate safely, rather
+            # than silently misbehaving. Clients that do not understand a
+            # required capability must treat the connection as incompatible.
+            "protocol": {
+                "page_channel_version": 1,
+                "min_extension_version": "0.1.0",
+                "server_features": [
+                    "idempotency_scoped",
+                    "pre_parse_body_limits",
+                    "registration_instances",
+                    "three_hash_canonicalisation",
+                    "component_risk_scoring",
+                    "fail_closed_sanitisation",
+                ],
+            },
             "capabilities": {
                 "registration_scan": True, "invocation_scan": True, "output_scan": True,
                 "sanitisation": True, "approvals": True, "local_trust": True,
                 "cross_origin_correlation": True,
+                "registration_instances": True,
+                "component_risk_scoring": True,
+                "observed_untrusted_classification": True,
             },
         }
 
     def record_extension_health(self, tenant_id: str | None, *, session_id: str, extension_version: str, connected: bool, protection_mode: str, tab_id: str | None = None, top_origin: str | None = None) -> dict[str, Any]:
         self.touch_session(tenant_id, session_id, tab_id=tab_id, top_origin=top_origin, extension_version=extension_version, connected=connected, protection_mode=protection_mode)
-        return {"ok": True, "server_config_version": CONFIG_VERSION}
+        cfg = self.config(tenant_id)
+        # Explicit compatibility result for older extensions that report a
+        # version below min_extension_version — never silently operate.
+        min_version = ((cfg.get("protocol") or {}).get("min_extension_version") or "0.0.0")
+        compatible = _version_gte(extension_version or "0.0.0", min_version)
+        return {
+            "ok": True,
+            "server_config_version": CONFIG_VERSION,
+            "compatible": compatible,
+            "compatibility": {
+                "compatible": compatible,
+                "min_extension_version": min_version,
+                "reported_extension_version": extension_version,
+                "reason": None if compatible else (
+                    f"extension version {extension_version!r} is below the server's "
+                    f"minimum supported version {min_version!r}; upgrade the extension "
+                    "or it will operate in a degraded/unsupported state"
+                ),
+                "protocol": cfg.get("protocol"),
+            },
+        }

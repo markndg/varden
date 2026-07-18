@@ -33,6 +33,8 @@ class AppConfig:
     backup_dir: str = "backups"
     enable_dev_bootstrap: bool = True
     scan_mode: str = "fast"
+    max_request_body_bytes: int = 250_000
+    max_output_body_bytes: int = 450_000
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -71,6 +73,8 @@ class AppConfig:
             backup_dir=os.getenv("VARDEN_BACKUP_DIR", "backups"),
             enable_dev_bootstrap=os.getenv("VARDEN_ENABLE_DEV_BOOTSTRAP", "true").lower() == "true",
             scan_mode=os.getenv("VARDEN_SCAN_MODE", "fast").lower(),
+            max_request_body_bytes=int(os.getenv("VARDEN_MAX_REQUEST_BODY_BYTES", "250000")),
+            max_output_body_bytes=int(os.getenv("VARDEN_MAX_OUTPUT_BODY_BYTES", "450000")),
         )
 
     @classmethod
@@ -102,4 +106,6 @@ class AppConfig:
             errors.append("scan_mode must be fast or deep")
         if min(self.read_rate_limit_per_minute, self.write_rate_limit_per_minute, self.ingest_rate_limit_per_minute, self.stream_connect_rate_limit_per_minute) <= 0:
             errors.append("rate limits must be positive integers")
+        if min(self.max_request_body_bytes, self.max_output_body_bytes) <= 0:
+            errors.append("max request/output body byte limits must be positive integers")
         return errors

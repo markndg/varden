@@ -1,4 +1,5 @@
 import json
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -106,6 +107,227 @@ def test_malicious_registration_blocked_and_persisted():
 
             events = client.get("/webshield/events", headers=headers).json()["items"]
             assert any(e["event_type"] == "webmcp.tool_registered" and e["policy_decision"] == "block" for e in events)
+
+
+def test_trust_expiry_takes_effect_and_stops_reducing_provenance_risk():
+    with TemporaryDirectory() as tmpdir:
+        with _client(tmpdir) as client:
+            headers = _bootstrap_headers(client)
+            expired = time.time() - 60
+            client.post(
+                "/webshield/trust",
+                json={"origin": "https://weather.test", "state": "trusted", "expires_at": expired},
+                headers=headers,
+            )
+            listed = client.get("/webshield/trust", headers=headers).json()["items"]
+            # Persisted, but expired: lookups used by scoring must treat it as absent.
+            assert any(t["origin"] == "https://weather.test" for t in listed)
+
+            response = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "owner_origin": "https://weather.test", "tool": BENIGN_TOOL},
+                headers=headers,
+            )
+            assert response.status_code == 200
+            assert response.json()["scan"]["tool"]  # sanity: full scan present
+            # An expired trust decision must not appear as an active trust override driver.
+            drivers = response.json()["scan"]["risk"]["drivers"]
+            assert not any(d["rule_id"] == "WEBMCP-RISK-TRUST-OVERRIDE" for d in drivers)
+
+
+def test_trusting_an_origin_cannot_convert_a_policy_block_into_an_allow():
+    # docs/web-shield-hardening-review.md #5: trust may only affect
+    # provenance_risk, so it must never be able to flip a policy decision
+    # that blocks on a critical risk_band into an allow.
+    with TemporaryDirectory() as tmpdir:
+        with _client(tmpdir) as client:
+            headers = _bootstrap_headers(client)
+            trust = client.post("/webshield/trust", json={"origin": "https://invoice.test", "state": "trusted"}, headers=headers)
+            assert trust.status_code == 200
+
+            response = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "owner_origin": "https://invoice.test", "tool": MALICIOUS_TOOL},
+                headers=headers,
+            )
+            assert response.status_code == 403
+            detail = response.json()["detail"]
+            assert detail["event"]["decision"]["action"] == "block"
+            assert detail["scan"]["risk"]["band"] in {"high", "critical"}
+
+
+def test_two_frames_registering_the_same_tool_name_get_distinct_instances():
+    # docs/web-shield-hardening-review.md #6: identity based only on
+    # owner_origin + normalised name conflates separate frames/registrations.
+    # Two distinct frames registering a same-named tool must both be
+    # preserved as separate registration instances under one logical tool.
+    with TemporaryDirectory() as tmpdir:
+        with _client(tmpdir) as client:
+            headers = _bootstrap_headers(client)
+            tool_a = {"name": "get_weather", "description": "Weather for frame A."}
+            tool_b = {"name": "get_weather", "description": "Weather for frame B."}
+            reg_a = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-a", "owner_origin": "https://weather.test", "tool": tool_a},
+                headers=headers,
+            ).json()
+            reg_b = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-b", "owner_origin": "https://weather.test", "tool": tool_b},
+                headers=headers,
+            ).json()
+            # Same logical identity (same origin + normalised name)...
+            assert reg_a["identity_key"] == reg_b["identity_key"]
+            # ...but distinct registration instances, and neither is flagged
+            # as a "metadata changed" event for the other's first registration.
+            assert reg_a["instance_id"] != reg_b["instance_id"]
+            assert reg_a["first_seen"] is True
+            assert reg_b["first_seen"] is True
+
+            detail = client.get("/webshield/tools/detail", params={"identity_key": reg_a["identity_key"]}, headers=headers).json()
+            assert detail["logical_tool_id"] == reg_a["identity_key"]
+            assert len(detail["instances"]) == 2
+            frame_ids = {inst["frame_id"] for inst in detail["instances"]}
+            assert frame_ids == {"frame-a", "frame-b"}
+
+
+def test_same_frame_re_registration_updates_the_same_instance_not_a_new_one():
+    with TemporaryDirectory() as tmpdir:
+        with _client(tmpdir) as client:
+            headers = _bootstrap_headers(client)
+            first = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-a", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "v1"}},
+                headers=headers,
+            ).json()
+            second = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-a", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "v2"}},
+                headers=headers,
+            ).json()
+            assert first["instance_id"] == second["instance_id"]
+            assert second["first_seen"] is False
+            assert second["metadata_changed"] is True
+
+            detail = client.get("/webshield/tools/detail", params={"identity_key": first["identity_key"]}, headers=headers).json()
+            assert len(detail["instances"]) == 1
+
+
+def test_metadata_mutation_of_one_instance_does_not_rewrite_another():
+    with TemporaryDirectory() as tmpdir:
+        with _client(tmpdir) as client:
+            headers = _bootstrap_headers(client)
+            reg_a = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-a", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "frame A original"}},
+                headers=headers,
+            ).json()
+            client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-b", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "frame B original"}},
+                headers=headers,
+            )
+            # Mutate frame A's instance only.
+            client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-a", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "frame A CHANGED"}},
+                headers=headers,
+            )
+            detail = client.get("/webshield/tools/detail", params={"identity_key": reg_a["identity_key"]}, headers=headers).json()
+            by_frame = {inst["frame_id"]: inst for inst in detail["instances"]}
+            assert by_frame["frame-a"]["exact_hash"] != by_frame["frame-b"]["exact_hash"]
+
+
+def test_unregister_targets_only_the_matching_frame_instance():
+    with TemporaryDirectory() as tmpdir:
+        with _client(tmpdir) as client:
+            headers = _bootstrap_headers(client)
+            reg_a = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-a", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "A"}},
+                headers=headers,
+            ).json()
+            client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-b", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "B"}},
+                headers=headers,
+            )
+            unreg = client.post(
+                "/webshield/lifecycle",
+                json={"session_id": "s1", "event": "unregister", "identity_key": reg_a["identity_key"], "frame_id": "frame-a"},
+                headers=headers,
+            )
+            assert unreg.status_code == 200
+            assert unreg.json()["remaining_active_instances"] == 1
+
+            detail = client.get("/webshield/tools/detail", params={"identity_key": reg_a["identity_key"]}, headers=headers).json()
+            by_frame = {inst["frame_id"]: inst["status"] for inst in detail["instances"]}
+            assert by_frame["frame-a"] == "unregistered"
+            assert by_frame["frame-b"] == "active"
+
+            # Re-registering in the now-unregistered frame creates a NEW
+            # instance rather than resurrecting the old one.
+            replacement = client.post(
+                "/webshield/registrations",
+                json={"session_id": "s1", "frame_id": "frame-a", "owner_origin": "https://weather.test", "tool": {"name": "get_weather", "description": "A replacement"}},
+                headers=headers,
+            ).json()
+            assert replacement["instance_id"] != reg_a["instance_id"]
+            assert replacement["first_seen"] is True
+
+
+def test_legacy_pre_migration_tool_rows_remain_readable_and_marked_legacy():
+    import sqlite3
+
+    from varden.db import init_db
+
+    with TemporaryDirectory() as tmpdir:
+        db_path = str(Path(tmpdir) / "varden.db")
+        # Build the database exactly as it looked immediately before
+        # migration 7 (pre-instance-tracking): a bare sqlite3 connection, not
+        # varden.db.connect/init_db, so nothing here can accidentally run the
+        # migration we are about to test.
+        raw = sqlite3.connect(db_path)
+        raw.executescript(
+            """
+            CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY);
+            INSERT INTO schema_migrations(version) VALUES (1),(2),(3),(4),(5),(6);
+            CREATE TABLE webshield_tools (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT, identity_key TEXT NOT NULL, owner_origin TEXT NOT NULL, top_origin TEXT NOT NULL,
+              tool_name TEXT NOT NULL, api_surface TEXT NOT NULL, exact_hash TEXT NOT NULL, canonical_hash TEXT NOT NULL,
+              tool_json TEXT NOT NULL, risk_score INTEGER NOT NULL DEFAULT 0, risk_band TEXT NOT NULL DEFAULT 'low',
+              findings_json TEXT NOT NULL DEFAULT '[]', trust_state TEXT, status TEXT NOT NULL DEFAULT 'active',
+              registration_count INTEGER NOT NULL DEFAULT 1, first_seen_at REAL NOT NULL, last_seen_at REAL NOT NULL,
+              updated_at REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX idx_webshield_tools_identity ON webshield_tools(tenant_id, identity_key);
+            CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, tenant_id TEXT, timestamp REAL, action_json TEXT,
+                                  agent_name TEXT, decision_json TEXT, trace_id TEXT);
+            """
+        )
+        now = time.time()
+        raw.execute(
+            """INSERT INTO webshield_tools
+               (tenant_id, identity_key, owner_origin, top_origin, tool_name, api_surface, exact_hash, canonical_hash,
+                tool_json, risk_score, risk_band, findings_json, trust_state, status, registration_count,
+                first_seen_at, last_seen_at, updated_at)
+               VALUES ('default','https://legacy.test::old_tool','https://legacy.test','https://legacy.test','old_tool',
+                       'document_model_context','deadbeef','deadbeef','{}',0,'low','[]',NULL,'active',1,?,?,?)""",
+            (now, now, now),
+        )
+        raw.commit()
+        raw.close()
+
+        # Now run the real migration path (simulates upgrading a database
+        # that predates instance tracking).
+        init_db(db_path)
+        with _client(tmpdir, db_path=db_path) as client:
+            headers = _bootstrap_headers(client)
+            detail = client.get("/webshield/tools/detail", params={"identity_key": "https://legacy.test::old_tool"}, headers=headers).json()
+            assert detail is not None
+            assert len(detail["instances"]) == 1
+            assert detail["instances"][0]["legacy_instance"] is True
 
 
 def test_registration_changed_produces_diff_and_higher_risk():
@@ -308,6 +530,34 @@ def test_cross_origin_flow_same_origin_is_low_risk():
             )
             assert resp.status_code == 200
             assert resp.json()["event"]["action"]["metadata"]["risk_band"] == "low"
+
+
+def test_config_and_extension_health_advertise_capability_negotiation():
+    with TemporaryDirectory() as tmpdir:
+        with _client(tmpdir) as client:
+            headers = _bootstrap_headers(client)
+            config = client.get("/webshield/config", headers=headers).json()
+            assert "protocol" in config
+            assert config["protocol"]["page_channel_version"] == 1
+            assert "idempotency_scoped" in config["protocol"]["server_features"]
+            assert config["capabilities"]["registration_instances"] is True
+            assert config["capabilities"]["component_risk_scoring"] is True
+
+            health = client.post(
+                "/webshield/extension/health",
+                json={"session_id": "s1", "extension_version": "0.1.0", "connected": True, "protection_mode": "connected"},
+                headers=headers,
+            ).json()
+            assert health["compatible"] is True
+            assert health["compatibility"]["compatible"] is True
+
+            old = client.post(
+                "/webshield/extension/health",
+                json={"session_id": "s1", "extension_version": "0.0.1", "connected": True, "protection_mode": "connected"},
+                headers=headers,
+            ).json()
+            assert old["compatible"] is False
+            assert "below the server's minimum" in (old["compatibility"]["reason"] or "")
 
 
 def test_webmcp_events_carry_an_origin_based_agent_name_not_unknown_agent():

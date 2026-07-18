@@ -22,9 +22,10 @@ from .config import AppConfig
 from .exceptions import PolicyViolation
 from .export import EvidenceExporter
 from .health import HealthChecks
-from .idempotency import IdempotencyStore
+from .idempotency import IdempotencyConflict, IdempotencyStore
 from .intelligence import DecisionIntelligence
 from .metrics import MetricsExporter
+from .middleware import RequestBodySizeLimitMiddleware
 from .fsutil import atomic_write_json
 from .mcp_inventory import McpInventoryStore, resolve_mcp_scan_paths
 from .models import Action, Decision, EventRecord, WorkflowSession
@@ -100,6 +101,17 @@ def create_app(config: AppConfig) -> FastAPI:
             background.stop()
 
     app = FastAPI(title="Varden Integrated Platform", version="3.0.0", lifespan=lifespan)
+
+    # Pre-parse body-size enforcement (docs/web-shield-hardening-review.md #8).
+    # Must be the outermost user middleware so oversized bodies are rejected
+    # before FastAPI/Starlette ever buffers or JSON-decodes them, including
+    # for endpoints (like /webshield/outputs) that need a larger limit than
+    # the rest of the ingest surface.
+    app.add_middleware(
+        RequestBodySizeLimitMiddleware,
+        default_max_bytes=config.max_request_body_bytes,
+        path_limits={"/webshield/outputs": config.max_output_body_bytes},
+    )
 
     app.mount("/static", StaticFiles(directory=Path(__file__).parent / "web"), name="static")
 
@@ -876,9 +888,13 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.put("/policy")
     def put_policy(candidate: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None), idempotency_key: str | None = Header(default=None)):
-        require(x_api_key, authorization, "admin", scope="write")
+        record = require(x_api_key, authorization, "admin", scope="write")
+        principal = str(record.get("key_hash") or record.get("user_id") or "unknown")
         if idempotency_key:
-            cached = idem.get(idempotency_key)
+            try:
+                cached = idem.get(idempotency_key, tenant_id=record.get("tenant_id"), principal=principal, method="PUT", route="/policy", body=candidate)
+            except IdempotencyConflict as exc:
+                raise HTTPException(status_code=409, detail={"error_code": exc.error_code, "message": str(exc)})
             if cached is not None:
                 return cached
         validation = policy.validate(candidate)
@@ -889,7 +905,7 @@ def create_app(config: AppConfig) -> FastAPI:
         snapshot_id = policy.snapshot("manual-update", created_by="control-plane", status="draft")
         response = {"status": "updated", "snapshot_id": snapshot_id}
         if idempotency_key:
-            idem.put(idempotency_key, response)
+            idem.put(idempotency_key, response, tenant_id=record.get("tenant_id"), principal=principal, method="PUT", route="/policy", body=candidate)
         return response
 
     @app.get("/policy/versions")

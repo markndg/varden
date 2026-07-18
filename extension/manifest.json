@@ -26,7 +26,7 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["src/content-isolated.js"],
+      "js": ["src/protocol.js", "src/content-isolated.js"],
       "run_at": "document_start",
       "all_frames": true,
       "world": "ISOLATED"

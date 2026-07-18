@@ -11,6 +11,23 @@
 (function () {
   'use strict';
 
+  // Hostile-metadata hardening (docs/web-shield-hardening-review.md #12):
+  // every dynamic value interpolated into innerHTML below is either a fixed
+  // string from this file's own static CASES table, or ultimately traceable
+  // to server response text (e.g. an error/detail message from a `block`
+  // decision) which can itself embed the exact attacker-supplied tool
+  // description the case just registered. Escape any such value before
+  // building HTML strings so a "malicious" case's own payload can never
+  // execute as script inside the lab page that is deliberately displaying it.
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   const state = {
     apiKey: localStorage.getItem('varden_webshield_lab_key') || '',
     sessionId: sessionStorage.getItem('varden_webshield_lab_session') || crypto.randomUUID(),
@@ -35,7 +52,13 @@
 
   function post(path, body) { return api(path, { method: 'POST', body: JSON.stringify(body) }); }
 
-  // ---- a tiny in-page WebMCP-style shim, so this really is `document.modelContext.registerTool()` ----
+  // ---- Attack-lab-only WebMCP surface simulation ----
+  // This shim exists ONLY on the attack-lab page (`/webshield/lab`) so the
+  // demo can call `document.modelContext.registerTool()` even when no real
+  // browser WebMCP implementation is present. The production browser
+  // extension (extension/src/page-world.js) NEVER creates this surface —
+  // see docs/web-shield-hardening-review.md #4. Do not copy this pattern
+  // into the extension or the JS SDK.
   const registeredTools = new Map();
   document.modelContext = {
     async registerTool(toolDef, opts) {
@@ -393,11 +416,11 @@
     card.innerHTML = `
       <div class="lab-case__head">
         <div>
-          <div class="lab-case__index">Case ${String(index + 1).padStart(2, '0')} · ${caseDef.category}</div>
-          <div class="lab-case__title">${caseDef.title}</div>
+          <div class="lab-case__index">Case ${String(index + 1).padStart(2, '0')} · ${escapeHtml(caseDef.category)}</div>
+          <div class="lab-case__title">${escapeHtml(caseDef.title)}</div>
         </div>
       </div>
-      <div class="lab-case__desc">${caseDef.desc}</div>
+      <div class="lab-case__desc">${escapeHtml(caseDef.desc)}</div>
       <div class="lab-case__actions">
         <button class="lab-button lab-button--ghost" data-run>Run this case</button>
         <span class="lab-case__result" data-result>Not run yet.</span>
@@ -426,9 +449,9 @@
       const outcome = await caseDef.run();
       const { band, requested, achieved, score } = describeResult(outcome);
       card.classList.add(`is-${band}`);
-      resultEl.innerHTML = `risk <strong>${score}</strong> (${band}) · requested <strong>${requested}</strong> · achieved <strong>${achieved}</strong>`;
+      resultEl.innerHTML = `risk <strong>${escapeHtml(score)}</strong> (${escapeHtml(band)}) · requested <strong>${escapeHtml(requested)}</strong> · achieved <strong>${escapeHtml(achieved)}</strong>`;
     } catch (err) {
-      resultEl.innerHTML = `<strong>Error:</strong> ${(err && err.message) || err}`;
+      resultEl.innerHTML = `<strong>Error:</strong> ${escapeHtml((err && err.message) || err)}`;
     }
   }
 

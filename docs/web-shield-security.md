@@ -7,39 +7,56 @@ For data handling, see `docs/web-shield-privacy.md`.
 
 ## Page-to-extension message authenticity
 
+**Trust boundary statement:** the isolated extension context validates a
+per-frame protocol and derives trusted browser context from Chrome APIs.
+Events originating in the page MAIN world remain untrusted observations
+because the host page controls that execution environment. The real chain of
+trust is `isolated content script -> extension service worker -> Varden
+server` — never the page-world script. See
+`docs/web-shield-hardening-review.md` #2 for the full audit and rationale;
+this section summarises the current design and its honest limits.
+
 The single biggest spoofing risk in a browser extension like this is a
 malicious page pretending to be the extension's own instrumentation — e.g.
-sending a fake `window.postMessage` claiming a benign `tool_registered`
-event to mask a real malicious registration, or flooding fabricated events
-to pollute the dashboard.
+sending a fake event claiming a benign `tool_registered` event to mask a
+real malicious registration, or flooding fabricated events to pollute the
+dashboard. Web Shield's page-world/isolated-world split
+(`docs/web-shield-extension.md`) raises the bar against this, but does not
+and cannot make the page-world sensor itself tamper-proof:
 
-Web Shield's page-world/isolated-world split (`docs/web-shield-extension.md`)
-is designed specifically against this:
-
-1. `content-isolated.js` creates a `MessageChannel` and transfers one port to
-   the page world via `window.postMessage(msg, window.location.origin,
-   [channel.port2])`. The **target origin** argument
-   (`window.location.origin`, not `"*"`) means the browser itself refuses to
-   deliver this message if the page's origin has changed by the time it's
-   delivered (irrelevant in practice for same-frame delivery, but it is
-   still the correct restrictive default rather than a wildcard).
-2. Once transferred, a `MessagePort` cannot be observed or forged by other
-   script in the page. Structured-clone message-passing in the DOM has no
-   "list all channels" introspection API — a page script that wants to inject
-   fake events would need the extension's own `port1`, which it never has
-   access to, or would need to intercept `page-world.js`'s wrapped
-   `registerTool` calls before `page-world.js` runs, which is impossible
-   because the content script runs at `document_start`, before the page's
-   own script.
-3. `page-world.js` only forwards data through `send()`, which is only ever
-   invoked by its own `wrapMethod`/`guardProperty` call sites — a page script
-   cannot call `send()` directly because it lives inside the script's IIFE
-   closure, not on `window`.
+1. `content-isolated.js` generates a random per-frame nonce and creates a
+   `MessageChannel`, transferring one port to the page world via
+   `window.postMessage(msg, window.location.origin, [channel.port2])`. This
+   initial broadcast carries **no secret** — it only announces that a port
+   exists. The **target origin** argument (`window.location.origin`, not
+   `"*"`) means the browser itself refuses to deliver this message if the
+   page's origin has changed by the time it's delivered.
+2. The page-world script must first send a `handshake` message *through*
+   that exact port before the isolated side will reveal the nonce (as a
+   `handshake_ack`). Every subsequent event must carry that nonce plus a
+   strictly increasing sequence number, a supported protocol version, and a
+   recognised event kind; `extension/src/protocol.js` (unit-tested in
+   `extension/test/protocol.test.js`) enforces all of this and rejects
+   (without crashing) missing/wrong/replayed nonces, decreasing or repeated
+   sequence numbers, unknown event kinds, oversized payloads, and events
+   sent before the handshake completes. Rejected events are logged locally
+   as a diagnostic and never relayed to the Varden server as real telemetry.
+3. In practice, no page script has had the opportunity to register a
+   competing `window` `'message'` listener before this handshake happens,
+   because both content scripts are injected at MV3's `document_start`,
+   before any page script runs. **This is a timing/ordering property of the
+   browser's injection guarantees, not a cryptographic authentication
+   mechanism** — do not describe it as "authenticated" or "unforgeable" in
+   any documentation, and do not assume it survives every edge case (e.g. a
+   page that was already partially loaded before the extension was
+   installed, or unusual extension-reload timing).
 4. `content-isolated.js` never trusts anything the page told it about origin
    or frame identity — `ownerOrigin`, `topOrigin`, and `isThirdPartyFrame`
-   are computed from the isolated world's own `window.location`/`window.top`,
-   which the page's JS cannot rewrite (a page can navigate itself, but it
-   cannot lie to the browser about what origin it's actually running on).
+   are computed from the isolated world's own `window.location`/`window.top`.
+   `background.js` goes one step further and treats Chrome's own
+   `sender.tab.id` / `sender.frameId` (from `chrome.runtime.onMessage`) as
+   the authoritative tab/frame identity sent to the server, not anything a
+   content script or page claims about itself.
 5. `background.js` only accepts messages whose `message.source ===
    'varden-webshield-content'` from its own content script's
    `chrome.runtime.sendMessage` call — this is a `sender.id`-scoped channel;
@@ -47,13 +64,23 @@ is designed specifically against this:
    another extension's background listener at all (that's a browser
    platform guarantee, not something Web Shield has to implement).
 
-What this does **not** protect against: a page can still register a
-genuinely malicious tool with genuinely malicious content — that's the
-threat this whole system exists to *detect*, not something message
-authenticity prevents. It also cannot protect against a *browser-level*
-compromise (a malicious or compromised extension with broader permissions
-could interfere with any other extension); that is outside any content
-script's threat model.
+What this does **not** protect against, and never claims to:
+
+- A page can still register a genuinely malicious tool with genuinely
+  malicious content — that's the threat this whole system exists to
+  *detect*, not something message-channel hardening prevents.
+- A sufficiently determined page script can inspect or replace the wrapped
+  `registerTool`/etc. functions, retain and call the pre-wrap original
+  directly, install a `Proxy` in front of `document.modelContext`, or race
+  the extension's own setup. `page-world.js`'s accessor guards
+  (`wrapMethod`/`guardProperty`) report the loss of sensor integrity as
+  `wrapper_tamper_detected` / `context_replaced` tamper evidence when they
+  can detect it — this is forensic, not preventive, and a page can still act
+  in ways the extension never observes at all. Treat every page-world event
+  as `observed_untrusted`, distinct from a confirmed absence of activity.
+- It cannot protect against a *browser-level* compromise (a malicious or
+  compromised extension with broader permissions could interfere with any
+  other extension); that is outside any content script's threat model.
 
 ## Protecting the local Varden API from browser-based requests
 
@@ -100,10 +127,19 @@ All of the following are the *existing* Varden API conventions
   uniformly; see `test_rate_limiting_applies_to_ingest_scope` in
   `tests/test_webshield_api.py`.
 - **Replay protection**: every mutating endpoint accepts an optional
-  `Idempotency-Key` header; `_idempotent()` caches the computed response
-  keyed on it and returns the cached result for a repeated key instead of
-  re-executing (and re-scoring/re-logging) the same request — the same
-  mechanism used elsewhere in Varden (e.g. `PUT /policy`).
+  `Idempotency-Key` header. The cache identity is a composite of
+  tenant/principal (from the caller's own authenticated identity, never a
+  browser-supplied field), HTTP method, canonical route, and the caller's
+  key — never the raw key alone (`varden/idempotency.py`,
+  `docs/web-shield-hardening-review.md` #3). A byte-stable hash of the
+  canonical (key-order-independent) request body is stored alongside the
+  cached response: an exact repeat (same scope, key, and body) replays the
+  original response instead of re-executing; the same key reused with a
+  *different* body returns `409 Conflict` with the stable error code
+  `IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_REQUEST` rather than silently
+  returning a mismatched cached result. Records expire after a bounded,
+  configurable TTL. This is the same mechanism used elsewhere in Varden
+  (e.g. `PUT /policy`).
 - **Schema validation**: `_require_str()` and explicit type/field checks
   reject malformed payloads (missing `session_id`, non-string identity keys,
   etc.) with `400 Bad Request` rather than raising an unhandled exception.

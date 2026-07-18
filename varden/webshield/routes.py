@@ -5,6 +5,8 @@ from typing import Any, Callable
 
 from fastapi import FastAPI, Header, HTTPException
 
+from varden.idempotency import IdempotencyConflict
+
 from .models import WebMCPToolDefinition
 from .store import WebShieldStore
 
@@ -12,12 +14,27 @@ MAX_PAYLOAD_BYTES = 200_000
 
 
 def _check_payload_size(payload: Any, *, max_bytes: int = MAX_PAYLOAD_BYTES) -> None:
+    """Structural, post-parse defence in depth.
+
+    By the time this runs, FastAPI has already buffered and JSON-decoded the
+    request body — the earliest, pre-parse rejection (before any bytes are
+    parsed as JSON) is ``RequestBodySizeLimitMiddleware``
+    (``varden/middleware.py``), installed on the whole app in
+    ``varden/app_factory.py``. This check exists to (a) bound the decoded
+    structure specifically, independent of exact wire-format byte count, and
+    (b) still fail safe for any caller of these functions that isn't sitting
+    behind that middleware (e.g. direct unit tests of route logic). See
+    docs/web-shield-hardening-review.md #8.
+    """
     try:
         size = len(json.dumps(payload, default=str).encode("utf-8"))
     except Exception:
         size = 0
     if size > max_bytes:
-        raise HTTPException(status_code=413, detail=f"payload exceeds {max_bytes} byte limit ({size} bytes)")
+        raise HTTPException(
+            status_code=413,
+            detail={"error_code": "PAYLOAD_TOO_LARGE", "message": f"payload exceeds {max_bytes} byte limit ({size} bytes)"},
+        )
 
 
 def _require_str(payload: dict, key: str) -> str:
@@ -43,15 +60,27 @@ def register_webshield_routes(
     because of the size of this subsystem — the wiring itself is identical.
     """
 
-    def _idempotent(idempotency_key: str | None, compute: Callable[[], dict]) -> dict:
+    def _idempotent(
+        idempotency_key: str | None, compute: Callable[[], dict], *,
+        tenant_id: str | None, principal: str | None, route: str, body: Any,
+    ) -> dict:
         if idempotency_key:
-            cached = idem.get(idempotency_key)
+            try:
+                cached = idem.get(idempotency_key, tenant_id=tenant_id, principal=principal, method="POST", route=route, body=body)
+            except IdempotencyConflict as exc:
+                raise HTTPException(status_code=409, detail={"error_code": exc.error_code, "message": str(exc)})
             if cached is not None:
                 return cached
         response = compute()
         if idempotency_key:
-            idem.put(idempotency_key, response)
+            idem.put(idempotency_key, response, tenant_id=tenant_id, principal=principal, method="POST", route=route, body=body)
         return response
+
+    def _principal(record: dict) -> str:
+        # API-key auth records carry key_hash; bearer-token auth records
+        # carry user_id. Either uniquely identifies the authenticated caller
+        # without ever storing/comparing raw credentials.
+        return str(record.get("key_hash") or record.get("user_id") or "unknown")
 
     def _maybe_raise_block(result: dict) -> dict:
         decision = ((result.get("event") or {}).get("decision") or {}).get("action")
@@ -109,7 +138,7 @@ def register_webshield_routes(
                 outcome["approval"] = approval
             return outcome
 
-        result = _idempotent(idempotency_key, compute)
+        result = _idempotent(idempotency_key, compute, tenant_id=record["tenant_id"], principal=_principal(record), route="POST /webshield/registrations", body=payload)
         return _maybe_raise_block(result)
 
     # ------------------------------------------------------------ lifecycle
@@ -131,6 +160,7 @@ def register_webshield_routes(
                 identity_key = _require_str(payload, "identity_key")
                 return webshield_store.unregister_tool(
                     record["tenant_id"], session_id=session_id, identity_key=identity_key,
+                    frame_id=payload.get("frame_id"),
                     enforcement_capable=bool(payload.get("enforcement_capable", True)),
                 )
             if event == "context_replaced":
@@ -147,7 +177,7 @@ def register_webshield_routes(
                 )
             raise HTTPException(status_code=400, detail=f"unknown lifecycle event: {event}")
 
-        result = _idempotent(idempotency_key, compute)
+        result = _idempotent(idempotency_key, compute, tenant_id=record["tenant_id"], principal=_principal(record), route="POST /webshield/lifecycle", body=payload)
         return _maybe_raise_block(result)
 
     # ---------------------------------------------------------- invocations
@@ -191,7 +221,7 @@ def register_webshield_routes(
                 )
             raise HTTPException(status_code=400, detail="phase must be 'requested' or 'completed'")
 
-        result = _idempotent(idempotency_key, compute)
+        result = _idempotent(idempotency_key, compute, tenant_id=record["tenant_id"], principal=_principal(record), route="POST /webshield/invocations", body=payload)
         return _maybe_raise_block(result)
 
     # ---------------------------------------------------------- cross-origin
@@ -220,7 +250,7 @@ def register_webshield_routes(
                 tool_name=payload.get("tool_name"), reason=payload.get("reason"),
             )
 
-        result = _idempotent(idempotency_key, compute)
+        result = _idempotent(idempotency_key, compute, tenant_id=record["tenant_id"], principal=_principal(record), route="POST /webshield/cross-origin", body=payload)
         return _maybe_raise_block(result)
 
     # --------------------------------------------------------------- outputs
@@ -247,7 +277,7 @@ def register_webshield_routes(
                 enforcement_capable=bool(payload.get("enforcement_capable", True)),
             )
 
-        result = _idempotent(idempotency_key, compute)
+        result = _idempotent(idempotency_key, compute, tenant_id=record["tenant_id"], principal=_principal(record), route="POST /webshield/outputs", body=payload)
         if result.get("outcome") == "block":
             raise HTTPException(status_code=403, detail=result)
         return result
