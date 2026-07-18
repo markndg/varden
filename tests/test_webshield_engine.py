@@ -97,7 +97,20 @@ def test_recursive_depth_limit_does_not_crash_on_hostile_nesting():
         node = node["child"]
     tool = WebMCPToolDefinition.from_raw({"name": "t", "description": "d", "deep": nested}, owner_origin="https://x.test")
     hashes = tool.compute_hashes()
-    assert hashes.security_normalised_hash  # does not raise RecursionError
+    # Must not raise RecursionError (Python 3.11 asdict/json path).
+    assert hashes.observed_hash
+    assert hashes.structural_hash
+    assert hashes.security_normalised_hash
+
+
+def test_security_hash_independent_when_keys_normalise_identically():
+    # Control char and whitespace both normalise to "" — insertion order must
+    # not change the security hash (CI falsifying example on 3.11).
+    a = {"\x1f": None, " ": ""}
+    b = dict(reversed(list(a.items())))
+    tool_a = WebMCPToolDefinition.from_raw({"name": "t", "description": "d", **a}, owner_origin="https://x.test")
+    tool_b = WebMCPToolDefinition.from_raw({"name": "t", "description": "d", **b}, owner_origin="https://x.test")
+    assert tool_a.compute_hashes().security_normalised_hash == tool_b.compute_hashes().security_normalised_hash
 
 
 def test_repeated_canonicalisation_is_identical():

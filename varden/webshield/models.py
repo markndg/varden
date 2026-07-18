@@ -75,6 +75,27 @@ def normalize_for_identity(text: str | None) -> str:
 _MAX_CANONICALIZE_DEPTH = 25
 
 
+def _bound_nested(value: Any, depth: int = 0) -> Any:
+    """Depth-bounded structural copy for hashing / serialisation.
+
+    Hostile nesting must not crash hash computation (``dataclasses.asdict``
+    and ``json.dumps`` recurse unboundedly and hit ``RecursionError`` on
+    Python 3.11 at a few hundred levels). Beyond ``_MAX_CANONICALIZE_DEPTH``
+    the structure is replaced with a stable truncation marker that still
+    participates in the hash.
+    """
+
+    if depth > _MAX_CANONICALIZE_DEPTH:
+        return {"__truncated__": True}
+    if isinstance(value, dict):
+        return {str(k): _bound_nested(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_bound_nested(v, depth + 1) for v in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_bound_nested(v, depth + 1) for v in value), key=lambda item: repr(item))
+    return value
+
+
 def _security_normalize(value: Any, depth: int = 0) -> Any:
     """Recursively normalise every security-relevant text fragment in an
     arbitrary (possibly hostile) nested structure, for security-hash
@@ -91,6 +112,10 @@ def _security_normalize(value: Any, depth: int = 0) -> Any:
         which this function must never do. Instead maps become a sorted list
         of ``[normalized_key, normalized_value]`` pairs, so duplicates remain
         individually visible to the hash;
+      * when two distinct original keys normalise identically, pairs are
+        ordered by ``(normalized_key, original_key)`` so the hash is
+        independent of dict insertion order (insertion order is *not*
+        a safe tiebreaker for key-order independence);
       * arrays preserve their original order (order can be semantically
         meaningful — e.g. an ordered list of steps or examples);
       * non-string primitives (numbers, booleans, ``None``) keep a
@@ -110,13 +135,15 @@ def _security_normalize(value: Any, depth: int = 0) -> Any:
     if value is None:
         return {"__null__": True}
     if isinstance(value, dict):
-        pairs = [(normalize_for_identity(str(k)), _security_normalize(v, depth + 1)) for k, v in value.items()]
-        # Sort by normalized key only: values may be dicts/lists, which are
-        # unorderable in Python and would raise TypeError if used as a sort
-        # tiebreaker. Original insertion order is a stable, deterministic
-        # tiebreaker for two distinct keys that normalise to the same string.
-        pairs.sort(key=lambda pair: pair[0])
-        return {"__map__": [[k, v] for k, v in pairs]}
+        pairs = [
+            (normalize_for_identity(str(k)), str(k), _security_normalize(v, depth + 1))
+            for k, v in value.items()
+        ]
+        # Values may be dicts/lists (unorderable); use the original key string
+        # as a deterministic secondary sort key so reordered dicts that share
+        # a normalised key still hash identically.
+        pairs.sort(key=lambda pair: (pair[0], pair[1]))
+        return {"__map__": [[nk, nv] for nk, _ok, nv in pairs]}
     if isinstance(value, (list, tuple)):
         return {"__seq__": [_security_normalize(v, depth + 1) for v in value]}
     return {"__other__": str(value)}
@@ -247,9 +274,29 @@ class WebMCPToolDefinition:
         not tool metadata, and including it would make the hash of otherwise
         byte-identical metadata differ on every observation, defeating its
         purpose for lifecycle diffing ("did the metadata actually change?").
+
+        Nested fields are depth-bounded before serialisation so hostile
+        nesting cannot crash via ``dataclasses.asdict`` / ``json.dumps``
+        recursion (Python 3.11 CI).
         """
-        payload = self.to_dict()
-        payload.pop("registered_at", None)
+        # Build the payload field-by-field instead of ``asdict(self)``: asdict
+        # recurses through extension_metadata / input_schema without a depth
+        # limit and raises RecursionError on deep hostile trees.
+        payload = {
+            "name": self.name,
+            "description": self.description,
+            "schema_version": self.schema_version,
+            "api_surface": self.api_surface,
+            "title": self.title,
+            "input_schema": (
+                _bound_nested(self.input_schema) if self.input_schema is not None else None
+            ),
+            "annotations": _bound_nested(self.annotations or {}),
+            "extension_metadata": _bound_nested(self.extension_metadata or {}),
+            "owner_origin": self.owner_origin,
+            "top_origin": self.top_origin,
+            "registration_source": self.registration_source,
+        }
         observed_hash = sha256_hex(_canonical_json(payload))
 
         structural_payload = dict(payload)
