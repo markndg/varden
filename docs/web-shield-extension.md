@@ -34,21 +34,44 @@ Chrome MV3 lets a content script run in the page's own JS context (`world:
 - **`extension/src/page-world.js`** (`world: "MAIN"`, `run_at:
   "document_start"`, `all_frames: true`): runs in the page's own context,
   which is the only place `document.modelContext` and
-  `navigator.modelContext` actually exist as live objects. It wraps
-  `registerTool`, `unregisterTool`, `provideContext` and `clearContext` on
-  both surfaces when present, and watches for the `modelContext` property
-  itself being replaced after first install (`guardProperty`). It cannot call
-  `chrome.runtime` APIs directly — page-world scripts have no extension
-  privileges — so it talks to the isolated world over a `MessageChannel`
-  whose port is handed over during a one-time handshake, scoped to the
-  page's own origin (`window.postMessage(..., window.location.origin, ...)`),
-  so another origin's script cannot inject itself into the channel.
+  `navigator.modelContext` actually exist as live objects. **This context is
+  fully controlled by the host page — it is not, and cannot be made, a
+  trusted boundary.** It only wraps `registerTool`, `unregisterTool`,
+  `provideContext` and `clearContext` when they already exist (it never
+  fabricates a stand-in implementation, so a page's own feature-detection is
+  never altered — see `docs/web-shield-hardening-review.md` #4), and it
+  watches for the `modelContext` property itself, or an individual wrapped
+  method, being replaced after install (`guardProperty`/`wrapMethod`'s
+  accessor guards) — reporting that as tamper evidence, not preventing it.
+  It cannot call `chrome.runtime` APIs directly — page-world scripts have no
+  extension privileges — so it talks to the isolated world over a
+  `MessageChannel`. The one-time setup broadcast
+  (`window.postMessage(..., window.location.origin, ...)`) carries no secret;
+  the actual per-frame nonce is only revealed over the private port itself,
+  after the page side proves it holds that exact port by initiating a
+  handshake through it (see "Channel protocol" below). This raises the bar
+  for a page to inject spoofed events, but it is a **timing/ordering
+  property of MV3's `document_start` injection guarantee**, not a
+  cryptographic authentication mechanism — do not describe this channel as
+  "authenticated" or "unforgeable".
+- **`extension/src/protocol.js`** (`world: "ISOLATED"`, loaded before
+  `content-isolated.js`): dependency-free validation logic for the channel
+  protocol (nonce, monotonically increasing sequence number, protocol
+  version, event-kind allowlist, payload-size limit). Shared verbatim
+  between the extension and its Node-based unit tests
+  (`extension/test/protocol.test.js`).
 - **`extension/src/content-isolated.js`** (`world: "ISOLATED"`, same
-  matches/timing): completes the handshake, receives relayed events over the
-  `MessageChannel`, and forwards them to the background service worker via
-  `chrome.runtime.sendMessage`, attaching frame/origin context
-  (`frameId`, `topOrigin`, `isThirdPartyFrame`, `scriptSourceOrigin`) that
-  only the isolated world/extension APIs can determine.
+  matches/timing): generates this frame's random nonce, completes the
+  handshake, validates every subsequent event against `protocol.js` before
+  relaying it, and forwards accepted events to the background service worker
+  via `chrome.runtime.sendMessage`, attaching frame/origin context
+  (`topOrigin`, `isThirdPartyFrame`, `scriptSourceOrigin`) that only the
+  isolated world/extension APIs can determine, and tagging every relayed
+  event `observed_trust: "observed_untrusted"`. Rejected events (bad nonce,
+  replayed/decreasing sequence, oversized payload, wrong protocol version,
+  unknown kind, event before handshake, duplicate handshake) are never
+  relayed as tool/lifecycle events — they are reported to the background
+  service worker as a `protocol_diagnostic` for local logging only.
 - **`extension/src/background.js`** (MV3 service worker): the only place that
   ever makes a network request. Owns configuration (`chrome.storage.local`),
   session IDs (`chrome.storage.session`, one per tab), the connected/local
@@ -67,12 +90,39 @@ sequenceDiagram
     participant API as Varden /webshield/*
 
     Page->>PW: document.modelContext.registerTool(tool)
-    PW->>CI: MessageChannel port (origin-scoped handshake)
-    CI->>BG: chrome.runtime.sendMessage(tool_registered + frame/origin context)
+    PW->>CI: MessageChannel port announced (window.postMessage, no secret)
+    PW->>CI: "handshake" over the private port
+    CI->>PW: "handshake_ack" {nonce} over the private port
+    PW->>CI: {kind, detail, nonce, sequence++} over the private port
+    CI->>CI: validate nonce/sequence/protocol_version/kind/size (protocol.js)
+    CI->>BG: chrome.runtime.sendMessage(tool_registered + Chrome-provided frame/origin context)
     BG->>API: POST /webshield/registrations
     API-->>BG: risk band, findings, policy decision
     BG->>BG: update per-tab badge/state
 ```
+
+## Channel protocol (page-world <-> isolated-world)
+
+Every event the page-world script sends carries `{protocol_version, nonce,
+sequence, kind, detail}`. `content-isolated.js` rejects (and reports as a
+`protocol_diagnostic`, never as a tool/lifecycle event) any event that:
+
+- arrives before the handshake completes, or attempts a second handshake;
+- carries a missing/incorrect nonce (including a nonce that is valid for a
+  *different* frame's independently-generated channel);
+- carries a sequence number that is not a strictly increasing integer
+  (replayed, decreasing, non-numeric, or non-finite);
+- names an unsupported `protocol_version` or an event `kind` outside the
+  fixed allowlist in `protocol.js`;
+- exceeds the per-event payload size limit;
+- fails to serialise at all (e.g. a cyclic object, which structured-clone
+  transport allows but which downstream persistence cannot).
+
+This validation is deterministic, dependency-free, and covered by
+`extension/test/protocol.test.js` under Node's built-in test runner — see
+`docs/web-shield-hardening-review.md` #2 for the adversarial scenarios it
+covers and the ones that still require a real-browser harness to verify
+end-to-end (tracked as a known gap below).
 
 ## What is, and is not, interceptable
 

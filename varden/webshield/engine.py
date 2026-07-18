@@ -31,7 +31,7 @@ def scan_registration(tool: WebMCPToolDefinition, context: ScanContext | None = 
     findings.extend(scan_lifecycle(tool, context))
     findings.extend(scan_provenance(tool, context))
 
-    exact_hash, canonical_hash = tool.compute_hashes()
+    hashes = tool.compute_hashes()
     sensitive_data_involved = bool(capability.sensitive_schema_fields) or capability.mentions_credential
     cross_origin_implicated = context.is_third_party_frame
 
@@ -47,8 +47,9 @@ def scan_registration(tool: WebMCPToolDefinition, context: ScanContext | None = 
         findings=findings,
         risk=risk,
         capability=capability,
-        exact_hash=exact_hash,
-        canonical_hash=canonical_hash,
+        exact_hash=hashes.observed_hash,
+        canonical_hash=hashes.security_normalised_hash,
+        structural_hash=hashes.structural_hash,
     )
 
 

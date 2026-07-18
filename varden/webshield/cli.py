@@ -10,6 +10,25 @@ from .evaluate import run_evaluation
 from .models import ScanContext, ScanResult, WebMCPToolDefinition
 from .sanitize import sanitize_tool
 
+def _safe_cli_text(value: Any) -> str:
+    """Escape attacker-controlled text before printing it to a terminal.
+
+    ``varden web-shield scan``/``explain`` read an arbitrary JSON file that
+    may itself be attacker-supplied (e.g. captured from a hostile page). Tool
+    names, origins, and schema field paths flow from that file straight into
+    ``print()`` calls; without escaping, embedded ANSI/terminal escape
+    sequences or raw newlines could manipulate the developer's terminal
+    (clearing the screen, spoofing prompts, hiding output) or inject fake
+    log lines. ``repr()`` already protects the ``evidence``/diff fields
+    below; this covers the remaining attacker-controlled fields that are
+    printed as plain (non-``repr``) text. See
+    docs/web-shield-hardening-review.md #12.
+    """
+
+    text = str(value)
+    return "".join(ch if (ch == "\t" or (ch.isprintable() and ch not in "\x7f")) else repr(ch)[1:-1] for ch in text)
+
+
 BAND_SUGGESTED_DECISION = {
     "low": "allow",
     "guarded": "monitor",
@@ -76,22 +95,31 @@ def cmd_explain(path: str) -> int:
 
 
 def _print_human(result: ScanResult, sanitized, decision: str) -> None:
-    print(f"Tool: {result.tool.name}  (origin: {result.tool.owner_origin})")
+    print(f"Tool: {_safe_cli_text(result.tool.name)}  (origin: {_safe_cli_text(result.tool.owner_origin)})")
     print(f"Risk score: {result.risk.score}/100  band={result.risk.band}  profile v{result.risk.profile_version}")
     print(f"Suggested decision (evidence only — Varden policy is authoritative): {decision}")
-    print(f"Exact hash: {result.exact_hash[:16]}…  Canonical hash: {result.canonical_hash[:16]}…")
+    print(f"Observed hash:            {result.exact_hash[:16]}…")
+    print(f"Structural hash:          {result.structural_hash[:16]}…")
+    print(f"Security-normalised hash: {result.canonical_hash[:16]}…")
     print()
     if not result.findings:
         print("No findings.")
     else:
         print(f"Findings ({len(result.findings)}):")
         for f in result.findings:
-            print(f"  [{f.severity.upper():8}] {f.rule_id}  field={f.field_path}")
+            print(f"  [{f.severity.upper():8}] {f.rule_id}  field={_safe_cli_text(f.field_path)}")
             print(f"      category: {f.category}  confidence: {f.confidence:.2f}")
             print(f"      {f.explanation}")
             if f.evidence:
                 print(f"      evidence: {f.evidence!r}")
             print(f"      remediation: {f.remediation}")
+    print()
+    c = result.risk.components
+    print(
+        f"Risk components: content={c.content_risk} capability={c.capability_risk} "
+        f"lifecycle={c.lifecycle_risk} provenance={c.provenance_risk} impact={c.impact_risk} "
+        f"(only provenance can be reduced by local trust)"
+    )
     print()
     print("Risk drivers:")
     for d in result.risk.drivers:
@@ -100,7 +128,7 @@ def _print_human(result: ScanResult, sanitized, decision: str) -> None:
     if sanitized.diff:
         print("Sanitisation preview:")
         for field_path, d in sanitized.diff.items():
-            print(f"  {field_path}: {d['before']!r} -> {d['after']!r}")
+            print(f"  {_safe_cli_text(field_path)}: {d['before']!r} -> {d['after']!r}")
         if sanitized.unrepairable_fields:
             print(f"  UNREPAIRABLE (recommend block, not sanitise): {', '.join(sanitized.unrepairable_fields)}")
 

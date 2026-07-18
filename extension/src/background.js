@@ -38,6 +38,36 @@ async function ensureApiKey(config) {
   return '';
 }
 
+/** Capability negotiation with a hardened server (docs/web-shield-hardening-review.md #15).
+ * An older extension connecting to a newer server gets an explicit
+ * compatibility result rather than silently operating incorrectly. */
+async function checkServerCompatibility(config, apiKey) {
+  if (!apiKey) return { compatible: true, checked: false };
+  try {
+    const res = await fetch(`${config.endpoint}/webshield/extension/health`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
+      body: JSON.stringify({
+        session_id: `ext-compat-${EXTENSION_VERSION}`,
+        extension_version: EXTENSION_VERSION,
+        connected: true,
+        protection_mode: 'connected',
+      }),
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return { compatible: true, checked: false };
+    const body = await res.json();
+    return {
+      compatible: body.compatible !== false,
+      checked: true,
+      reason: body.compatibility && body.compatibility.reason,
+      protocol: body.compatibility && body.compatibility.protocol,
+    };
+  } catch (e) {
+    return { compatible: true, checked: false };
+  }
+}
+
 async function getSessionId(tabId) {
   const key = `session:${tabId}`;
   const stored = await chrome.storage.session.get(key);
@@ -100,7 +130,7 @@ async function updateBadge(tabId) {
   });
 }
 
-async function handleToolRegistered(tabId, message) {
+async function handleToolRegistered(tabId, message, frameId) {
   const config = await getConfig();
   const apiKey = await ensureApiKey(config);
   const sessionId = await getSessionId(tabId);
@@ -113,7 +143,12 @@ async function handleToolRegistered(tabId, message) {
     tool,
     is_third_party_frame: message.isThirdPartyFrame,
     script_source_origin: message.scriptSourceOrigin,
-    frame_id: message.frameId,
+    // Chrome-provided sender.frameId is authoritative; the content script's
+    // own correlation id (message.frameId) is kept only as a secondary,
+    // non-trusted diagnostic tag — never used for identity/isolation
+    // decisions server-side. See docs/web-shield-hardening-review.md #2/#6.
+    frame_id: String(frameId),
+    frame_correlation_id: message.frameId,
     tab_id: String(tabId),
     extension_version: EXTENSION_VERSION,
   };
@@ -146,11 +181,17 @@ function rankBand(band) {
   return { low: 0, guarded: 1, suspicious: 2, high: 3, critical: 4 }[band] || 0;
 }
 
-async function handleContextReplaced(tabId, message) {
+async function handleContextReplaced(tabId, message, frameId) {
   const config = await getConfig();
   const apiKey = await ensureApiKey(config);
   const sessionId = await getSessionId(tabId);
-  const body = { session_id: sessionId, event: 'extension_tamper_detected', top_origin: message.topOrigin, details: { api_surface: message.event.detail.api_surface } };
+  const body = {
+    session_id: sessionId,
+    event: 'extension_tamper_detected',
+    top_origin: message.topOrigin,
+    frame_id: String(frameId),
+    details: { api_surface: message.event.detail.api_surface },
+  };
   try {
     if (apiKey) await postToVarden(config, apiKey, '/webshield/lifecycle', body);
   } catch (e) {
@@ -166,11 +207,22 @@ chrome.runtime.onMessage.addListener((message, sender) => {
   if (!message || message.source !== 'varden-webshield-content') return;
   const tabId = sender.tab ? sender.tab.id : undefined;
   if (tabId === undefined) return;
+  // Chrome-provided sender metadata is authoritative; a content script (let
+  // alone the page) cannot forge which tab/frame it is actually running in.
+  // See docs/web-shield-hardening-review.md #2.
+  const frameId = typeof sender.frameId === 'number' ? sender.frameId : undefined;
   const kind = message.event && message.event.kind;
   if (kind === 'tool_registered') {
-    handleToolRegistered(tabId, message);
-  } else if (kind === 'context_replaced') {
-    handleContextReplaced(tabId, message);
+    handleToolRegistered(tabId, message, frameId);
+  } else if (kind === 'context_replaced' || kind === 'wrapper_tamper_detected') {
+    handleContextReplaced(tabId, message, frameId);
+  } else if (kind === 'protocol_diagnostic') {
+    // Rejected-envelope diagnostics from content-isolated.js's protocol
+    // validation (bad nonce, replayed sequence, oversized payload, etc.).
+    // Never forwarded to Varden as a tool/lifecycle event; logged locally
+    // only, so a flood of malformed page-world traffic cannot itself become
+    // an ingestion vector.
+    console.debug('[varden-webshield] rejected page-world event', message.event && message.event.detail);
   }
   // tool_unregistered / provide_context / clear_context are accepted for
   // future lifecycle correlation but do not change the badge today.
@@ -210,5 +262,12 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   const config = await getConfig();
   const apiKey = await ensureApiKey(config);
   if (!apiKey) return;
+  const compat = await checkServerCompatibility(config, apiKey);
+  if (compat.checked && !compat.compatible) {
+    console.warn('[varden-webshield] incompatible with server:', compat.reason);
+    await chrome.storage.local.set({ serverCompatibility: compat });
+    return; // Do not flush queued events to a server we are incompatible with.
+  }
+  await chrome.storage.local.set({ serverCompatibility: compat });
   await flushQueue(config, apiKey);
 });

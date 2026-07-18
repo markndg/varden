@@ -109,3 +109,38 @@ def test_from_raw_never_raises_on_arbitrary_json_shapes(data):
         data = {"value": data}
     tool = WebMCPToolDefinition.from_raw(data, owner_origin="https://fuzz.test")
     scan_registration(tool)
+
+
+@given(extra=json_strategy)
+@settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
+def test_security_hash_never_raises_on_arbitrary_nested_extension_metadata(extra):
+    # docs/web-shield-hardening-review.md #7: recursive canonicalisation must
+    # be safe on hostile/arbitrary nesting, including non-dict top-level
+    # shapes, cyclone-free but deeply nested structures, and mixed types.
+    raw = {"name": "fuzz_tool", "description": "d", "vendorField": extra}
+    tool = WebMCPToolDefinition.from_raw(raw, owner_origin="https://fuzz.test")
+    hashes = tool.compute_hashes()
+    assert hashes.observed_hash and hashes.structural_hash and hashes.security_normalised_hash
+    # determinism / "idempotent" per the spec: repeated calls agree.
+    assert tool.compute_hashes() == hashes
+
+
+@given(schema=schema_strategy)
+@settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
+def test_security_hash_never_raises_on_arbitrary_schema(schema):
+    tool = WebMCPToolDefinition(name="fuzz_tool", description="d", input_schema=schema, owner_origin="https://fuzz.test")
+    hashes = tool.compute_hashes()
+    json.dumps(hashes.to_dict())
+
+
+@given(a=json_strategy, b=json_strategy)
+@settings(max_examples=40, suppress_health_check=[HealthCheck.too_slow])
+def test_security_hash_key_order_independence_on_arbitrary_dicts(a, b):
+    # Two dicts built from the same key/value pairs in different insertion
+    # order must always hash identically, however deeply the values nest.
+    if not isinstance(a, dict):
+        a = {"k": a}
+    reordered = dict(reversed(list(a.items())))
+    tool_a = WebMCPToolDefinition.from_raw({"name": "t", "description": "d", **a}, owner_origin="https://fuzz.test")
+    tool_b = WebMCPToolDefinition.from_raw({"name": "t", "description": "d", **reordered}, owner_origin="https://fuzz.test")
+    assert tool_a.compute_hashes().security_normalised_hash == tool_b.compute_hashes().security_normalised_hash
