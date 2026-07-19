@@ -242,9 +242,9 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, policy
     setTemplateNotice(`Removed rules from ${template.name || 'template'} out of builder`);
     selectRule(pickFirstNonEmptyBucket(nextDoc), 0);
   };
-  const loadPackTemplate = async (packId: string) => {
+  const loadPackTemplate = async (packId: string, { force = false }: { force?: boolean } = {}) => {
     if (!packId) throw new Error('policy pack id is missing');
-    if (packTemplates[packId]) return packTemplates[packId];
+    if (!force && packTemplates[packId]) return packTemplates[packId];
     const doc = await api(`/policy/packs/${encodeURIComponent(packId)}`, {}, helpers.token);
     const template = dedupePolicyDoc(ensurePolicyDoc(doc?.template || doc || {}));
     setPackTemplates((current) => ({ ...current, [packId]: template }));
@@ -267,7 +267,13 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, policy
     setImportingPackId(packId);
     setTemplateError('');
     try {
+      // Prefetch pack body in parallel with import. Card status (green edge /
+      // N/N present) fingerprints workingPolicy against packTemplates[packId];
+      // without this cache the collapsed card stays on "0/N · Not added"
+      // until the user expands it (which loads the same template).
+      const templatePromise = loadPackTemplate(packId, { force: true }).catch(() => null);
       await onImportPack(packId, templateMode);
+      await templatePromise;
       setTemplateNotice(`Imported and saved ${pack.name}`);
     } catch (error: any) {
       setTemplateError(error?.message || `Failed to import ${pack.name}`);
