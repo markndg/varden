@@ -9,12 +9,18 @@ from typing import Any
 import httpx
 
 try:
+    # mcp 1.x
     from mcp.server.fastmcp import FastMCP
 except ImportError:
-    raise SystemExit(
-        "The MCP server requires the mcp extra.\n"
-        "Run: pip install varden[mcp]"
-    )
+    try:
+        # mcp 2.x renamed FastMCP to MCPServer (mcp.server.mcpserver) but kept
+        # the same @tool()/.run(transport=...) surface this module relies on.
+        from mcp.server.mcpserver import MCPServer as FastMCP
+    except ImportError:
+        raise SystemExit(
+            "The MCP server requires the mcp extra.\n"
+            "Run: pip install varden[mcp]"
+        )
 
 from varden_mcp._client import get_client
 
