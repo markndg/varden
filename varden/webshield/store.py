@@ -112,11 +112,12 @@ class WebShieldStore:
     trust decisions, and the approval state machine.
     """
 
-    def __init__(self, db_path: str, event_store, policy_engine):
+    def __init__(self, db_path: str, event_store, policy_engine, provenance_store=None):
         self.db_path = db_path
         init_db(db_path)
         self.event_store = event_store
         self.policy_engine = policy_engine
+        self.provenance_store = provenance_store
 
     # ---------------------------------------------------------------- trust
 
@@ -349,22 +350,40 @@ class WebShieldStore:
         matched_rule = None
         agent_name = _webmcp_agent_label(owner_origin)
         try:
+            meta = dict(metadata or {})
+            meta.setdefault("webmcp", True)
+            if owner_origin and "owner_origin" not in meta:
+                meta["owner_origin"] = owner_origin
             action = Action(
                 type=event_type,
                 tool=tool_name,
                 domain=owner_origin,
-                metadata=metadata,
+                metadata=meta,
                 risk_score=int(risk_score),
                 trace_id=session_id,
                 tenant_id=tenant_id,
                 agent_name=agent_name,
             )
+            # Provenance/authority enrichment MUST run before PolicyEngine —
+            # same invariant as /sdk/guard. Without this, provenance pack
+            # classifiers are never populated for WebMCP events.
+            from varden.provenance.engine import enrich as provenance_enrich
+            action = provenance_enrich(action, None, store=self.provenance_store)
             decision = self.policy_engine.evaluate(action)
             policy_decision = decision.action
             matched_rule = decision.matched_rule
+            # Carry enriched metadata forward for persistence / UI evidence.
+            metadata = dict(action.metadata or meta)
         except Exception:
+            # Fail closed for live WebMCP decisions: a control-plane error must
+            # not silently allow a privileged registration/invocation.
             action = Action(type=event_type, tool=tool_name, domain=owner_origin, metadata=metadata, risk_score=int(risk_score), trace_id=session_id, tenant_id=tenant_id, agent_name=agent_name)
             decision = None
+            if not retroactive and metadata.get("phase") != "invocation_completed":
+                policy_decision = "block"
+                matched_rule = {"name": "webshield-evaluate-failure", "description": "Policy/provenance evaluation failed; failing closed."}
+                metadata = dict(metadata or {})
+                metadata["evaluate_failure"] = True
 
         requested_enforcement = POLICY_TO_ENFORCEMENT.get(policy_decision, policy_decision)
         already_completed = metadata.get("phase") == "invocation_completed"
@@ -520,11 +539,76 @@ class WebShieldStore:
             "enforcement_capable": enforcement_capable,
         }
         event = self._log_event(tenant_id, event_type, session_id=session_id, tool_name=tool.name, owner_origin=tool.owner_origin, risk_score=result.risk.score, metadata=metadata)
+        # Registration was persisted before policy for forensic inventory continuity,
+        # but a block/require_approval decision must NOT leave the tool usable as
+        # status=active. Demote immediately so inventory/invocation cannot treat a
+        # rejected registration as live.
+        policy_decision = ((event.get("action") or {}).get("metadata") or {}).get("policy_decision")
+        requested = ((event.get("action") or {}).get("metadata") or {}).get("requested_enforcement")
+        final_status = self._registration_status_for_decision(policy_decision, requested)
+        if final_status != "active":
+            self._set_registration_status(
+                tenant_id,
+                identity_key=identity_key,
+                instance_id=instance_id,
+                status=final_status,
+            )
         return {
             "event": event, "identity_key": identity_key, "instance_id": instance_id,
             "scan": result.to_dict(), "sanitizer": sanitized.to_dict(),
             "first_seen": first_seen, "metadata_changed": metadata_changed,
+            "registration_status": final_status,
         }
+
+    @staticmethod
+    def _registration_status_for_decision(policy_decision: str | None, requested_enforcement: str | None) -> str:
+        decision = str(requested_enforcement or policy_decision or "allow").strip().lower()
+        if decision == "block":
+            return "rejected"
+        if decision == "require_approval":
+            return "pending_approval"
+        return "active"
+
+    def _set_registration_status(
+        self,
+        tenant_id: str | None,
+        *,
+        identity_key: str,
+        instance_id: str | None = None,
+        status: str,
+    ) -> None:
+        """Mark logical tool (+ optional instance) non-active when registration is denied."""
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE webshield_tools SET status=?, updated_at=? WHERE tenant_id IS ? AND identity_key=?",
+                (status, now, tenant_id, identity_key),
+            )
+            if instance_id:
+                conn.execute(
+                    "UPDATE webshield_tool_instances SET status=?, last_seen_at=? WHERE tenant_id IS ? AND instance_id=?",
+                    (status, now, tenant_id, instance_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE webshield_tool_instances SET status=?, last_seen_at=? WHERE tenant_id IS ? AND identity_key=?",
+                    (status, now, tenant_id, identity_key),
+                )
+            conn.commit()
+
+    def activate_registration(self, tenant_id: str | None, *, identity_key: str) -> None:
+        """Promote a pending_approval registration to active after human approval."""
+        now = time.time()
+        with connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE webshield_tools SET status='active', updated_at=? WHERE tenant_id IS ? AND identity_key=? AND status='pending_approval'",
+                (now, tenant_id, identity_key),
+            )
+            conn.execute(
+                "UPDATE webshield_tool_instances SET status='active', last_seen_at=? WHERE tenant_id IS ? AND identity_key=? AND status='pending_approval'",
+                (now, tenant_id, identity_key),
+            )
+            conn.commit()
 
     def unregister_tool(
         self, tenant_id: str | None, *, session_id: str, identity_key: str,
@@ -600,11 +684,15 @@ class WebShieldStore:
         owner_origin = row["owner_origin"] if row else None
         risk_score = row["risk_score"] if row else 0
         risk_band = row["risk_band"] if row else "low"
+        registration_status = row["status"] if row else "unknown"
         first_seen = bool(row) and int(row["registration_count"] or 0) <= 1
         capability = {}
         if row:
             capability = infer_capability_profile(WebMCPToolDefinition(**json.loads(row["tool_json"]))).to_dict()
         redacted_args = redact_webmcp_value(args or {})
+        # Rejected / non-active registrations must not become invokable via a
+        # later invocation request that only re-evaluates weaker policy.
+        non_executable = registration_status in {"rejected", "pending_approval", "inactive", "blocked"}
         metadata = {
             "session_id": session_id, "identity_key": identity_key, "tool_name": tool_name, "owner_origin": owner_origin,
             "phase": "invocation_request", "risk_band": risk_band, "args": redacted_args,
@@ -615,8 +703,26 @@ class WebShieldStore:
             "mentions_payment": capability.get("mentions_payment", False),
             "mentions_credential": capability.get("mentions_credential", False),
             "sensitive_schema_fields": capability.get("sensitive_schema_fields", []),
+            "registration_status": registration_status,
+            "registration_non_executable": non_executable,
         }
+        if non_executable:
+            # Force a blocking decision regardless of softer pack rules: a
+            # rejected/pending registration is not an approved tool surface.
+            metadata["force_block_reason"] = f"registration_status={registration_status}"
+            risk_score = max(int(risk_score), 90)
         event = self._log_event(tenant_id, "webmcp.tool_invocation_requested", session_id=session_id, tool_name=tool_name, owner_origin=owner_origin, risk_score=risk_score, metadata=metadata)
+        if non_executable:
+            # Ensure clients see block even if policy pack has no matching rule.
+            action = event.get("action") or {}
+            meta = dict(action.get("metadata") or {})
+            meta["policy_decision"] = "block"
+            meta["requested_enforcement"] = "block"
+            meta["achieved_enforcement"] = "block" if enforcement_capable else "unavailable"
+            action["metadata"] = meta
+            event["action"] = action
+            event["decision"] = {"action": "block", "reason": meta.get("force_block_reason") or "registration not active"}
+            event["status"] = "blocked"
         return {"event": event, "risk_score": risk_score, "risk_band": risk_band}
 
     def record_invocation_completed(
@@ -854,8 +960,19 @@ class WebShieldStore:
 
         if decision == "trust_origin":
             self.set_trust(tenant_id, approval["owner_origin"], "trusted", created_by=resolved_by)
+            if approval.get("identity_key"):
+                self.activate_registration(tenant_id, identity_key=approval["identity_key"])
+        elif decision in {"allow_once", "allow_session"}:
+            if approval.get("identity_key"):
+                self.activate_registration(tenant_id, identity_key=approval["identity_key"])
         elif decision == "block_origin":
             self.set_trust(tenant_id, approval["owner_origin"], "blocked", created_by=resolved_by)
+            if approval.get("identity_key"):
+                self._set_registration_status(
+                    tenant_id,
+                    identity_key=approval["identity_key"],
+                    status="rejected",
+                )
 
         return self.get_approval(tenant_id, request_id)
 

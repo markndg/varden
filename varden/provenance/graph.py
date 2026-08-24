@@ -12,11 +12,13 @@ from typing import Any, Iterable
 from .models import EDGE_TYPES, NODE_TYPES, GraphEdge, GraphNode, new_id
 
 DEFAULT_MAX_DEPTH = 32
+DEFAULT_MAX_NODES = 256
 
 
 class ProvenanceGraph:
-    def __init__(self, *, max_depth: int = DEFAULT_MAX_DEPTH) -> None:
+    def __init__(self, *, max_depth: int = DEFAULT_MAX_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> None:
         self.max_depth = max(1, int(max_depth))
+        self.max_nodes = max(1, int(max_nodes))
         self.nodes: dict[str, GraphNode] = {}
         self.edges: list[GraphEdge] = []
         self._out: dict[str, list[GraphEdge]] = defaultdict(list)
@@ -61,10 +63,19 @@ class ProvenanceGraph:
         node_id: str,
         *,
         max_depth: int | None = None,
+        max_nodes: int | None = None,
         edge_types: Iterable[str] | None = None,
     ) -> list[tuple[GraphNode, int, str]]:
-        """Bounded BFS over incoming edges. Returns (node, depth, via_edge_type)."""
+        """Bounded BFS over incoming edges. Returns (node, depth, via_edge_type).
+
+        Both depth and absolute node visit counts are capped so wide fan-in
+        cannot turn policy evaluation into a DoS.
+        """
         limit = self.max_depth if max_depth is None else max(1, int(max_depth))
+        node_cap = self.max_nodes if max_nodes is None else max(1, int(max_nodes))
+        # Never exceed the graph's configured caps even if a caller asks for more.
+        limit = min(limit, self.max_depth)
+        node_cap = min(node_cap, self.max_nodes)
         allowed = set(edge_types) if edge_types else None
         seen: set[str] = {node_id}
         out: list[tuple[GraphNode, int, str]] = []
@@ -74,6 +85,8 @@ class ProvenanceGraph:
             if depth >= limit:
                 continue
             for edge in self._in.get(current, []):
+                if len(out) >= node_cap:
+                    return out
                 if allowed is not None and edge.edge_type not in allowed:
                     continue
                 parent_id = edge.from_node

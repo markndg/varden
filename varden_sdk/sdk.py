@@ -85,7 +85,8 @@ class GuardResult:
 
     @property
     def blocked(self) -> bool:
-        return (self.decision or {}).get('action') == 'block'
+        # require_approval is non-executable without a scoped server approval.
+        return (self.decision or {}).get('action') in {'block', 'require_approval'}
 
     @property
     def warned(self) -> bool:
@@ -158,15 +159,29 @@ class VardenGuard:
         tenant: str = 'default',
         mode: str = 'enforce',
         auto_instrument: bool = True,
-        fail_mode: str = 'open',
+        fail_mode: str | None = None,
         timeout: float = 5.0,
     ):
         self.client = VardenClient(base_url=base_url, api_key=api_key, bearer_token=bearer_token, timeout=timeout)
         self.app_name = app_name
         self.tenant = tenant
         self.mode = mode
+        # Enforce mode fails closed by default: control-plane errors must not
+        # silently allow privileged side effects. Observe mode may stay open.
+        if fail_mode is None:
+            fail_mode = 'closed' if mode == 'enforce' else 'open'
         self.fail_mode = fail_mode
         self.auto_instrument = auto_instrument
+        if self.mode == 'enforce' and self.fail_mode == 'open':
+            import logging
+            import warnings
+            msg = (
+                "VardenGuard weakens enforcement: mode=enforce with fail_mode=open "
+                "allows side effects when the control plane is unreachable. "
+                "Prefer fail_mode=closed (the default for enforce)."
+            )
+            warnings.warn(msg, UserWarning, stacklevel=2)
+            logging.getLogger('varden_sdk').warning(msg)
 
     def activate(self) -> 'VardenGuard':
         self.client.ensure_credentials()
@@ -223,7 +238,7 @@ class VardenGuard:
                       output_payload: Any = None, error: str | None = None) -> dict[str, Any] | None:
         def _status_from_decision(d: dict[str, Any]) -> str:
             text = str(d.get('action') or '').strip().lower()
-            if text in {'block', 'blocked'}:
+            if text in {'block', 'blocked', 'require_approval', 'approval_required'}:
                 return 'blocked'
             if text in {'warn', 'warned'}:
                 return 'warned'
@@ -721,6 +736,11 @@ def _patch_subprocess(guard: VardenGuard) -> None:
 
 
 def protect_from_env(**overrides: Any) -> VardenGuard:
+    raw_fail = os.getenv('VARDEN_FAIL_MODE')
+    # Unset → None so VardenGuard applies mode-based default (enforce→closed).
+    # Explicit open/closed from the environment is respected and, for open+enforce,
+    # emits a conspicuous warning in VardenGuard.__init__.
+    resolved_fail = raw_fail if raw_fail in {'open', 'closed'} else None
     cfg = {
         'base_url': os.getenv('VARDEN_BASE_URL', 'http://127.0.0.1:8000'),
         'api_key': os.getenv('VARDEN_API_KEY'),
@@ -729,7 +749,7 @@ def protect_from_env(**overrides: Any) -> VardenGuard:
         'tenant': os.getenv('VARDEN_TENANT', 'default'),
         'mode': os.getenv('VARDEN_MODE', 'enforce'),
         'auto_instrument': os.getenv('VARDEN_AUTO_INSTRUMENT', 'true').lower() == 'true',
-        'fail_mode': os.getenv('VARDEN_FAIL_MODE', 'open'),
+        'fail_mode': resolved_fail,
         'timeout': float(os.getenv('VARDEN_TIMEOUT', '5.0')),
     }
     cfg.update({k: v for k, v in overrides.items() if v is not None})

@@ -42,12 +42,33 @@ def _as_dict(action: Action | dict[str, Any]) -> dict[str, Any]:
     return dict(action or {})
 
 
+def _demote_client_source(src: ProvenanceSource) -> ProvenanceSource:
+    """Client-supplied provenance can never self-attest trust or user identity.
+
+    Any integrity=verified / trust=trusted / source_type=user claim arriving
+    via action metadata is treated as forgery and demoted. Verified user
+    sources may only be injected via server-side kwargs / store lookups.
+    """
+    src.integrity = "unverified"
+    src.authenticated = False
+    if src.source_type == "user":
+        src.source_type = "unknown"
+        src.trust_level = "unknown"
+        src.provenance_complete = False
+        src.metadata = {**(src.metadata or {}), "forged_user_claim": True}
+    elif src.trust_level in {"trusted", "delegated"}:
+        src.trust_level = "unknown"
+        src.provenance_complete = False
+        src.metadata = {**(src.metadata or {}), "forged_trust_claim": True}
+    return src
+
+
 def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSource]:
     """Extract provenance sources from action metadata / SDK lineage.
 
-    Client-asserted trust=trusted / source=user is NOT accepted unless
-    integrity is already marked verified by a server-side path. Unknown
-    or missing provenance becomes an explicit unknown source.
+    Client-asserted trust=trusted / source=user / integrity=verified is
+    NEVER accepted from request metadata. Unknown or missing provenance
+    becomes an explicit unknown source.
     """
     sources: list[ProvenanceSource] = []
     raw_list = []
@@ -62,10 +83,15 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
 
     for raw in raw_list:
         if isinstance(raw, str):
-            # Legacy SDK lineage string — treat as untrusted external unless
-            # it is an explicit verified user marker.
+            # Legacy SDK lineage strings — including forged "user" markers —
+            # are observational only. Never mint a verified user source.
             if raw in {"user", "user:verified", "principal:user"}:
-                sources.append(ProvenanceSource.user())
+                sources.append(
+                    ProvenanceSource.unknown(
+                        origin="client_asserted_user",
+                        reason="forged_user_lineage_string",
+                    )
+                )
             else:
                 sources.append(
                     ProvenanceSource(
@@ -81,15 +107,7 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
             continue
         if not isinstance(raw, dict):
             continue
-        src = ProvenanceSource.from_dict(raw)
-        # Strip forged trusted/user claims from unverified clients.
-        if src.integrity != "verified":
-            if src.trust_level in {"trusted", "delegated"}:
-                src.trust_level = "unknown"
-            if src.source_type == "user" and src.integrity != "verified":
-                src.source_type = "unknown"
-                src.trust_level = "unknown"
-        sources.append(src)
+        sources.append(_demote_client_source(ProvenanceSource.from_dict(raw)))
 
     # Web Shield / MCP annotations on the action itself.
     if metadata.get("webmcp") or metadata.get("owner_origin"):
@@ -120,7 +138,9 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
                 source_type="webmcp_tool" if metadata.get("webmcp") else "mcp_tool_definition",
                 origin=str(metadata.get("owner_origin") or metadata.get("origin") or ""),
                 trust_level=mapped,
-                integrity="verified" if mapped == "internal" else "unverified",
+                # Observational annotation from this server path — not a
+                # client self-attestation of user authority.
+                integrity="unverified",
                 authenticated=False,
                 provenance_complete=True,
                 metadata={"webshield": True, "findings_count": len(findings)},
@@ -131,8 +151,9 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
         trust = str(metadata.get("mcp_trust") or "unknown")
         if trust not in {"trusted", "untrusted", "hostile", "internal", "unknown", "delegated"}:
             trust = "unknown"
-        # MCP servers do not get to declare themselves trusted.
-        if trust == "trusted" and metadata.get("mcp_trust_integrity") != "verified":
+        # MCP servers do not get to declare themselves trusted — including
+        # via a forged mcp_trust_integrity marker.
+        if trust in {"trusted", "delegated"}:
             trust = "untrusted"
         sources.append(
             ProvenanceSource(
@@ -140,15 +161,16 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
                 source_type="mcp_tool_response" if metadata.get("is_tool_result") else "mcp_tool_definition",
                 origin=f"mcp://{metadata.get('mcp_server')}",
                 principal=str(metadata.get("mcp_server") or ""),
-                trust_level=trust if trust != "trusted" else "untrusted",
+                trust_level=trust,
                 integrity="unverified",
                 provenance_complete=bool(metadata.get("provenance_complete", True)),
             )
         )
 
-    # Explicit user-intent marker from a trusted integration (monitor/session).
-    if metadata.get("user_intent") is True and metadata.get("user_intent_integrity") == "verified":
-        sources.append(ProvenanceSource.user(principal=str(metadata.get("user_principal") or "user")))
+    # Client-asserted user_intent / user_intent_integrity / approved /
+    # user_granted_capabilities are intentionally ignored here. Only the
+    # server_verified_user kwarg (or a store-backed verified Delegation)
+    # may introduce a trusted user source.
 
     return sources
 
@@ -415,18 +437,46 @@ def analyse_action(
     graph: ProvenanceGraph | None = None,
     prior_sources: list[ProvenanceSource] | None = None,
     prior_taints: TaintSet | None = None,
+    server_verified_user: bool = False,
+    server_granted_capabilities: list[str] | None = None,
+    server_granted_resources: list[str] | None = None,
+    prior_lookup_failed: bool = False,
 ) -> ProvenanceAnalysis:
-    """Core pre-execution analysis. Pure function w.r.t. policy decision."""
+    """Core pre-execution analysis. Pure function w.r.t. policy decision.
+
+    ``server_verified_user`` / ``server_granted_*`` are process-local kwargs
+    only — never read from client metadata. HTTP/SDK callers cannot set them.
+    """
     start = time.perf_counter()
     data = _as_dict(action)
     metadata = dict(data.get("metadata") or {})
 
+    # Prior sources from the server store may only retain verified user/system
+    # trust; any other residual claim is demoted.
+    safe_priors: list[ProvenanceSource] = []
+    for src in prior_sources or []:
+        if src.integrity == "verified" and (
+            (src.source_type == "user" and src.trust_level == "trusted")
+            or src.source_type in {"system", "developer"}
+        ):
+            safe_priors.append(src)
+        else:
+            safe_priors.append(_demote_client_source(src))
+
     sources = merge_sources(
-        prior_sources or [],
+        safe_priors,
         _parse_sources_from_metadata(metadata),
     )
+    if server_verified_user:
+        sources.append(
+            ProvenanceSource.user(principal=str(metadata.get("user_principal") or "user"))
+        )
     if not sources:
         sources = [ProvenanceSource.unknown(reason="no_provenance_observed")]
+    if prior_lookup_failed:
+        sources.append(ProvenanceSource.unknown(reason="prior_provenance_lookup_failed"))
+        for src in sources:
+            src.provenance_complete = False
 
     taint = TaintSet()
     for src in sources:
@@ -451,27 +501,29 @@ def analyse_action(
 
     # Delegation resolution:
     # 1. Server-verified delegation argument wins.
-    # 2. Verified user source → issue a scoped delegation from metadata caps
-    #    or a sensible default covering the requested action only when the
-    #    integration marked explicit user intent.
+    # 2. Server-verified user kwargs → scoped user delegation.
     # 3. Otherwise default narrow agent delegation, then reduce for taint.
+    # Client metadata user_granted_capabilities / approved / delegated_authority
+    # are never consulted for enforcement.
     if delegation is not None and getattr(delegation, "integrity", None) == "verified":
         base_dlg = delegation
     else:
         client_dlg = extract_client_delegation(metadata)  # always unverified
         _ = client_dlg  # intentionally discarded for enforcement
-        if any(s.source_type == "user" and s.integrity == "verified" for s in sources):
-            # Explicit user intent: grant the capabilities declared by the
-            # verified integration, or the required set for this single action
-            # when metadata.user_granted_capabilities is present.
-            granted = metadata.get("user_granted_capabilities")
+        if server_verified_user:
+            granted = server_granted_capabilities
             if isinstance(granted, list) and granted:
-                base_dlg = user_delegation(granted, resources=metadata.get("user_granted_resources") or ["*"], trace_scope=data.get("trace_id"))
+                base_dlg = user_delegation(
+                    granted,
+                    resources=server_granted_resources or ["*"],
+                    trace_scope=data.get("trace_id"),
+                )
             else:
-                # Direct user command — delegate exactly what this action needs
-                # (still visible to policy; highly sensitive packs may still
-                # require_approval).
-                base_dlg = user_delegation(required.required or ["READ_PUBLIC"], resources=[required.resource or "*"], trace_scope=data.get("trace_id"))
+                base_dlg = user_delegation(
+                    required.required or ["READ_PUBLIC"],
+                    resources=[required.resource or "*"],
+                    trace_scope=data.get("trace_id"),
+                )
         else:
             base_dlg = default_agent_delegation(trace_scope=data.get("trace_id"))
 
@@ -518,11 +570,22 @@ def analyse_action(
     return analysis
 
 
-def enrich(action: Action, payload: Any = None, *, store: Any | None = None) -> Action:
+def enrich(
+    action: Action,
+    payload: Any = None,
+    *,
+    store: Any | None = None,
+    server_verified_user: bool = False,
+    server_granted_capabilities: list[str] | None = None,
+    server_granted_resources: list[str] | None = None,
+) -> Action:
     """Enrich a Varden Action with provenance/authority metadata for PolicyEngine.
 
     Safe to call even when no provenance context exists: missing provenance
     becomes explicit ``unknown``, never silent trust.
+
+    ``server_verified_*`` kwargs are process-local only (eval harness / trusted
+    integrations). They are never populated from HTTP request metadata.
     """
     meta = dict(action.metadata or {})
     # Allow integrations to pass prior taint via metadata._prior_taints
@@ -531,11 +594,13 @@ def enrich(action: Action, payload: Any = None, *, store: Any | None = None) -> 
         prior_taints = TaintSet.from_dict(meta["_prior_taints"])
 
     prior_sources = None
+    prior_lookup_failed = False
     if store is not None and action.trace_id:
         try:
             prior_sources = store.sources_for_trace(action.trace_id, tenant_id=action.tenant_id)
         except Exception:
             prior_sources = None
+            prior_lookup_failed = True
 
     # Server-side active delegation for this trace, if any.
     delegation = None
@@ -544,8 +609,18 @@ def enrich(action: Action, payload: Any = None, *, store: Any | None = None) -> 
             delegation = store.active_delegation(action.trace_id, tenant_id=action.tenant_id)
         except Exception:
             delegation = None
+            prior_lookup_failed = True
 
-    analysis = analyse_action(action, delegation=delegation, prior_sources=prior_sources, prior_taints=prior_taints)
+    analysis = analyse_action(
+        action,
+        delegation=delegation,
+        prior_sources=prior_sources,
+        prior_taints=prior_taints,
+        server_verified_user=server_verified_user,
+        server_granted_capabilities=server_granted_capabilities,
+        server_granted_resources=server_granted_resources,
+        prior_lookup_failed=prior_lookup_failed,
+    )
     enriched = analysis.to_metadata()
 
     # Merge without dropping unrelated metadata.

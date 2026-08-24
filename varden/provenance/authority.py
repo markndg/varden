@@ -38,6 +38,18 @@ _SHELL_INTERPRETERS = {
     "csh", "tcsh",
 }
 
+# Language runtimes that accept inline code evaluation — treat like shells.
+_SCRIPT_EVAL_RUNTIMES = {
+    "python", "python2", "python3", "pypy", "pypy3",
+    "node", "nodejs", "deno", "bun",
+    "ruby", "perl", "php", "lua", "osascript", "tclsh", "wish",
+}
+
+_INLINE_EVAL_FLAGS = {
+    "-c", "/c", "-Command", "-EncodedCommand",
+    "-e", "-r", "--eval", "-p",
+}
+
 _PRIVILEGED_CLIS = {
     "aws", "gcloud", "az", "kubectl", "helm", "terraform", "pulumi",
     "docker", "podman", "ssh", "scp", "rsync", "sudo", "doas",
@@ -49,6 +61,8 @@ _DESTRUCTIVE_TOKENS = {"rm", "del", "rmdir", "format", "mkfs", "dd", "shred", "w
 _NETWORK_CLIENTS = {"curl", "wget", "http", "httpie", "nc", "ncat", "fetch"}
 
 _PACKAGE_MANAGERS = {"npm", "pip", "pip3", "yarn", "pnpm", "cargo", "go", "gem", "composer", "apt", "brew"}
+
+_ENV_WRAPPERS = {"env", "nice", "nohup", "stdbuf", "timeout", "time", "ionice"}
 
 
 def _home_dir() -> Path:
@@ -167,12 +181,29 @@ def classify_subprocess(executable: str | None, argv: list[Any] | None = None, *
     argv = list(argv or [])
     exe = str(executable or (argv[0] if argv else "") or "")
     base = os.path.basename(exe).lower()
+    # Unwrap env/nice/nohup so `env bash -c` / `env python -c` classify as the real interpreter.
+    effective_argv = list(argv) if argv else ([exe] if exe else [])
+    if base in _ENV_WRAPPERS and len(effective_argv) >= 2:
+        # Skip VAR=val assignments after env.
+        idx = 1
+        while idx < len(effective_argv) and "=" in str(effective_argv[idx]) and not str(effective_argv[idx]).startswith("-"):
+            idx += 1
+        if idx < len(effective_argv):
+            exe = str(effective_argv[idx])
+            base = os.path.basename(exe).lower()
+            effective_argv = effective_argv[idx:]
+
     required: set[str] = {"EXECUTE_LOCAL"}
     reason_bits = [f"subprocess {base or 'unknown'}"]
 
-    if base in _SHELL_INTERPRETERS or any(str(a) in {"-c", "/c", "-Command", "-EncodedCommand"} for a in argv):
+    has_inline_eval = any(str(a) in _INLINE_EVAL_FLAGS for a in effective_argv)
+    if (
+        base in _SHELL_INTERPRETERS
+        or base in _SCRIPT_EVAL_RUNTIMES
+        or has_inline_eval
+    ):
         required.add("EXECUTE_PRIVILEGED")
-        reason_bits.append("shell interpreter")
+        reason_bits.append("shell/script interpreter" if base in _SHELL_INTERPRETERS or base in _SCRIPT_EVAL_RUNTIMES else "inline eval flag")
 
     if base in _PRIVILEGED_CLIS or base in _PACKAGE_MANAGERS:
         required.add("EXECUTE_PRIVILEGED")
@@ -185,17 +216,33 @@ def classify_subprocess(executable: str | None, argv: list[Any] | None = None, *
         required.add("NETWORK_PUBLIC")
         reason_bits.append("network client")
 
-    tokens = {str(a).lower() for a in argv}
+    # Nested interpreter after an unknown wrapper → raise uncertainty to privileged.
+    nested = {os.path.basename(str(a)).lower() for a in effective_argv[1:]}
+    if nested & (_SHELL_INTERPRETERS | _SCRIPT_EVAL_RUNTIMES | _PRIVILEGED_CLIS):
+        required.add("EXECUTE_PRIVILEGED")
+        reason_bits.append("nested interpreter/cli")
+
+    tokens = {str(a).lower() for a in effective_argv}
     if tokens & _DESTRUCTIVE_TOKENS or base in _DESTRUCTIVE_TOKENS:
         required.add("DELETE")
         reason_bits.append("destructive")
 
     # Detect credential-path arguments.
-    for arg in argv:
+    for arg in effective_argv:
         cat, auth = classify_filesystem_path(str(arg), cwd=cwd)
         if auth == "READ_SECRETS":
             required.add("READ_SECRETS")
             reason_bits.append(f"touches {cat}")
+
+    # Unknown executable with no recognised safe profile → increase uncertainty.
+    known = (
+        _SHELL_INTERPRETERS | _SCRIPT_EVAL_RUNTIMES | _PRIVILEGED_CLIS
+        | _NETWORK_CLIENTS | _PACKAGE_MANAGERS | _ENV_WRAPPERS
+        | {"ls", "cat", "head", "tail", "echo", "true", "false", "pwd", "whoami", "date", "uname"}
+    )
+    if base and base not in known and "EXECUTE_PRIVILEGED" not in required:
+        required.add("EXECUTE_PRIVILEGED")
+        reason_bits.append("unknown executable — elevated uncertainty")
 
     return AuthorityRequirement(
         required={r for r in required if r in AUTHORITY_CLASSES},
@@ -276,6 +323,17 @@ def classify_action(action: dict[str, Any] | Any) -> AuthorityRequirement:
         if isinstance(argv, str):
             argv = [argv]
         executable = tool or (argv[0] if argv else None)
+        return classify_subprocess(executable, list(argv), cwd=metadata.get("cwd"))
+
+    # SDK patches send type=tool_call for Popen/run — route to subprocess classifier.
+    if action_type == "tool_call" and (
+        metadata.get("execution_surface") == "subprocess"
+        or str(tool or "").startswith("subprocess.")
+    ):
+        argv = args.get("argv") or args.get("args") or []
+        if isinstance(argv, str):
+            argv = [argv]
+        executable = (argv[0] if argv else None) or tool
         return classify_subprocess(executable, list(argv), cwd=metadata.get("cwd"))
 
     if action_type in {"file_read", "file_write", "filesystem"}:

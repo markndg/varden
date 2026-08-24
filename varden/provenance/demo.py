@@ -66,7 +66,7 @@ def run_provenance_demo(host: str = "127.0.0.1", port: int = 8000, open_browser:
 
         scenarios = []
 
-        # 1) Benign user-authorised workspace-style public GET
+        # 1) Benign default-delegation public GET (no client-asserted user forgery)
         r1 = _guard(base, {
             "action": {
                 "type": "http_request",
@@ -74,15 +74,11 @@ def run_provenance_demo(host: str = "127.0.0.1", port: int = 8000, open_browser:
                 "url": "https://example.com/docs",
                 "agent_name": "demo-agent",
                 "trace_id": "demo-benign",
-                "metadata": {
-                    "user_intent": True,
-                    "user_intent_integrity": "verified",
-                    "user_granted_capabilities": ["NETWORK_PUBLIC", "READ_PUBLIC"],
-                },
+                "metadata": {},
             },
             "payload": {"url": "https://example.com/docs"},
         })
-        scenarios.append(("benign user-authorised public GET", r1.get("decision", {}).get("action"), "allow/monitor/warn"))
+        scenarios.append(("benign default-delegation public GET", r1.get("decision", {}).get("action"), "allow/monitor/warn"))
 
         # 2) Confused deputy: untrusted MCP → secret read
         home = str(Path.home())
@@ -168,7 +164,7 @@ def run_provenance_demo(host: str = "127.0.0.1", port: int = 8000, open_browser:
         })
         scenarios.append(("require-approval untrusted private read", r5.get("decision", {}).get("action"), "require_approval/block"))
 
-        # 6) Allowed sanitised numeric case (user-granted public network with clean intent)
+        # 6) Allowed public GET under default delegation (client cannot mint user trust)
         r6 = _guard(base, {
             "action": {
                 "type": "http_request",
@@ -177,15 +173,12 @@ def run_provenance_demo(host: str = "127.0.0.1", port: int = 8000, open_browser:
                 "agent_name": "demo-agent",
                 "trace_id": "demo-sanitised",
                 "metadata": {
-                    "user_intent": True,
-                    "user_intent_integrity": "verified",
-                    "user_granted_capabilities": ["NETWORK_PUBLIC", "READ_PUBLIC"],
                     "sanitiser": "strict_integer_parser@1",
                 },
             },
             "payload": {"temp": 21},
         })
-        scenarios.append(("allowed sanitised/user-authorised GET", r6.get("decision", {}).get("action"), "allow/monitor/warn"))
+        scenarios.append(("allowed public GET under default delegation", r6.get("decision", {}).get("action"), "allow/monitor/warn"))
 
         print("\nProvenance authority-flow demo results:")
         for label, actual, expected in scenarios:

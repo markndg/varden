@@ -462,7 +462,10 @@ class Delegation:
         return cls(
             delegation_id=new_id("dlg"),
             principal=principal,
-            capabilities=["READ_PUBLIC", "NETWORK_PUBLIC", "MCP_UNPRIVILEGED"],
+            # READ_LOCAL covers workspace/tmp reads that are not private home
+            # or secret paths. Privileged FS/shell/network still require an
+            # explicit user delegation or approval.
+            capabilities=["READ_PUBLIC", "READ_LOCAL", "NETWORK_PUBLIC", "MCP_UNPRIVILEGED"],
             resources=["*"],
             issued_by="system",
             trace_scope=trace_scope,

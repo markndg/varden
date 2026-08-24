@@ -74,8 +74,9 @@ def create_app(config: AppConfig) -> FastAPI:
     token_budget_store = TokenBudgetStore(config.db_path)
     mcp_inventory_store = McpInventoryStore(config.db_path)
     idem = IdempotencyStore(config.db_path)
-    webshield_store = WebShieldStore(config.db_path, event_store, policy)
+    webshield_store = WebShieldStore(config.db_path, event_store, policy, provenance_store=None)
     provenance_store = ProvenanceStore(config.db_path)
+    webshield_store.provenance_store = provenance_store
     queue = SQLiteQueue(config.db_path)
     exporter = EvidenceExporter(event_store)
     classifier = ClassifierEngine()
@@ -381,6 +382,10 @@ def create_app(config: AppConfig) -> FastAPI:
     def status_from_decision(action: str | None) -> str:
         text = str(action or "").strip().lower()
         if text in {"block", "blocked"}:
+            return "blocked"
+        # require_approval without a scoped approval token must not execute.
+        # Until SDK-scoped approvals exist, treat as blocked at the guard boundary.
+        if text in {"require_approval", "approval_required"}:
             return "blocked"
         if text in {"warn", "warned"}:
             return "warned"
@@ -753,16 +758,25 @@ def create_app(config: AppConfig) -> FastAPI:
         status = status_from_decision(decision.action)
         event_id = persist_event(action=action, decision=decision, status=status, input_payload=raw_payload, replay_key=action.tool, error=f"[Varden BLOCKED] {decision.reason}" if status == "blocked" else None)
         response = {"event_id": event_id, "decision": decision.to_dict(), "action": action.to_dict()}
-        if decision.action == "block":
+        # Fail closed for block AND require_approval. Client-asserted
+        # "approved=true" is ignored — only a future server-issued scoped
+        # approval token may clear require_approval.
+        if decision.action in {"block", "require_approval"}:
             raise HTTPException(status_code=403, detail=response)
         return response
 
     @app.post("/sdk/log")
     @app.post("/v1/actions/log")
     def sdk_log(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        """Audit/post-record endpoint only.
+
+        Does **not** run PolicyEngine or provenance enrichment. Privileged
+        side effects must be pre-checked via ``POST /sdk/guard``. Calling
+        ``/sdk/log`` alone never authorises an action.
+        """
         record = require(x_api_key, authorization, "viewer", scope="ingest")
         action_payload = payload.get("action") or {}
-        decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log"}
+        decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log (audit-only; not an enforcement decision)"}
         action = normalize_action(action_payload, record["tenant_id"])
         status = payload.get("status") or status_from_decision(decision_payload.get("action"))
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
