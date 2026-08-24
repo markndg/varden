@@ -39,6 +39,9 @@ from .token_budget import TokenBudgetStore, simulate_budget_trace
 from .rules.registry import load_budget_rules
 from .webshield.routes import register_webshield_routes
 from .webshield.store import WebShieldStore
+from .provenance.store import ProvenanceStore
+from .provenance.engine import enrich as provenance_enrich
+from .provenance.routes import register_provenance_routes
 
 
 class EventStreamBroker:
@@ -72,6 +75,7 @@ def create_app(config: AppConfig) -> FastAPI:
     mcp_inventory_store = McpInventoryStore(config.db_path)
     idem = IdempotencyStore(config.db_path)
     webshield_store = WebShieldStore(config.db_path, event_store, policy)
+    provenance_store = ProvenanceStore(config.db_path)
     queue = SQLiteQueue(config.db_path)
     exporter = EvidenceExporter(event_store)
     classifier = ClassifierEngine()
@@ -435,6 +439,11 @@ def create_app(config: AppConfig) -> FastAPI:
             # Always compute lightweight base risk so warned/blocked actions are never shown as riskless.
             action = intelligence.enrich(action)
             meta["scan"]["depth"] = "fast"
+        # Provenance-aware authority-flow enrichment. Missing provenance becomes
+        # explicit unknown — never silent trust. Runs before PolicyEngine.
+        action.metadata = meta
+        action = provenance_enrich(action, payload, store=provenance_store)
+        meta = dict(action.metadata or {})
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         meta["decision_latency_ms"] = round(elapsed_ms, 3)
         action.metadata = meta
@@ -596,6 +605,10 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get("/ui/web-shield", response_class=HTMLResponse)
     def ui_web_shield():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/authority", response_class=HTMLResponse)
+    def ui_authority():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
     @app.get("/webshield/lab", response_class=HTMLResponse)
@@ -995,5 +1008,6 @@ def create_app(config: AppConfig) -> FastAPI:
         return {"scenarios": run_demo_scenarios(record["tenant_id"]), "dashboard": dashboard_bootstrap_payload(record["tenant_id"])}
 
     register_webshield_routes(app, require=require, webshield_store=webshield_store, idem=idem)
+    register_provenance_routes(app, require=require, provenance_store=provenance_store, event_store=event_store)
 
     return app

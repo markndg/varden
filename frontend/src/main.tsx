@@ -7,6 +7,7 @@ import { DecisionPage as DecisionPageView } from './components/dashboard/Decisio
 import { OverviewPage as OverviewPageView } from './components/dashboard/OverviewPage';
 import { RulesPage as RulesPageView } from './components/dashboard/RulesPage';
 import { WebShieldPage } from './components/dashboard/WebShieldPage';
+import { AuthorityProvenancePage } from './components/dashboard/AuthorityProvenancePage';
 import { ADVANCED_FIELDS, BUDGET_RULES_BUCKET, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, POLICY_BUCKETS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
 import { detailIdFromLocation, pageFromLocation, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
 import { averageLatencyFromPoints, classNames, fmtNum, fmtTs, fromDateTimeLocalValue, latencyValueFromPoint, toDateTimeLocalValue } from './lib/format';
@@ -748,6 +749,7 @@ function Shell() {
           <button className={classNames('nav__item', page === 'rules' && 'is-active')} onClick={() => navigate('rules', '/ui/rules')}>Rules Workspace</button>
           <button className={classNames('nav__item', page === 'coverage' && 'is-active')} onClick={() => navigate('coverage', '/ui/coverage-gaps')}>Coverage Gaps</button>
           <button className={classNames('nav__item', page === 'webshield' && 'is-active')} onClick={() => navigate('webshield', '/ui/web-shield')}>Web Shield</button>
+          <button className={classNames('nav__item', page === 'authority' && 'is-active')} onClick={() => navigate('authority', '/ui/authority')}>Authority & Provenance</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
         <div className="sidebar__section">
@@ -830,8 +832,8 @@ function Shell() {
         <header className="topbar card">
           <div>
             <div className="eyebrow">Live operations</div>
-            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield: browser tool supply chain' : 'Trace and flow mission control'}</h1>
-            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Websites can dynamically register WebMCP tools for browser agents. Varden treats that tool metadata and every tool result as untrusted input, and governs it the same way it governs any other tool call.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
+            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield: browser tool supply chain' : page === 'authority' ? 'Authority & provenance' : 'Trace and flow mission control'}</h1>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Websites can dynamically register WebMCP tools for browser agents. Varden treats that tool metadata and every tool result as untrusted input, and governs it the same way it governs any other tool call.' : page === 'authority' ? 'Track where information came from and whether that causal chain was authorised to exercise the capability the agent is about to use.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -936,6 +938,12 @@ function Shell() {
             token={token}
             onOpenPolicy={() => navigate('rules', '/ui/rules')}
             helpers={{ api, classNames, fmtNum, fmtTs, displayValue }}
+          />
+        ) : null}
+
+        {page === 'authority' ? (
+          <AuthorityProvenancePage
+            helpers={{ api, classNames, token }}
           />
         ) : null}
       </main>

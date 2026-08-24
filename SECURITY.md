@@ -16,3 +16,10 @@ before public disclosure.
 - suggested mitigation if known
 
 Please avoid opening **public issues** for exploitable vulnerabilities until a fix is available.
+
+## Provenance-aware authority flow
+
+Varden's provenance subsystem treats client-supplied trust, delegation and
+approval claims as untrusted unless verified by the control plane. Missing
+or incomplete causal context is never silently labelled trusted. See
+[`docs/provenance-limitations.md`](docs/provenance-limitations.md).

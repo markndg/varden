@@ -56,6 +56,7 @@ _current_workflow: contextvars.ContextVar[str | None] = contextvars.ContextVar('
 _current_lineage: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar('varden_lineage', default=None)
 _current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar('varden_trace_id', default=None)
 _current_parent_event_id: contextvars.ContextVar[int | None] = contextvars.ContextVar('varden_parent_event_id', default=None)
+_current_provenance: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar('varden_provenance', default=None)
 
 _PATCH_LOCK = threading.Lock()
 _PATCHED = False
@@ -183,6 +184,13 @@ class VardenGuard:
         parent_event_id = _current_parent_event_id.get()
         lineage = _merge_lineage(_current_lineage.get() or {}, payload, args or {})
         auto_meta = _infer_metadata(payload if payload is not None else args or {}, url=url, tool=tool, method=method)
+        provenance_sources = list(_current_provenance.get() or [])
+        merged_meta = {'app_name': self.app_name, 'tenant': self.tenant, **auto_meta, **(metadata or {}), 'lineage': lineage}
+        if provenance_sources:
+            existing = list(merged_meta.get('provenance_sources') or [])
+            merged_meta['provenance_sources'] = existing + provenance_sources
+            # Incomplete observation unless an integration explicitly marks complete.
+            merged_meta.setdefault('provenance_complete', False)
         action = {
             'type': type,
             'tool': tool,
@@ -190,7 +198,7 @@ class VardenGuard:
             'method': method,
             'domain': urlparse(url).netloc if url else None,
             'args': _json_safe(args or {}),
-            'metadata': _json_safe({'app_name': self.app_name, 'tenant': self.tenant, **auto_meta, **(metadata or {}), 'lineage': lineage}),
+            'metadata': _json_safe(merged_meta),
             'agent_name': agent_name,
             'workflow_id': workflow_id,
             'parent_event_id': parent_event_id,
@@ -741,6 +749,45 @@ def tagged(value: Any, *, lineage: list[str] | None = None, classification: str 
     return TaggedData(value=value, lineage=computed_lineage, classification=classification, metadata=computed_meta)
 
 
+def observe_provenance(
+    *,
+    source_type: str = "unknown",
+    origin: str = "",
+    trust_level: str = "untrusted",
+    principal: str = "",
+    provenance_complete: bool = False,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Attach an observed provenance source to the current causal context.
+
+    Client-side trust claims of ``trusted``/``delegated`` are downgraded to
+    ``unknown`` — only the control plane can mint verified trust.
+    """
+    if trust_level in {"trusted", "delegated"}:
+        trust_level = "unknown"
+    entry = {
+        "source_type": source_type,
+        "origin": origin,
+        "principal": principal,
+        "trust_level": trust_level,
+        "integrity": "unverified",
+        "provenance_complete": bool(provenance_complete),
+        "metadata": dict(metadata or {}),
+    }
+    current = list(_current_provenance.get() or [])
+    current.append(entry)
+    _current_provenance.set(current)
+
+
+@contextmanager
+def provenance_scope(sources: list[dict[str, Any]] | None = None):
+    token = _current_provenance.set(list(sources or []))
+    try:
+        yield
+    finally:
+        _current_provenance.reset(token)
+
+
 def tool(name: str | None = None) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
         if inspect.iscoroutinefunction(fn):
@@ -760,7 +807,7 @@ def tool(name: str | None = None) -> Callable[[Callable[..., Any]], Callable[...
 
 
 @contextmanager
-def trace_agent(agent_name: str, workflow_id: str | None = None, lineage: dict[str, Any] | None = None, trace_id: str | None = None):
+def trace_agent(agent_name: str, workflow_id: str | None = None, lineage: dict[str, Any] | None = None, trace_id: str | None = None, provenance: list[dict[str, Any]] | None = None):
     tok_agent = _current_agent.set(agent_name)
     effective_workflow_id = workflow_id or str(uuid.uuid4())
     effective_trace_id = trace_id or effective_workflow_id
@@ -768,6 +815,7 @@ def trace_agent(agent_name: str, workflow_id: str | None = None, lineage: dict[s
     tok_lineage = _current_lineage.set(lineage or {})
     tok_trace = _current_trace_id.set(effective_trace_id)
     tok_parent = _current_parent_event_id.set(None)
+    tok_prov = _current_provenance.set(list(provenance or []))
     try:
         yield {'agent_name': agent_name, 'workflow_id': _current_workflow.get(), 'trace_id': _current_trace_id.get()}
     finally:
@@ -776,3 +824,4 @@ def trace_agent(agent_name: str, workflow_id: str | None = None, lineage: dict[s
         _current_lineage.reset(tok_lineage)
         _current_trace_id.reset(tok_trace)
         _current_parent_event_id.reset(tok_parent)
+        _current_provenance.reset(tok_prov)

@@ -187,6 +187,36 @@ def main(argv: list[str] | None = None) -> int:
     ws_trust_remove = ws_trust_sub.add_parser('remove', help='Remove a trust decision for an origin')
     ws_trust_remove.add_argument('origin')
     ws_trust_remove.add_argument('--db-path', default=None)
+
+    provenance = sub.add_parser('provenance', help='Provenance-aware authority-flow protection')
+    prov_sub = provenance.add_subparsers(dest='provenance_command')
+    prov_demo = prov_sub.add_parser('demo', help='Run the provenance/authority-flow demo')
+    prov_demo.add_argument('--host', default='127.0.0.1')
+    prov_demo.add_argument('--port', type=int, default=8000)
+    prov_demo.add_argument('--no-browser', action='store_true')
+    prov_eval = prov_sub.add_parser('evaluate', help='Run the authority-flow evaluation corpus')
+    prov_eval.add_argument('--json', action='store_true')
+    prov_trace = prov_sub.add_parser('trace', help='Show provenance for a trace id')
+    prov_trace.add_argument('trace_id')
+    prov_trace.add_argument('--db', default=None)
+    prov_explain = prov_sub.add_parser('explain', help='Explain authority-flow for an event id')
+    prov_explain.add_argument('event_id')
+    prov_explain.add_argument('--db', default=None)
+    prov_explain.add_argument('--action-file', default=None)
+    prov_sources = prov_sub.add_parser('sources', help='List provenance sources for a trace')
+    prov_sources.add_argument('trace_id')
+    prov_sources.add_argument('--db', default=None)
+
+    authority = sub.add_parser('authority', help='Authority delegation and violation inspection')
+    auth_sub = authority.add_subparsers(dest='authority_command')
+    auth_viol = auth_sub.add_parser('violations', help='List recorded authority-flow violations')
+    auth_viol.add_argument('--db', default=None)
+    auth_viol.add_argument('--limit', type=int, default=50)
+    auth_viol.add_argument('--json', action='store_true')
+    auth_explain = auth_sub.add_parser('explain', help='Explain authority-flow for an event id')
+    auth_explain.add_argument('event_id')
+    auth_explain.add_argument('--db', default=None)
+
     monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
     monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
     session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
@@ -199,6 +229,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'web-shield':
         from .webshield.cli import webshield_argv
         return webshield_argv(args)
+    if args.command in {'provenance', 'authority'}:
+        from .provenance.cli import provenance_argv
+        return provenance_argv(args)
     if args.command == 'monitor':
         try:
             from varden_monitor.cli import monitor_argv

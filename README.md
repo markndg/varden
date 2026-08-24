@@ -127,9 +127,8 @@ varden web-shield demo
 
 The demo starts Varden, seeds a Web Shield dashboard, and opens a
 self-contained attack lab with 20 safe, simulated cases (prompt injection,
-Base64-obfuscated instructions, capability mismatch, cross-origin flows,
-lifecycle manipulation, and more) — no browser extension or external
-accounts required to see detection happen.
+Unicode tricks, capability mismatch, lifecycle rug-pulls and cross-origin
+flows). Import the `webmcp-web-shield` policy pack to enable enforcement.
 
 ```mermaid
 flowchart LR
@@ -144,8 +143,32 @@ fallback scanner, a framework-neutral `@varden/web-shield` JS SDK for
 first-party integrations, and a `varden web-shield evaluate` command that
 reports real precision/recall/latency against a versioned test corpus (not
 just claimed effectiveness). Full docs start at
-[`docs/web-shield.md`](docs/web-shield.md); an honest list of what it
+[`docs/web-shield-architecture.md`](docs/web-shield-architecture.md); an honest list of what it
 doesn't do is in [`docs/web-shield-limitations.md`](docs/web-shield-limitations.md).
+
+---
+
+## Provenance-aware authority flow
+
+Varden doesn't only ask whether an agent is allowed to use a tool. It asks
+whether the information that **caused** the tool call was authorised to
+exercise that tool's power.
+
+This protects against Ghostjacking-style chains where untrusted content
+(web page, issue, MCP result, WebMCP metadata) influences an agent into
+exercising privileges it already possesses — reading secrets, running a
+shell, calling a privileged MCP server, or exfiltrating data.
+
+```bash
+varden provenance evaluate
+varden provenance demo
+varden authority violations
+```
+
+Import the `provenance-authority-defense` policy pack for fail-closed
+defaults. Dashboard: `/ui/authority`.
+
+Docs: [`docs/provenance-authority.md`](docs/provenance-authority.md)
 
 ---
 

@@ -75,4 +75,4 @@ varden-mcp = "varden_mcp.server:main"
 include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*", "varden_mcp*"]
 
 [tool.setuptools.package-data]
-"varden" = ["web/**/*", "policy-packs/*.json", "webshield/corpus/*.json"]
+"varden" = ["web/**/*", "policy-packs/*.json", "webshield/corpus/*.json", "provenance/corpus/*.json"]
