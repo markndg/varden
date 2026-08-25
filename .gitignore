@@ -7,10 +7,12 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
 .coverage
 htmlcov/
 .cache/
 .git
+
 # Virtual envs
 .venv/
 venv/
@@ -26,7 +28,7 @@ dist/
 *.class
 sdks/java/target/
 
-# Local runtime state
+# Local runtime state / demo DBs
 policy.json
 *.db
 *.sqlite
@@ -34,6 +36,11 @@ policy.json
 *.log
 .env
 .env.local
+.varden*/
+.varden-*.db
+.varden-*-demo*.db
+.visual-qa/
+varden_alerts.jsonl
 
 # Node / frontend
 frontend/node_modules/
@@ -46,7 +53,6 @@ Thumbs.db
 .vscode/
 .idea/
 frontend/package-lock.json
-varden_alerts.jsonl
 TODO-OSS.md
 
 .pypirc

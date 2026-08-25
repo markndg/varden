@@ -101,19 +101,71 @@ one line. You get traces, coverage, and scoped approvals.
 
 ---
 
+## Enforced runtime boundary
+
+Privileged side effects on supported surfaces must pass a shared pre-execution
+guard (`POST /sdk/guard` + PolicyEngine) before they run. The product goal is
+honest coverage: never claim a surface is ENFORCED if a known path can bypass it.
+
+| Surface | Typical status | Notes |
+|---------|----------------|-------|
+| `requests` / `httpx` / `urllib` | ENFORCED | Monkeypatch after `protect()` |
+| Subprocess | ENFORCED / PARTIAL | Saved pre-patch refs bypass |
+| Filesystem | PARTIAL | Classifies `WRITE_CI` / `WRITE_CONFIG` / `WRITE_CODE` |
+| MCP | ENFORCED via gateway, else NOT_ROUTED | Use `varden mcp wrap` |
+| Raw sockets / aiohttp / urllib3-direct | UNCOVERED | Reported in coverage |
+
+**Modes:** `observe` · `guarded` (default) · `strict`  
+**Fail mode:** `closed` by default for guarded/strict (control-plane outage blocks).
+
+```bash
+varden coverage
+varden runtime readiness
+varden runtime self-test
+varden mcp wrap ~/.cursor/mcp.json --output /tmp/mcp.wrapped.json
+varden approvals pending
+```
+
+Strict mode refuses readiness when discovered relevant surfaces (for example MCP
+config present but NOT_ROUTED) remain unenforced, unless you explicitly accept
+them:
+
+```python
+varden.protect(mode="strict", allow_uncovered=["mcp"])
+```
+
+Scoped approvals are HMAC-signed, single-use, and bound to action / resource /
+authority / trace. Import `runtime-boundary-enforcement` for supply-chain
+defaults (untrusted → CI/config/code).
+
+**Local security verification** (loopback only, no external network):
+
+```bash
+python demos/runtime/run_security_verification.py
+python demos/runtime/mcp_cross_server_host.py
+```
+
+Docs: [runtime-boundary](docs/runtime-boundary.md) · [coverage](docs/runtime-coverage.md) ·
+[modes](docs/runtime-modes.md) · [MCP gateway](docs/mcp-gateway.md) ·
+[approvals](docs/approvals.md) · [limitations](docs/runtime-limitations.md)
+
+---
+
 ## What Varden covers
 
 | Action type | What gets checked |
 |-------------|-------------------|
-| Tool calls | MCP tool calls, before execution |
-| HTTP/API requests | Outbound calls, including payload classification |
+| Tool calls | MCP / Python tools, before execution (when routed or wrapped) |
+| HTTP/API requests | Outbound calls via requests/httpx/urllib (+ payload classification) |
 | Subprocess execution | Shell commands, before they run |
-| Filesystem (Python APIs) | Sensitive/write paths via runtime boundary (PARTIAL) |
-| LLM calls | Provider calls to OpenAI, Anthropic, others |
+| Filesystem (Python APIs) | Sensitive paths + workspace mutation classes (`WRITE_CI` / `WRITE_CONFIG` / `WRITE_CODE`) |
+| LLM calls | Provider transport (OpenAI, Anthropic); tool dispatch / callbacks separately attested |
+| MCP servers | Downstream calls when routed through the Varden gateway |
 | CLI tools | kubectl, terraform, aws, gcloud, git, docker, cursor — via `varden session` |
 
-Decisions are **allow**, **warn**, **block**, or **monitor**. Every decision lands in the
-dashboard with classifiers, risk scores, and a full trace.
+Decisions are **allow**, **warn**, **block**, **require_approval**, or **monitor**. Every
+decision lands in the dashboard with classifiers, risk scores, provenance/authority
+context, and a full trace.
 
 ---
 
@@ -174,16 +226,23 @@ This protects against Ghostjacking-style chains where untrusted content
 exercising privileges it already possesses — reading secrets, running a
 shell, calling a privileged MCP server, or exfiltrating data.
 
+Cross-server MCP causality is preserved on the **supported host path**: session
+provenance keyed by `trace_id` (SDK context + control plane), not by manually
+stuffing provenance into later tool calls. See `VardenMcpHost` and
+[docs/provenance-mcp.md](docs/provenance-mcp.md).
+
 ```bash
 varden provenance evaluate
 varden provenance demo
 varden authority violations
+varden authority delegations
 ```
 
 Import the `provenance-authority-defense` policy pack for fail-closed
-defaults. Dashboard: `/ui/authority`.
+defaults. Dashboard: `/ui/authority` (overview, attack paths, Protection Coverage).
 
-Docs: [`docs/provenance-authority.md`](docs/provenance-authority.md)
+Docs: [`docs/provenance-authority.md`](docs/provenance-authority.md) ·
+[`docs/provenance-limitations.md`](docs/provenance-limitations.md)
 
 ---
 
@@ -369,6 +428,9 @@ varden session -- kubectl delete pod my-pod
 
 # Passive mode: log without blocking
 varden session --passive
+
+# Strict session boundary (PATH/shim layer; still not an OS sandbox)
+varden session --strict -- cursor .
 ```
 
 **Shimmed by default:** cursor, kubectl, terraform, aws, gcloud, az, docker,
