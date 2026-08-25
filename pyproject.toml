@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "varden"
-version = "0.2.1"
+version = "0.3.0"
 description = "A self-hosted runtime firewall for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,6 +33,7 @@ dependencies = [
   "uvicorn>=0.30",
   "httpx>=0.27",
   "PyJWT>=2.8",
+  "requests>=2.31",
 ]
 
 [project.optional-dependencies]
@@ -51,6 +52,7 @@ test = [
   "pytest>=8",
   "mcp[cli]>=1.2,<3",
   "hypothesis>=6.100",
+  "requests>=2.31",
 ]
 all = [
   "psycopg[binary]>=3.1",
@@ -75,4 +77,4 @@ varden-mcp = "varden_mcp.server:main"
 include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*", "varden_mcp*"]
 
 [tool.setuptools.package-data]
-"varden" = ["web/**/*", "policy-packs/*.json", "webshield/corpus/*.json"]
+"varden" = ["web/**/*", "policy-packs/*.json", "webshield/corpus/*.json", "provenance/corpus/*.json"]

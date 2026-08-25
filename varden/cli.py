@@ -187,10 +187,70 @@ def main(argv: list[str] | None = None) -> int:
     ws_trust_remove = ws_trust_sub.add_parser('remove', help='Remove a trust decision for an origin')
     ws_trust_remove.add_argument('origin')
     ws_trust_remove.add_argument('--db-path', default=None)
+
+    provenance = sub.add_parser('provenance', help='Provenance-aware authority-flow protection')
+    prov_sub = provenance.add_subparsers(dest='provenance_command')
+    prov_demo = prov_sub.add_parser('demo', help='Run the provenance/authority-flow demo')
+    prov_demo.add_argument('--host', default='127.0.0.1')
+    prov_demo.add_argument('--port', type=int, default=8000)
+    prov_demo.add_argument('--no-browser', action='store_true')
+    prov_eval = prov_sub.add_parser('evaluate', help='Run the authority-flow evaluation corpus')
+    prov_eval.add_argument('--json', action='store_true')
+    prov_trace = prov_sub.add_parser('trace', help='Show provenance for a trace id')
+    prov_trace.add_argument('trace_id')
+    prov_trace.add_argument('--db', default=None)
+    prov_explain = prov_sub.add_parser('explain', help='Explain authority-flow for an event id')
+    prov_explain.add_argument('event_id')
+    prov_explain.add_argument('--db', default=None)
+    prov_explain.add_argument('--action-file', default=None)
+    prov_sources = prov_sub.add_parser('sources', help='List provenance sources for a trace')
+    prov_sources.add_argument('trace_id')
+    prov_sources.add_argument('--db', default=None)
+
+    authority = sub.add_parser('authority', help='Authority delegation and violation inspection')
+    auth_sub = authority.add_subparsers(dest='authority_command')
+    auth_viol = auth_sub.add_parser('violations', help='List recorded authority-flow violations')
+    auth_viol.add_argument('--db', default=None)
+    auth_viol.add_argument('--limit', type=int, default=50)
+    auth_viol.add_argument('--json', action='store_true')
+    auth_explain = auth_sub.add_parser('explain', help='Explain authority-flow for an event id')
+    auth_explain.add_argument('event_id')
+    auth_explain.add_argument('--db', default=None)
+
+    coverage = sub.add_parser('coverage', help='Show runtime protection coverage attestation')
+    coverage.add_argument('--json', action='store_true')
+
+    runtime = sub.add_parser('runtime', help='Runtime boundary status and self-test')
+    runtime_sub = runtime.add_subparsers(dest='runtime_command')
+    runtime_sub.add_parser('status', help='Show runtime status')
+    runtime_sub.add_parser('readiness', help='Show strict-mode readiness')
+    runtime_explain = runtime_sub.add_parser('explain', help='Explain a runtime/event id')
+    runtime_explain.add_argument('event_id')
+    runtime_sub.add_parser('self-test', help='Safely probe active interceptors')
+
+    approvals = sub.add_parser('approvals', help='Scoped approval grants')
+    approvals_sub = approvals.add_subparsers(dest='approvals_command')
+    ap = approvals_sub.add_parser('pending', help='List pending approvals')
+    ap.add_argument('--json', action='store_true')
+    aa = approvals_sub.add_parser('approve', help='Approve a pending request and issue a token')
+    aa.add_argument('approval_id')
+    ad = approvals_sub.add_parser('deny', help='Deny a pending approval')
+    ad.add_argument('approval_id')
+
+    mcp = sub.add_parser('mcp', help='MCP gateway helpers')
+    mcp_sub = mcp.add_subparsers(dest='mcp_command')
+    mcp_wrap = mcp_sub.add_parser('wrap', help='Wrap an MCP config so servers route through Varden')
+    mcp_wrap.add_argument('config')
+    mcp_wrap.add_argument('--output', default=None)
+    mcp_patch = mcp_sub.add_parser('patch-config', help='Alias for wrap')
+    mcp_patch.add_argument('config')
+    mcp_patch.add_argument('--output', default=None)
+    mcp_sub.add_parser('gateway', help='Explain how to run the MCP gateway')
+
     monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
     monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
     session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
-    session.add_argument('session_args', nargs=argparse.REMAINDER, help='[--passive] [DIR] [-- CMD...]')
+    session.add_argument('session_args', nargs=argparse.REMAINDER, help='[--passive|--strict|--enforce] [DIR] [-- CMD...]')
     args = parser.parse_args(argv)
     if args.command == 'demo':
         return run_demo(host=args.host, port=args.port, open_browser=not args.no_browser)
@@ -199,6 +259,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'web-shield':
         from .webshield.cli import webshield_argv
         return webshield_argv(args)
+    if args.command in {'provenance', 'authority'}:
+        from .provenance.cli import provenance_argv
+        return provenance_argv(args)
+    if args.command == 'coverage':
+        from .runtime.cli import coverage_argv
+        return coverage_argv(args)
+    if args.command == 'runtime':
+        from .runtime.cli import runtime_argv
+        return runtime_argv(args)
+    if args.command == 'approvals':
+        from .runtime.cli import approvals_argv
+        return approvals_argv(args)
+    if args.command == 'mcp':
+        from .runtime.cli import mcp_argv
+        return mcp_argv(args)
     if args.command == 'monitor':
         try:
             from varden_monitor.cli import monitor_argv

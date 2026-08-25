@@ -17,6 +17,16 @@ jobs:
       - run: pip install -e ".[langchain,test]"
       - run: python -m compileall varden
       - run: python -m pytest -q
+  runtime-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[test]"
+      - name: Runtime boundary security verification (loopback only)
+        run: python demos/runtime/run_security_verification.py
   frontend:
     runs-on: ubuntu-latest
     steps:

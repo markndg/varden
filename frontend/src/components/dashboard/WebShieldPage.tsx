@@ -326,8 +326,11 @@ export function WebShieldPage({ token, onOpenPolicy, helpers }: WebShieldPagePro
       ) : null}
 
       <div className="card">
-        <div className="subheading">Raw overview payload</div>
-        <div className="codeCard"><pre>{displayValue(overview)}</pre></div>
+        <details className="evidenceDetails">
+          <summary>Developer details · Raw overview JSON</summary>
+          <p className="muted">Evidence for debugging. The operator view above is the interpreted security surface.</p>
+          <div className="codeCard"><pre>{displayValue(overview)}</pre></div>
+        </details>
       </div>
     </section>
   );

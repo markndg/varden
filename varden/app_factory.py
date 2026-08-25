@@ -39,6 +39,14 @@ from .token_budget import TokenBudgetStore, simulate_budget_trace
 from .rules.registry import load_budget_rules
 from .webshield.routes import register_webshield_routes
 from .webshield.store import WebShieldStore
+from .provenance.store import ProvenanceStore
+from .provenance.engine import enrich as provenance_enrich
+from .provenance.routes import register_provenance_routes
+from .runtime.approvals import ApprovalStore
+from .runtime.coverage import get_coverage_registry
+from .runtime.coverage_store import RuntimeCoverageStore
+from .runtime.routes import register_runtime_routes
+from .runtime.session_provenance import SessionProvenanceStore
 
 
 class EventStreamBroker:
@@ -71,7 +79,12 @@ def create_app(config: AppConfig) -> FastAPI:
     token_budget_store = TokenBudgetStore(config.db_path)
     mcp_inventory_store = McpInventoryStore(config.db_path)
     idem = IdempotencyStore(config.db_path)
-    webshield_store = WebShieldStore(config.db_path, event_store, policy)
+    webshield_store = WebShieldStore(config.db_path, event_store, policy, provenance_store=None)
+    provenance_store = ProvenanceStore(config.db_path)
+    webshield_store.provenance_store = provenance_store
+    approval_store = ApprovalStore(config.db_path, signing_secret=config.signing_secret)
+    runtime_coverage_store = RuntimeCoverageStore(config.db_path)
+    session_provenance_store = SessionProvenanceStore(config.db_path)
     queue = SQLiteQueue(config.db_path)
     exporter = EvidenceExporter(event_store)
     classifier = ClassifierEngine()
@@ -378,6 +391,10 @@ def create_app(config: AppConfig) -> FastAPI:
         text = str(action or "").strip().lower()
         if text in {"block", "blocked"}:
             return "blocked"
+        # require_approval without a scoped approval token must not execute.
+        # Until SDK-scoped approvals exist, treat as blocked at the guard boundary.
+        if text in {"require_approval", "approval_required"}:
+            return "blocked"
         if text in {"warn", "warned"}:
             return "warned"
         if text == "monitor":
@@ -435,6 +452,11 @@ def create_app(config: AppConfig) -> FastAPI:
             # Always compute lightweight base risk so warned/blocked actions are never shown as riskless.
             action = intelligence.enrich(action)
             meta["scan"]["depth"] = "fast"
+        # Provenance-aware authority-flow enrichment. Missing provenance becomes
+        # explicit unknown — never silent trust. Runs before PolicyEngine.
+        action.metadata = meta
+        action = provenance_enrich(action, payload, store=provenance_store)
+        meta = dict(action.metadata or {})
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         meta["decision_latency_ms"] = round(elapsed_ms, 3)
         action.metadata = meta
@@ -598,6 +620,10 @@ def create_app(config: AppConfig) -> FastAPI:
     def ui_web_shield():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
+    @app.get("/ui/authority", response_class=HTMLResponse)
+    def ui_authority():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
     @app.get("/webshield/lab", response_class=HTMLResponse)
     def webshield_lab_page():
         return (Path(__file__).parent / "web" / "webshield-lab.html").read_text(encoding="utf-8")
@@ -736,21 +762,192 @@ def create_app(config: AppConfig) -> FastAPI:
         record = require(x_api_key, authorization, "viewer", scope="ingest")
         action_payload = payload.get("action") or {}
         raw_payload = payload.get("payload") or action_payload.get("args") or {}
+        # Client-asserted "approved=true" / coverage claims are ignored.
+        meta_in = dict(action_payload.get("metadata") or {})
+        approval_token = meta_in.get("approval_token") or (meta_in.get("runtime") or {}).get("approval_token")
+        meta_in.pop("approved", None)
+        # Strip client-forged coverage / mode / interceptor claims (Invariant G).
+        if isinstance(meta_in.get("runtime"), dict):
+            meta_in["runtime"] = {
+                k: v
+                for k, v in meta_in["runtime"].items()
+                if k
+                not in {
+                    "coverage_claim",
+                    "trusted_claim",
+                    "coverage",
+                    "status",
+                    "interceptor_active",
+                    "enforced_claim",
+                }
+            }
+            meta_in["runtime"].pop("mode_claim", None)
+        # Merge control-plane session provenance for this trace (MCP A→B continuity).
+        trace_id = action_payload.get("trace_id") or meta_in.get("trace_id")
+        if trace_id:
+            try:
+                session_sources = session_provenance_store.list_sources(
+                    tenant_id=record["tenant_id"],
+                    trace_id=str(trace_id),
+                )
+            except Exception:
+                session_sources = []
+            if session_sources:
+                existing = list(meta_in.get("provenance_sources") or [])
+                # Control-plane sources are authoritative additions; downgrade client trust.
+                cleaned = []
+                for src in existing:
+                    if not isinstance(src, dict):
+                        continue
+                    item = dict(src)
+                    if item.get("trust_level") in {"trusted", "delegated"}:
+                        item["trust_level"] = "unknown"
+                    cleaned.append(item)
+                for src in session_sources:
+                    if src not in cleaned:
+                        cleaned.append(src)
+                meta_in["provenance_sources"] = cleaned
+                meta_in["provenance_complete"] = True
+        action_payload = {**action_payload, "metadata": meta_in}
+
         action, decision = evaluate_action(action_payload, raw_payload, record["tenant_id"])
+        # Stamp pre-execution enforcement evidence for the incident read model.
+        # /sdk/guard intercepts before side effects; never invent this client-side.
+        meta = dict(action.metadata or {})
+        runtime_meta = dict(meta.get("runtime") or {})
+        surface = runtime_meta.get("surface") or "sdk_guard"
+        meta["enforcement"] = {
+            "surface": surface,
+            "boundary": True,
+            "intercepted": True,
+            "pre_execution": True,
+            "side_effect_prevented": decision.action in {"block", "require_approval"},
+        }
+        action.metadata = meta
+
+        # Scoped approval: require_approval may proceed only with a valid
+        # server-issued, single-use, action/resource/authority-bound token.
+        if decision.action in {"require_approval", "approval_required"} and approval_token:
+            try:
+                consumed = approval_store.verify_and_consume(
+                    tenant_id=record["tenant_id"],
+                    token=str(approval_token),
+                    action=action.to_dict(),
+                )
+            except ValueError as exc:
+                decision = Decision(
+                    action="block",
+                    reason=f"approval token rejected: {exc}",
+                    matched_rule={"type": "runtime_approval"},
+                    effective_action="block",
+                )
+                meta["enforcement"]["side_effect_prevented"] = True
+                meta["enforcement"]["approval_error"] = str(exc)
+                action.metadata = meta
+            else:
+                decision = Decision(
+                    action="allow",
+                    reason="scoped approval token consumed",
+                    matched_rule={"type": "runtime_approval", "approval_id": consumed.get("approval_id")},
+                    effective_action="allow",
+                )
+                meta["enforcement"]["side_effect_prevented"] = False
+                meta["enforcement"]["approval_consumed"] = consumed.get("approval_id")
+                meta["runtime"] = {**runtime_meta, "approval": consumed.get("approval_id")}
+                action.metadata = meta
+
         status = status_from_decision(decision.action)
-        event_id = persist_event(action=action, decision=decision, status=status, input_payload=raw_payload, replay_key=action.tool, error=f"[Varden BLOCKED] {decision.reason}" if status == "blocked" else None)
-        response = {"event_id": event_id, "decision": decision.to_dict(), "action": action.to_dict()}
-        if decision.action == "block":
+        audit_failed = False
+        event_id = None
+        try:
+            event_id = persist_event(
+                action=action,
+                decision=decision,
+                status=status,
+                input_payload=raw_payload,
+                replay_key=action.tool,
+                error=f"[Varden BLOCKED] {decision.reason}" if status == "blocked" else None,
+            )
+        except Exception as exc:
+            # Decision engine succeeded; audit persistence failed.
+            # Never conflate this with "policy unavailable" (which fail-closes).
+            audit_failed = True
+            meta["enforcement"] = {
+                **(meta.get("enforcement") or {}),
+                "audit_persistence_failed": True,
+                "audit_error": str(exc)[:200],
+            }
+            action.metadata = meta
+
+        response = {
+            "event_id": event_id,
+            "decision": decision.to_dict(),
+            "action": action.to_dict(),
+            "audit_persistence_failed": audit_failed,
+        }
+
+        if decision.action in {"require_approval", "approval_required"}:
+            try:
+                pending = approval_store.create_pending(
+                    tenant_id=record["tenant_id"],
+                    action=action.to_dict(),
+                    reason=decision.reason,
+                    event_id=event_id,
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        **response,
+                        "reason": "require_approval decision made but approval record could not be persisted",
+                        "audit_error": str(exc)[:200],
+                    },
+                ) from exc
+            response["approval_id"] = pending.get("approval_id")
+            response["approval_required"] = True
+            response["retry_semantics"] = (
+                "Blocked pending approval. After an operator approves, retry the "
+                "exact operation with metadata.approval_token. The token is single-use."
+            )
             raise HTTPException(status_code=403, detail=response)
+
+        if decision.action == "block":
+            # Block wins even if audit write failed — never convert to allow.
+            raise HTTPException(status_code=403, detail=response)
+
+        if audit_failed:
+            # Allow decision exists, but we refuse to report silent success without audit.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    **response,
+                    "reason": "policy decision was allow but audit persistence failed",
+                },
+            )
         return response
 
     @app.post("/sdk/log")
     @app.post("/v1/actions/log")
     def sdk_log(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        """Audit/post-record endpoint only.
+
+        Does **not** run PolicyEngine or provenance enrichment. Privileged
+        side effects must be pre-checked via ``POST /sdk/guard``. Calling
+        ``/sdk/log`` alone never authorises an action.
+        """
         record = require(x_api_key, authorization, "viewer", scope="ingest")
         action_payload = payload.get("action") or {}
-        decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log"}
+        decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log (audit-only; not an enforcement decision)"}
         action = normalize_action(action_payload, record["tenant_id"])
+        meta = dict(action.metadata or {})
+        meta["enforcement"] = {
+            "surface": "sdk_log",
+            "intercepted": False,
+            "pre_execution": False,
+            "side_effect_prevented": None,
+            "note": "Observational audit log — Varden cannot verify whether execution was prevented.",
+        }
+        action.metadata = meta
         status = payload.get("status") or status_from_decision(decision_payload.get("action"))
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
         if action.type == "llm_call" and status != "blocked":
@@ -995,5 +1192,15 @@ def create_app(config: AppConfig) -> FastAPI:
         return {"scenarios": run_demo_scenarios(record["tenant_id"]), "dashboard": dashboard_bootstrap_payload(record["tenant_id"])}
 
     register_webshield_routes(app, require=require, webshield_store=webshield_store, idem=idem)
+    register_provenance_routes(app, require=require, provenance_store=provenance_store, event_store=event_store)
+    register_runtime_routes(
+        app,
+        require=require,
+        approval_store=approval_store,
+        coverage_store=runtime_coverage_store,
+        get_live_coverage=lambda: get_coverage_registry().attestation(),
+        session_provenance_store=session_provenance_store,
+        get_strict_readiness=lambda: get_coverage_registry().strict_readiness_report(),
+    )
 
     return app

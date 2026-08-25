@@ -348,6 +348,200 @@ def _apply_migrations(conn):
             )
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (7)")
 
+    if 8 not in versions:
+        # Provenance-aware authority flow: sources, causal edges, delegations,
+        # findings, and MCP tool fingerprints for rug-pull detection.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS provenance_sources (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT,
+              source_id TEXT NOT NULL,
+              source_type TEXT NOT NULL,
+              origin TEXT,
+              principal TEXT,
+              trust_level TEXT NOT NULL,
+              integrity TEXT NOT NULL DEFAULT 'unverified',
+              authenticated INTEGER NOT NULL DEFAULT 0,
+              provenance_complete INTEGER NOT NULL DEFAULT 1,
+              first_seen REAL NOT NULL,
+              metadata_json TEXT,
+              trace_id TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_provenance_sources_id
+              ON provenance_sources(tenant_id, source_id);
+            CREATE INDEX IF NOT EXISTS idx_provenance_sources_trace
+              ON provenance_sources(tenant_id, trace_id);
+            CREATE INDEX IF NOT EXISTS idx_provenance_sources_origin
+              ON provenance_sources(tenant_id, origin);
+
+            CREATE TABLE IF NOT EXISTS provenance_edges (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT,
+              edge_id TEXT NOT NULL,
+              edge_type TEXT NOT NULL,
+              from_id TEXT NOT NULL,
+              to_id TEXT NOT NULL,
+              trace_id TEXT,
+              event_id INTEGER,
+              metadata_json TEXT,
+              created_at REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_provenance_edges_id
+              ON provenance_edges(tenant_id, edge_id);
+            CREATE INDEX IF NOT EXISTS idx_provenance_edges_trace
+              ON provenance_edges(tenant_id, trace_id);
+            CREATE INDEX IF NOT EXISTS idx_provenance_edges_event
+              ON provenance_edges(event_id);
+
+            CREATE TABLE IF NOT EXISTS authority_delegations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT,
+              delegation_id TEXT NOT NULL,
+              principal TEXT NOT NULL,
+              capabilities_json TEXT NOT NULL,
+              resources_json TEXT,
+              constraints_json TEXT,
+              issued_by TEXT NOT NULL,
+              issued_at REAL NOT NULL,
+              expires_at REAL,
+              trace_scope TEXT,
+              integrity TEXT NOT NULL DEFAULT 'verified'
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_authority_delegations_id
+              ON authority_delegations(tenant_id, delegation_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_delegations_trace
+              ON authority_delegations(tenant_id, trace_scope);
+
+            CREATE TABLE IF NOT EXISTS authority_findings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT,
+              finding_id TEXT NOT NULL,
+              finding_type TEXT NOT NULL,
+              severity TEXT NOT NULL,
+              trace_id TEXT,
+              tool TEXT,
+              resource TEXT,
+              explanation TEXT,
+              evidence_json TEXT,
+              created_at REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_authority_findings_id
+              ON authority_findings(tenant_id, finding_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_findings_type
+              ON authority_findings(tenant_id, finding_type);
+            CREATE INDEX IF NOT EXISTS idx_authority_findings_trace
+              ON authority_findings(tenant_id, trace_id);
+            CREATE INDEX IF NOT EXISTS idx_authority_findings_time
+              ON authority_findings(created_at);
+
+            CREATE TABLE IF NOT EXISTS tool_fingerprints (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT,
+              server_id TEXT NOT NULL,
+              tool_name TEXT NOT NULL,
+              fingerprint TEXT NOT NULL,
+              fields_json TEXT,
+              trust_status TEXT NOT NULL DEFAULT 'observed',
+              previous_fingerprint TEXT,
+              changed_fields_json TEXT,
+              first_seen REAL NOT NULL,
+              last_seen REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_tool_fingerprints_server
+              ON tool_fingerprints(tenant_id, server_id, tool_name);
+            CREATE INDEX IF NOT EXISTS idx_tool_fingerprints_status
+              ON tool_fingerprints(tenant_id, trust_status);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)")
+
+    if 9 not in versions:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_sessions (
+              session_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              mode TEXT NOT NULL,
+              fail_mode TEXT NOT NULL,
+              created_at REAL NOT NULL,
+              metadata_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_sessions_tenant
+              ON runtime_sessions(tenant_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS runtime_coverage_attestations (
+              attestation_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              session_id TEXT,
+              mode TEXT,
+              fail_mode TEXT,
+              created_at REAL NOT NULL,
+              payload_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_coverage_tenant
+              ON runtime_coverage_attestations(tenant_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS runtime_approvals (
+              approval_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              event_id INTEGER,
+              trace_id TEXT,
+              action_hash TEXT NOT NULL,
+              resource_hash TEXT NOT NULL,
+              authority_hash TEXT NOT NULL,
+              action_type TEXT,
+              tool TEXT,
+              url TEXT,
+              method TEXT,
+              reason TEXT,
+              created_at REAL NOT NULL,
+              expires_at REAL NOT NULL,
+              resolved_at REAL,
+              resolved_by TEXT,
+              consumed_at REAL,
+              nonce TEXT NOT NULL,
+              token_hash TEXT,
+              metadata_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_approvals_tenant_status
+              ON runtime_approvals(tenant_id, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_runtime_approvals_trace
+              ON runtime_approvals(tenant_id, trace_id);
+
+            CREATE TABLE IF NOT EXISTS runtime_approval_consumptions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              approval_id TEXT NOT NULL,
+              tenant_id TEXT NOT NULL,
+              consumed_at REAL NOT NULL,
+              action_hash TEXT,
+              event_id INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_approval_consumptions
+              ON runtime_approval_consumptions(tenant_id, approval_id);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (9)")
+
+    if 10 not in versions:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_session_provenance (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT NOT NULL,
+              trace_id TEXT NOT NULL,
+              session_id TEXT,
+              created_at REAL NOT NULL,
+              source_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_session_prov_trace
+              ON runtime_session_provenance(tenant_id, trace_id, id);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)")
+
+
 class _AutoCloseConnection(sqlite3.Connection):
     """sqlite3.Connection used as a context manager only commits/rolls back
     on ``__exit__`` — it does *not* close the underlying file descriptor.

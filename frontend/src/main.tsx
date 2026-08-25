@@ -7,6 +7,7 @@ import { DecisionPage as DecisionPageView } from './components/dashboard/Decisio
 import { OverviewPage as OverviewPageView } from './components/dashboard/OverviewPage';
 import { RulesPage as RulesPageView } from './components/dashboard/RulesPage';
 import { WebShieldPage } from './components/dashboard/WebShieldPage';
+import { AuthorityProvenancePage } from './components/dashboard/AuthorityProvenancePage';
 import { ADVANCED_FIELDS, BUDGET_RULES_BUCKET, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, POLICY_BUCKETS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
 import { detailIdFromLocation, pageFromLocation, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
 import { averageLatencyFromPoints, classNames, fmtNum, fmtTs, fromDateTimeLocalValue, latencyValueFromPoint, toDateTimeLocalValue } from './lib/format';
@@ -748,6 +749,7 @@ function Shell() {
           <button className={classNames('nav__item', page === 'rules' && 'is-active')} onClick={() => navigate('rules', '/ui/rules')}>Rules Workspace</button>
           <button className={classNames('nav__item', page === 'coverage' && 'is-active')} onClick={() => navigate('coverage', '/ui/coverage-gaps')}>Coverage Gaps</button>
           <button className={classNames('nav__item', page === 'webshield' && 'is-active')} onClick={() => navigate('webshield', '/ui/web-shield')}>Web Shield</button>
+          <button className={classNames('nav__item', page === 'authority' && 'is-active')} onClick={() => navigate('authority', '/ui/authority')}>Authority & Provenance</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
         <div className="sidebar__section">
@@ -796,7 +798,7 @@ function Shell() {
               </ul>
             ) : null}
           </div>
-          <p className="muted sidebarAgentSelect__hint">Charts, traces, rule impact, and coverage use this scope. Rules workspace is unchanged.</p>
+          <p className="muted sidebarAgentSelect__hint">Scopes charts, traces, and coverage. Rules workspace is unchanged.</p>
         </div>
         <div className="sidebar__section">
           <div className="sidebar__label">Inspection mode</div>
@@ -805,21 +807,25 @@ function Shell() {
               <button key={mode} className={classNames('segmented', currentScanMode === mode && 'is-active')} onClick={() => setScanMode(mode)}>{mode}</button>
             ))}
           </div>
-          <p className="muted">{overview?.config?.notes?.[currentScanMode] || 'Live policy inspection for agent actions.'}</p>
+          <p className="muted">{overview?.config?.notes?.[currentScanMode] || 'Policy depth for agent actions.'}</p>
         </div>
+        {page === 'authority' ? null : (
         <div className="sidebar__section sidebar__section--grow">
-          <div className="sidebar__label">Operational highlights</div>
-          {!traceCandidates.length ? <div className="emptyState emptyState--compact"><strong>No traces recorded yet.</strong><span className="muted">Run the OSS demo to seed trace data for the flow explorer and trace catalogue.</span></div> : null}
-          {!traceCandidates.length ? <button className="button" onClick={() => { if (page !== 'overview') navigate('overview', '/ui'); setNotice('Generating OSS demo traces…'); (async () => { if (!token) return; try { const payload = await api<any>('/demo/run', { method: 'POST', body: '{}' }, token); setOverview(payload.dashboard); const firstTrace = payload.dashboard?.recent_traces?.[0]?.trace_id || payload.dashboard?.trace_catalogue?.[0]?.trace_id || ''; if (firstTrace) setSelectedTraceId(firstTrace); setNotice('OSS demo seeded with allow, warn, and block traces'); } catch (e: any) { setError(e?.message || 'Failed to run demo'); } })(); }}>Generate demo traces</button> : null}
-          <div className="chipGrid">
-            {(overview?.insights || []).slice(0, 3).map((insight, idx) => (
-              <div key={idx} className={classNames('chip', insight.severity === 'high' && 'chip--danger', insight.severity === 'medium' && 'chip--warn')}>
-                <strong>{insight.title}</strong>
-                <span>{insight.message}</span>
+            <>
+              <div className="sidebar__label">Operational highlights</div>
+              {!traceCandidates.length ? <div className="emptyState emptyState--compact"><strong>No traces recorded yet.</strong><span className="muted">Run the OSS demo to seed trace data for the flow explorer and trace catalogue.</span></div> : null}
+              {!traceCandidates.length ? <button className="button" onClick={() => { if (page !== 'overview') navigate('overview', '/ui'); setNotice('Generating OSS demo traces…'); (async () => { if (!token) return; try { const payload = await api<any>('/demo/run', { method: 'POST', body: '{}' }, token); setOverview(payload.dashboard); const firstTrace = payload.dashboard?.recent_traces?.[0]?.trace_id || payload.dashboard?.trace_catalogue?.[0]?.trace_id || ''; if (firstTrace) setSelectedTraceId(firstTrace); setNotice('OSS demo seeded with allow, warn, and block traces'); } catch (e: any) { setError(e?.message || 'Failed to run demo'); } })(); }}>Generate demo traces</button> : null}
+              <div className="chipGrid">
+                {(overview?.insights || []).slice(0, 3).map((insight, idx) => (
+                  <div key={idx} className={classNames('chip', insight.severity === 'high' && 'chip--danger', insight.severity === 'medium' && 'chip--warn')}>
+                    <strong>{insight.title}</strong>
+                    <span>{insight.message}</span>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </>
         </div>
+        )}
         <div className="sidebar__footer">
           <input className="input" value={token} onChange={(e) => setToken(e.target.value)} placeholder="API key or bearer token" />
           <button className="button button--ghost" onClick={() => refreshOverview().catch((e:any)=>setError(e?.message||'Refresh failed'))}>Refresh snapshot</button>
@@ -827,11 +833,11 @@ function Shell() {
       </aside>
 
       <main className="main">
-        <header className="topbar card">
+        <header className={classNames('topbar', 'card', (page === 'authority' || page === 'webshield') && 'topbar--compact')}>
           <div>
             <div className="eyebrow">Live operations</div>
-            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield: browser tool supply chain' : 'Trace and flow mission control'}</h1>
-            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Websites can dynamically register WebMCP tools for browser agents. Varden treats that tool metadata and every tool result as untrusted input, and governs it the same way it governs any other tool call.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
+            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : 'Trace and flow mission control'}</h1>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -936,6 +942,12 @@ function Shell() {
             token={token}
             onOpenPolicy={() => navigate('rules', '/ui/rules')}
             helpers={{ api, classNames, fmtNum, fmtTs, displayValue }}
+          />
+        ) : null}
+
+        {page === 'authority' ? (
+          <AuthorityProvenancePage
+            helpers={{ api, classNames, token }}
           />
         ) : null}
       </main>

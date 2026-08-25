@@ -1,0 +1,114 @@
+{
+  "name": "provenance-authority-defense",
+  "description": "Fail-closed provenance-aware authority-flow protection against Ghostjacking, MCP confused-deputy, untrusted-to-privileged and secret-exfiltration chains. Enforces that untrusted information cannot acquire authority merely because an agent read it.",
+  "template": {
+    "block": [
+      {
+        "name": "untrusted-secret-read",
+        "description": "Untrusted provenance must not read secrets/credentials.",
+        "classifier:provenance_untrusted": true,
+        "metadata.authority.required": {"contains": "READ_SECRETS"}
+      },
+      {
+        "name": "untrusted-to-privileged",
+        "description": "Untrusted content influencing a privileged capability.",
+        "classifier:untrusted_to_privileged": true
+      },
+      {
+        "name": "confused-deputy",
+        "description": "Untrusted principal using the agent as a deputy for privileged authority.",
+        "classifier:confused_deputy": true
+      },
+      {
+        "name": "exfiltration-chain",
+        "description": "Sensitive data flowing to a public sink under untrusted/incomplete provenance.",
+        "classifier:exfiltration_chain": true
+      },
+      {
+        "name": "authority-escalation",
+        "description": "Action requires authority not delegated to this causal chain.",
+        "classifier:authority_escalation": true
+      },
+      {
+        "name": "cross-server-privileged",
+        "description": "Cross-server MCP flow into privileged capability.",
+        "classifier:cross_server_flow": true,
+        "metadata.authority.required": {"contains": "MCP_PRIVILEGED"}
+      },
+      {
+        "name": "unknown-destructive",
+        "description": "Unknown provenance attempting DELETE.",
+        "classifier:provenance_unknown": true,
+        "metadata.authority.required": {"contains": "DELETE"}
+      },
+      {
+        "name": "unknown-admin",
+        "description": "Unknown provenance attempting admin action.",
+        "classifier:provenance_unknown": true,
+        "metadata.authority.required": {"contains": "ADMIN"}
+      },
+      {
+        "name": "unknown-payment",
+        "description": "Unknown provenance attempting payment.",
+        "classifier:provenance_unknown": true,
+        "metadata.authority.required": {"contains": "PAYMENT"}
+      },
+      {
+        "name": "untrusted-shell",
+        "description": "Untrusted provenance triggering privileged shell/subprocess.",
+        "classifier:provenance_untrusted": true,
+        "metadata.authority.required": {"contains": "EXECUTE_PRIVILEGED"}
+      },
+      {
+        "name": "private-to-public",
+        "description": "Private/secret data egress to a public network destination.",
+        "metadata.flow.private_to_public": true
+      },
+      {
+        "name": "secret-egress",
+        "description": "Secret/credential egress to an external sink.",
+        "metadata.flow.secret_egress": true
+      }
+    ],
+    "require_approval": [
+      {
+        "name": "untrusted-private-read",
+        "description": "Untrusted provenance reading private (non-secret) data requires approval.",
+        "classifier:provenance_untrusted": true,
+        "metadata.authority.required": {"contains": "READ_PRIVATE"}
+      },
+      {
+        "name": "unknown-privileged-exec",
+        "description": "Incomplete provenance requesting privileged execution.",
+        "classifier:provenance_unknown": true,
+        "metadata.authority.required": {"contains": "EXECUTE_PRIVILEGED"}
+      },
+      {
+        "name": "tool-trust-drift",
+        "description": "MCP tool fingerprint changed since last trust decision.",
+        "metadata.tool_trust_status": "stale"
+      }
+    ],
+    "sanitise": [],
+    "warn": [
+      {
+        "name": "cross-origin-flow",
+        "description": "Cross-origin authority flow observed.",
+        "metadata.flow.cross_origin": true
+      },
+      {
+        "name": "cross-server-flow-monitor",
+        "description": "Cross-server MCP flow observed.",
+        "classifier:cross_server_flow": true
+      }
+    ],
+    "monitor": [
+      {
+        "name": "provenance-complete-false",
+        "description": "Record actions where provenance completeness is partial.",
+        "metadata.provenance.complete": false
+      }
+    ],
+    "allow": []
+  }
+}
