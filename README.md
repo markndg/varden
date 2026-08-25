@@ -81,9 +81,23 @@ varden.protect()
 requests.post("https://partner.example/api", json={"token": "abc123"})
 ```
 
-Varden patches the Python runtime — `requests`, `httpx`, `subprocess`, OpenAI, Anthropic
-— so every action is checked before it runs. Your developers add one line. You get a
-dashboard full of traces.
+`varden.protect()` establishes an **enforced runtime boundary** around supported
+surfaces (HTTP, subprocess, filesystem where supported, tools) with
+`mode=guarded` and fail-closed control-plane semantics by default.
+
+```python
+varden.protect(mode="strict", require_coverage=["http", "subprocess", "mcp"])
+```
+
+Coverage attestation (`varden coverage`, or Authority → Protection Coverage in the
+UI) reports ENFORCED vs UNCOVERED honestly — including limitations such as saved
+pre-patch function references and raw sockets. See
+[docs/runtime-boundary.md](docs/runtime-boundary.md).
+
+Varden patches the Python runtime — `requests`, `httpx`, `subprocess`, filesystem
+APIs, OpenAI, Anthropic — so supported actions are checked before they run. Route
+MCP configs through `varden mcp wrap` for gateway enforcement. Your developers add
+one line. You get traces, coverage, and scoped approvals.
 
 ---
 
@@ -94,6 +108,7 @@ dashboard full of traces.
 | Tool calls | MCP tool calls, before execution |
 | HTTP/API requests | Outbound calls, including payload classification |
 | Subprocess execution | Shell commands, before they run |
+| Filesystem (Python APIs) | Sensitive/write paths via runtime boundary (PARTIAL) |
 | LLM calls | Provider calls to OpenAI, Anthropic, others |
 | CLI tools | kubectl, terraform, aws, gcloud, git, docker, cursor — via `varden session` |
 

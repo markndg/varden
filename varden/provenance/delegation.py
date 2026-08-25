@@ -195,6 +195,7 @@ def evaluate_authority(
         resource=required.resource,
         reason=reason,
         findings=sorted(set(findings)),
+        required_reasons=dict(getattr(required, "required_reasons", None) or {}),
     )
 
 

@@ -5,6 +5,10 @@ import { resolve } from 'path'
 export default defineConfig({
   base: "/static/app/",
   plugins: [react()],
+  test: {
+    environment: 'node',
+    include: ['src/**/*.test.ts'],
+  },
   build: {
     outDir: resolve(__dirname, '../varden/web/app'),
     emptyOutDir: true,

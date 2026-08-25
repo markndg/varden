@@ -456,6 +456,92 @@ def _apply_migrations(conn):
         )
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (8)")
 
+    if 9 not in versions:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_sessions (
+              session_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              mode TEXT NOT NULL,
+              fail_mode TEXT NOT NULL,
+              created_at REAL NOT NULL,
+              metadata_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_sessions_tenant
+              ON runtime_sessions(tenant_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS runtime_coverage_attestations (
+              attestation_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              session_id TEXT,
+              mode TEXT,
+              fail_mode TEXT,
+              created_at REAL NOT NULL,
+              payload_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_coverage_tenant
+              ON runtime_coverage_attestations(tenant_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS runtime_approvals (
+              approval_id TEXT PRIMARY KEY,
+              tenant_id TEXT NOT NULL,
+              status TEXT NOT NULL,
+              event_id INTEGER,
+              trace_id TEXT,
+              action_hash TEXT NOT NULL,
+              resource_hash TEXT NOT NULL,
+              authority_hash TEXT NOT NULL,
+              action_type TEXT,
+              tool TEXT,
+              url TEXT,
+              method TEXT,
+              reason TEXT,
+              created_at REAL NOT NULL,
+              expires_at REAL NOT NULL,
+              resolved_at REAL,
+              resolved_by TEXT,
+              consumed_at REAL,
+              nonce TEXT NOT NULL,
+              token_hash TEXT,
+              metadata_json TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_approvals_tenant_status
+              ON runtime_approvals(tenant_id, status, created_at);
+            CREATE INDEX IF NOT EXISTS idx_runtime_approvals_trace
+              ON runtime_approvals(tenant_id, trace_id);
+
+            CREATE TABLE IF NOT EXISTS runtime_approval_consumptions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              approval_id TEXT NOT NULL,
+              tenant_id TEXT NOT NULL,
+              consumed_at REAL NOT NULL,
+              action_hash TEXT,
+              event_id INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_approval_consumptions
+              ON runtime_approval_consumptions(tenant_id, approval_id);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (9)")
+
+    if 10 not in versions:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_session_provenance (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              tenant_id TEXT NOT NULL,
+              trace_id TEXT NOT NULL,
+              session_id TEXT,
+              created_at REAL NOT NULL,
+              source_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_runtime_session_prov_trace
+              ON runtime_session_provenance(tenant_id, trace_id, id);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)")
+
+
 class _AutoCloseConnection(sqlite3.Connection):
     """sqlite3.Connection used as a context manager only commits/rolls back
     on ``__exit__`` — it does *not* close the underlying file descriptor.

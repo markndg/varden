@@ -169,11 +169,31 @@ def classify_http(url: str | None, *, method: str | None = None, has_credentials
     if scheme in {"javascript", "data", "file"}:
         required.add("EXECUTE_LOCAL")
 
+    reasons: dict[str, str] = {}
+    for cap in required:
+        if cap == "NETWORK_PUBLIC":
+            reasons[cap] = f"Outbound HTTP {method_u} to a public host"
+        elif cap == "NETWORK_INTERNAL":
+            reasons[cap] = f"HTTP {method_u} to an internal host"
+        elif cap == "NETWORK_CREDENTIALLED":
+            reasons[cap] = "HTTP request includes credentials"
+        elif cap == "WRITE_CLOUD":
+            reasons[cap] = f"Mutating HTTP {method_u} to a public destination"
+        elif cap == "WRITE_DATABASE":
+            reasons[cap] = f"Mutating HTTP {method_u} to an internal destination"
+        elif cap == "DELETE":
+            reasons[cap] = "HTTP DELETE requested"
+        elif cap == "EXECUTE_LOCAL":
+            reasons[cap] = f"Dangerous URL scheme {scheme or 'unknown'}"
+        else:
+            reasons[cap] = f"HTTP {method_u} classification"
+
     return AuthorityRequirement(
         required=required,
         resource=resource,
         reason=f"HTTP {method_u} to {host or 'unknown'}",
         action_class="http",
+        required_reasons=reasons,
     )
 
 
@@ -260,9 +280,14 @@ def classify_mcp_tool(
     privileged_hint: bool = False,
 ) -> AuthorityRequirement:
     required: set[str] = set()
+    reasons: dict[str, str] = {}
     name = (tool or "").lower()
     desc = (description or "").lower()
     blob = f"{name} {desc}"
+
+    def add(cap: str, why: str) -> None:
+        required.add(cap)
+        reasons.setdefault(cap, why)
 
     secret_tokens = ("secret", "credential", "password", "token", "api_key", "ssh", "aws", "private key")
     write_tokens = ("write", "create", "update", "delete", "drop", "insert", "mutate", "push")
@@ -270,29 +295,33 @@ def classify_mcp_tool(
     payment_tokens = ("payment", "checkout", "wallet", "transfer funds")
     admin_tokens = ("admin", "iam", "role", "privilege")
 
-    if any(t in blob for t in secret_tokens) or privileged_hint:
-        required.add("READ_SECRETS")
-        required.add("MCP_PRIVILEGED")
+    # privileged_hint elevates MCP privilege only — it must NOT invent READ_SECRETS.
+    if any(t in blob for t in secret_tokens):
+        add("READ_SECRETS", "Tool name/description indicates secret or credential access")
+        add("MCP_PRIVILEGED", "Secret-capable MCP tools are privileged")
     if any(t in blob for t in write_tokens):
-        required.add("WRITE_DATABASE")
-        required.add("MCP_PRIVILEGED")
+        add("WRITE_DATABASE", "Tool can create, update, or delete records")
+        add("MCP_PRIVILEGED", "Mutating MCP tools are privileged")
     if any(t in blob for t in shell_tokens):
-        required.add("EXECUTE_PRIVILEGED")
-        required.add("MCP_PRIVILEGED")
+        add("EXECUTE_PRIVILEGED", "Tool can execute shell/commands")
+        add("MCP_PRIVILEGED", "Shell-capable MCP tools are privileged")
     if any(t in blob for t in payment_tokens):
-        required.add("PAYMENT")
-        required.add("MCP_PRIVILEGED")
+        add("PAYMENT", "Tool can initiate payment or fund movement")
+        add("MCP_PRIVILEGED", "Payment-capable MCP tools are privileged")
     if any(t in blob for t in admin_tokens):
-        required.add("ADMIN")
-        required.add("MCP_PRIVILEGED")
+        add("ADMIN", "Tool performs administrative or privilege-management operations")
+        add("MCP_PRIVILEGED", "Administrative MCP tools are privileged")
+    if privileged_hint:
+        add("MCP_PRIVILEGED", "MCP server is marked privileged")
     if not required:
-        required.add("MCP_UNPRIVILEGED")
+        add("MCP_UNPRIVILEGED", "No privileged MCP capability indicators observed")
 
     return AuthorityRequirement(
         required=required,
         resource=f"mcp://{server or 'unknown'}/{tool or 'unknown'}",
         reason=f"MCP tool {tool or 'unknown'} on {server or 'unknown'}",
         action_class="mcp",
+        required_reasons=reasons,
     )
 
 
@@ -338,21 +367,36 @@ def classify_action(action: dict[str, Any] | Any) -> AuthorityRequirement:
 
     if action_type in {"file_read", "file_write", "filesystem"}:
         path = args.get("path") or args.get("file") or tool
-        category, auth = classify_filesystem_path(path, cwd=metadata.get("cwd"), workspace=metadata.get("workspace"))
+        fs_meta = metadata.get("filesystem") or {}
+        mutation = fs_meta.get("mutation") or metadata.get("mutation")
+        required_auth = fs_meta.get("required_authority") or metadata.get("required_authority")
+        category, auth = classify_filesystem_path(path, cwd=metadata.get("cwd"), workspace=metadata.get("workspace") or fs_meta.get("workspace"))
         required = {auth}
-        if action_type == "file_write" or method in {"write", "append", "delete"}:
+        writing = bool(fs_meta.get("writing")) or action_type == "file_write" or method in {"write", "append", "delete"} or str(args.get("mode") or "").find("w") >= 0
+        if required_auth and required_auth in AUTHORITY_CLASSES:
+            required.add(required_auth)
+        elif mutation == "WRITE_CI":
+            required.add("WRITE_CI")
+        elif mutation == "WRITE_CONFIG":
+            required.add("WRITE_CONFIG")
+        elif mutation == "WRITE_CODE":
+            required.add("WRITE_CODE")
+        elif mutation == "WRITE_WORKSPACE" or writing:
+            required.add("WRITE_WORKSPACE" if category == "workspace" else "WRITE_LOCAL")
+        if writing:
             if auth == "READ_SECRETS":
                 required.add("WRITE_LOCAL")
-                required.add("DELETE" if method == "delete" else "WRITE_LOCAL")
-            else:
-                required.add("WRITE_LOCAL")
-            if method == "delete":
+            if method == "delete" or str(tool or "").endswith(("remove", "unlink")):
                 required.add("DELETE")
+        reasons = {a: f"Filesystem path classified as {category}" for a in required}
+        if mutation:
+            reasons[str(required_auth or mutation)] = f"Workspace mutation class {mutation}"
         return AuthorityRequirement(
-            required=required,
+            required={r for r in required if r in AUTHORITY_CLASSES},
             resource=str(path or ""),
-            reason=f"filesystem {action_type} ({category})",
+            reason=f"filesystem {action_type} ({category}/{mutation or 'read'})",
             action_class="filesystem",
+            required_reasons=reasons,
         )
 
     if action_type.startswith("webmcp") or metadata.get("webmcp"):
@@ -360,8 +404,18 @@ def classify_action(action: dict[str, Any] | Any) -> AuthorityRequirement:
         req.action_class = "webmcp"
         return req
 
-    if action_type in {"mcp_call", "tool_call"} and (metadata.get("mcp_server") or str(tool or "").startswith("mcp:")):
-        server = metadata.get("mcp_server") or metadata.get("server")
+    if action_type in {"mcp_call", "tool_call"} and (
+        metadata.get("mcp_server")
+        or metadata.get("mcp")
+        or str(tool or "").startswith("mcp:")
+        or action_type == "mcp_call"
+    ):
+        server = (
+            metadata.get("mcp_server")
+            or metadata.get("server")
+            or (metadata.get("mcp") or {}).get("server_id")
+            or (metadata.get("runtime") or {}).get("server_id")
+        )
         return classify_mcp_tool(
             tool,
             server=server,

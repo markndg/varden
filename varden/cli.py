@@ -217,10 +217,40 @@ def main(argv: list[str] | None = None) -> int:
     auth_explain.add_argument('event_id')
     auth_explain.add_argument('--db', default=None)
 
+    coverage = sub.add_parser('coverage', help='Show runtime protection coverage attestation')
+    coverage.add_argument('--json', action='store_true')
+
+    runtime = sub.add_parser('runtime', help='Runtime boundary status and self-test')
+    runtime_sub = runtime.add_subparsers(dest='runtime_command')
+    runtime_sub.add_parser('status', help='Show runtime status')
+    runtime_sub.add_parser('readiness', help='Show strict-mode readiness')
+    runtime_explain = runtime_sub.add_parser('explain', help='Explain a runtime/event id')
+    runtime_explain.add_argument('event_id')
+    runtime_sub.add_parser('self-test', help='Safely probe active interceptors')
+
+    approvals = sub.add_parser('approvals', help='Scoped approval grants')
+    approvals_sub = approvals.add_subparsers(dest='approvals_command')
+    ap = approvals_sub.add_parser('pending', help='List pending approvals')
+    ap.add_argument('--json', action='store_true')
+    aa = approvals_sub.add_parser('approve', help='Approve a pending request and issue a token')
+    aa.add_argument('approval_id')
+    ad = approvals_sub.add_parser('deny', help='Deny a pending approval')
+    ad.add_argument('approval_id')
+
+    mcp = sub.add_parser('mcp', help='MCP gateway helpers')
+    mcp_sub = mcp.add_subparsers(dest='mcp_command')
+    mcp_wrap = mcp_sub.add_parser('wrap', help='Wrap an MCP config so servers route through Varden')
+    mcp_wrap.add_argument('config')
+    mcp_wrap.add_argument('--output', default=None)
+    mcp_patch = mcp_sub.add_parser('patch-config', help='Alias for wrap')
+    mcp_patch.add_argument('config')
+    mcp_patch.add_argument('--output', default=None)
+    mcp_sub.add_parser('gateway', help='Explain how to run the MCP gateway')
+
     monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
     monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
     session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
-    session.add_argument('session_args', nargs=argparse.REMAINDER, help='[--passive] [DIR] [-- CMD...]')
+    session.add_argument('session_args', nargs=argparse.REMAINDER, help='[--passive|--strict|--enforce] [DIR] [-- CMD...]')
     args = parser.parse_args(argv)
     if args.command == 'demo':
         return run_demo(host=args.host, port=args.port, open_browser=not args.no_browser)
@@ -232,6 +262,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command in {'provenance', 'authority'}:
         from .provenance.cli import provenance_argv
         return provenance_argv(args)
+    if args.command == 'coverage':
+        from .runtime.cli import coverage_argv
+        return coverage_argv(args)
+    if args.command == 'runtime':
+        from .runtime.cli import runtime_argv
+        return runtime_argv(args)
+    if args.command == 'approvals':
+        from .runtime.cli import approvals_argv
+        return approvals_argv(args)
+    if args.command == 'mcp':
+        from .runtime.cli import mcp_argv
+        return mcp_argv(args)
     if args.command == 'monitor':
         try:
             from varden_monitor.cli import monitor_argv

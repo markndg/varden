@@ -1,0 +1,187 @@
+=== SIDEBAR ===
+AGENT SECURITY
+Varden
+CONTROL PLANE
+Overview
+Rule Impact
+Rules Workspace
+Coverage Gaps
+Web Shield
+Authority & Provenance
+Agent scope
+All agents
+
+Scopes charts, traces, and coverage. Rules workspace is unchanged.
+
+Inspection mode
+deep
+fast
+
+Lowest overhead. Runs classifiers and risk enrichment only when active policy requires them.
+
+Refresh snapshot
+
+=== MAIN ===
+LIVE OPERATIONS
+Authority & Provenance
+
+Whether the causal chain was authorised to exercise the capability the agent attempted.
+
+Posture: guarded
+Events: 5
+P95: 6.2 ms
+AUTHORITY & PROVENANCE
+Causal authority investigation
+Overview
+Incidents (5)
+Attack Paths
+Authority Map
+
+Varden does not only ask whether an agent possesses a capability. It determines whether the causal chain influencing that action was authorised to exercise it.
+
+ATTACK PATHS
+Path index
+Decision
+Blocked
+Approval required
+Warned
+Sanitised
+Severity
+Critical
+High
+Medium
+
+Compact previews for comparison. Select a path to investigate the full causal chain on the right.
+
+CRITICAL
+BLOCKED
+Private file access from untrusted MCP
+search.example / Search Web
+→
+demo-agent
+→
+Read file
+→
+notes.txt
+✕
+BLOCKED
+Missing: READ_PRIVATE
+2m ago
+CRITICAL
+BLOCKED
+Sensitive data headed toward a public destination
+github.com
+→
+demo-agent
+→
+Sensitive data
+→
+evil.example
+✕
+BLOCKED
+Missing: WRITE_CLOUD
+2m ago
+CRITICAL
+BLOCKED
+Untrusted input attempted privileged CRM access
+search.example / Search Web
+→
+demo-agent
+→
+crm.internal / Admin delete user
+✕
+BLOCKED
+Missing: WRITE_DATABASE, MCP_PRIVILEGED, ADMIN
+2m ago
+INFO
+SANITISED · ALLOWED
+Sanitised weather API request
+api.weather.example
+→
+strict integer parser
+→
+demo-agent
+→
+api.weather.example
+✕
+MONITORED
+2m ago
+MONITORED
+INFO
+Workspace file read
+
+read_file · /tmp/varden-workspace/README.md
+
+8/25/2026, 7:57:47 PM · Trace demo-safe
+
+Close
+PARTIAL PROVENANCE
+Complete ancestry could not be established.
+Unknown ancestry is never treated as trusted.
+AUTHORITY MATCHED
+Varden allowed `read_file` under the effective delegated authority for this causal chain.
+ATTACK PATH
+Security-relevant causal chain
+Show full lineage
+SOURCE
+UNKNOWN
+unknown
+unknown
+influenced
+AGENT
+DELEGATED
+demo-agent
+delegated READ_PUBLIC, READ_LOCAL, NETWORK_PUBLIC, MCP_UNPRIVILEGED
+requested
+TOOL
+Read file
+read_file
+read
+RESOURCE
+README.md
+/tmp/varden-workspace/README.md
+/tmp/varden-workspace/README.md
+allowed
+ALLOWED
+DELEGATED
+MONITORED
+Authority matched for this causal chain
+AUTHORITY
+Delegated vs required
+DELEGATED FOR THIS CHAIN
+✓ READ_PUBLIC
+✓ READ_LOCAL
+✓ NETWORK_PUBLIC
+✓ MCP_UNPRIVILEGED
+AUTHORISED
+REQUIRED
+✓
+READ_LOCAL
+Filesystem path classified as workspace
+WHY VARDEN ALLOWED THIS
+
+The requested resource matched a permitted capability for this causal chain.
+
+Influencing provenance: UNKNOWN unknown (unknown).
+
+Partial provenance: Varden observed this action but could not establish the complete causal chain. Unknown ancestry is not treated as trusted.
+
+Required authority: READ_LOCAL.
+
+Delegated for this causal chain: READ_PUBLIC, READ_LOCAL, NETWORK_PUBLIC, MCP_UNPRIVILEGED.
+
+Required authority was present in the delegated set for this causal chain.
+
+No untrusted source increased the authority of this chain.
+
+Varden allowed `read_file` under the effective delegated authority for this causal chain.
+
+Explanation
+Findings
+Policy
+Evidence
+Raw
+
+The requested resource matched a permitted capability for this causal chain.
+
+Required authority was present in the delegated set for this causal chain.

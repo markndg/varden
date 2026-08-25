@@ -1,0 +1,173 @@
+=== SIDEBAR ===
+AGENT SECURITY
+Varden
+CONTROL PLANE
+Overview
+Rule Impact
+Rules Workspace
+Coverage Gaps
+Web Shield
+Authority & Provenance
+Agent scope
+All agents
+
+Scopes charts, traces, and coverage. Rules workspace is unchanged.
+
+Inspection mode
+deep
+fast
+
+Lowest overhead. Runs classifiers and risk enrichment only when active policy requires them.
+
+Refresh snapshot
+
+=== MAIN ===
+LIVE OPERATIONS
+Authority & Provenance
+
+Whether the causal chain was authorised to exercise the capability the agent attempted.
+
+Posture: guarded
+Events: 5
+P95: 6.2 ms
+AUTHORITY & PROVENANCE
+Causal authority investigation
+Overview
+Incidents (5)
+Attack Paths
+Authority Map
+
+Varden does not only ask whether an agent possesses a capability. It determines whether the causal chain influencing that action was authorised to exercise it.
+
+Blocked incidents
+3
+Guarded actions stopped
+Critical incidents
+3
+Highest severity events
+Confused deputy
+3
+Untrusted influence on privilege
+Exfiltration paths
+1
+Sensitive data toward public sinks
+Cross-server flows
+1
+MCP trust boundary crossings
+MCP trust changes
+0
+Fingerprint drift
+GUARDED ACTIVITY
+What Varden stopped
+CRITICAL
+BLOCKED
+Private file access from untrusted MCP
+
+Untrusted input attempted to use the agent's privileged access.
+
+search.example / Search Web → demo-agent → Read file → notes.txt → BLOCKED
+2m ago
+CRITICAL
+BLOCKED
+Sensitive data headed toward a public destination
+
+Sensitive data was headed toward a public destination.
+
+github.com → demo-agent → Sensitive data → evil.example → BLOCKED
+2m ago
+ARCHITECTURAL EXPOSURE
+3 potential authority compositions deserve attention
+
+These are structural capability compositions — not detections that an attack occurred.
+
+ARCHITECTURAL EXPOSURE
+Untrusted input + sensitive read
+
+Observed capabilities could permit untrusted input to influence private/secret filesystem access if authority controls were bypassed or incorrectly delegated.
+
+ARCHITECTURAL EXPOSURE
+Sensitive read + external write
+
+Observed capabilities could permit sensitive filesystem data to reach public network destinations if authority controls were bypassed or incorrectly delegated.
+
+ARCHITECTURAL EXPOSURE
+Multiple MCP servers via agent
+
+2 MCP servers are reachable through the agent; cross-server confused-deputy risk depends on trust boundaries.
+
+BLOCKED
+CRITICAL
+Private file access from untrusted MCP
+
+read_file · /Users/mark/Documents/notes.txt
+
+8/25/2026, 7:57:47 PM · Trace demo-private-file
+
+Close
+PARTIAL PROVENANCE
+Complete ancestry could not be established.
+Unknown ancestry is never treated as trusted.
+THE REQUESTED FILE WAS NOT READ
+Varden intercepted the action before execution.
+ATTACK PATH
+Security-relevant causal chain
+Show full lineage
+TOOL RESULT
+UNTRUSTED
+search.example
+search web result
+mcp://search.example/search_web
+influenced
+AGENT
+DELEGATED
+demo-agent
+delegated READ_PUBLIC, READ_LOCAL, NETWORK_PUBLIC, MCP_UNPRIVILEGED
+requested
+TOOL
+Read file
+read_file
+read
+RESOURCE
+PRIVATE
+notes.txt
+/Users/mark/Documents/notes.txt
+/Users/mark/Documents/notes.txt
+blocked before
+ENFORCEMENT
+VARDEN BLOCKED
+Execution intercepted
+AUTHORITY
+Delegated vs required
+DELEGATED FOR THIS CHAIN
+✓ READ_PUBLIC
+✓ READ_LOCAL
+✓ NETWORK_PUBLIC
+✓ MCP_UNPRIVILEGED
+NOT AUTHORISED
+REQUIRED
+✕
+READ_PRIVATE
+Filesystem path classified as user_home
+WHY VARDEN BLOCKED THIS
+
+Untrusted input attempted to use the agent's privileged access.
+
+Influencing provenance: untrusted MCP result from search.example (search_web); untrusted MCP result from search.example (search_web); untrusted MCP result from search.example.
+
+The action required READ_PRIVATE authority.
+
+This causal chain was delegated only READ_PUBLIC, READ_LOCAL, NETWORK_PUBLIC, MCP_UNPRIVILEGED.
+
+No valid delegation granted the missing authority.
+
+Varden intercepted the action before execution.
+
+Explanation
+Findings
+Policy
+Evidence
+Raw
+
+Untrusted input attempted to use the agent's privileged access.
+
+No valid delegation granted the missing authority.

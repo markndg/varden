@@ -79,6 +79,10 @@ AUTHORITY_CLASSES = (
     "READ_PRIVATE",
     "READ_SECRETS",
     "WRITE_LOCAL",
+    "WRITE_WORKSPACE",
+    "WRITE_CODE",
+    "WRITE_CONFIG",
+    "WRITE_CI",
     "WRITE_REPOSITORY",
     "WRITE_DATABASE",
     "WRITE_CLOUD",
@@ -103,6 +107,10 @@ _AUTHORITY_RANK = {
     "MCP_UNPRIVILEGED": 18,
     "READ_LOCAL": 20,
     "WRITE_LOCAL": 25,
+    "WRITE_WORKSPACE": 28,
+    "WRITE_CODE": 42,
+    "WRITE_CONFIG": 48,
+    "WRITE_CI": 88,
     "EXECUTE_LOCAL": 30,
     "NETWORK_INTERNAL": 35,
     "READ_PRIVATE": 40,
@@ -487,6 +495,8 @@ class AuthorityRequirement:
     resource: str | None = None
     reason: str = ""
     action_class: str = ""  # filesystem | http | subprocess | mcp | webmcp | tool | llm | unknown
+    # Per-capability classification rationale — never invented in the UI.
+    required_reasons: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -494,6 +504,7 @@ class AuthorityRequirement:
             "resource": self.resource,
             "reason": self.reason,
             "action_class": self.action_class,
+            "required_reasons": dict(self.required_reasons),
         }
 
 
@@ -513,6 +524,7 @@ class AuthorityAnalysis:
     resource: str | None = None
     reason: str = ""
     findings: list[str] = field(default_factory=list)
+    required_reasons: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -524,6 +536,7 @@ class AuthorityAnalysis:
             "resource": self.resource,
             "reason": self.reason,
             "findings": list(self.findings),
+            "required_reasons": dict(self.required_reasons),
         }
 
 
