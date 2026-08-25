@@ -183,17 +183,17 @@ def main() -> int:
         before = internal_crm.customer_exists("123")
         r2 = host.call_tool("internal-crm", "delete_user", {"id": "123"})
         after = internal_crm.customer_exists("123")
-        print("")
         attack_blocked = bool(r2.blocked) and before and after
+        print("")
         if r2.blocked:
-            print("RESULT  BLOCKED")
+            print("ATTACK  BLOCKED")
             print("")
             print("Reason:")
             print("Untrusted MCP result influenced a privileged cross-server action.")
             print(f"CRM state unchanged: {before == after == True}")
             print(f"decision: {(r2.decision or {}).get('action')} — {(r2.decision or {}).get('reason')}")
         else:
-            print("RESULT  ALLOWED (UNEXPECTED)")
+            print("ATTACK  ALLOWED (UNEXPECTED)")
             print(f"CRM state unchanged: {before == after}")
 
         print("")

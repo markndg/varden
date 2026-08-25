@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +27,14 @@ CHECKS = [
     ("db_evidence_semantics", "db_evidence_failure.py", "explicit_statuses"),
 ]
 
+_PASS_LINE = re.compile(r"^RESULT\s+PASS\s*$", re.MULTILINE)
+
+
+def _passed(returncode: int, out: str) -> bool:
+    # Require an explicit final verdict line. Intermediate lines like
+    # "RESULT  BLOCKED" must not count as success.
+    return returncode == 0 and bool(_PASS_LINE.search(out))
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
@@ -36,20 +45,22 @@ def main(argv: list[str] | None = None) -> int:
         path = DEMOS / script
         proc = subprocess.run([sys.executable, str(path)], capture_output=True, text=True)
         out = (proc.stdout or "") + (proc.stderr or "")
-        passed = proc.returncode == 0 and "RESULT PASS" in out.upper().replace("RESULT  PASS", "RESULT PASS")
-        # demos print "RESULT PASS" or "RESULT  PASS"
-        passed = proc.returncode == 0 and "RESULT" in out and "PASS" in out.split("RESULT")[-1]
+        ok = _passed(proc.returncode, out)
         results.append(
             {
                 "name": name,
                 "expected": expected,
-                "result": "pass" if passed else "fail",
+                "result": "pass" if ok else "fail",
                 "exit_code": proc.returncode,
-                "output_tail": "\n".join(out.strip().splitlines()[-12:]),
+                "output_tail": "\n".join(out.strip().splitlines()[-20:]),
             }
         )
-        status = "PASS" if passed else "FAIL"
+        status = "PASS" if ok else "FAIL"
         print(f"{name:<34} {status}")
+        if not ok and not args.json:
+            print("---- output ----")
+            print("\n".join(out.strip().splitlines()[-20:]))
+            print("----------------")
 
     if args.json:
         print(json.dumps({"tests": results}, indent=2))
