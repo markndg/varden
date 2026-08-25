@@ -95,10 +95,11 @@ def test_same_key_different_method_never_reuses_result():
 
 def test_expired_key_is_treated_as_new_request():
     with TemporaryDirectory() as tmpdir:
-        store = _store(tmpdir, default_ttl_seconds=0.01)
+        store = _store(tmpdir, default_ttl_seconds=60)
         body = {"a": 1}
-        store.put("k1", {"result": "ok"}, tenant_id="t1", principal="p1", route="/x", body=body)
-        time.sleep(0.05)
+        # ttl_seconds=-1 makes the row already expired without sleeping
+        # (avoids CI flakes under load with sub-100ms TTLs).
+        store.put("k1", {"result": "ok"}, tenant_id="t1", principal="p1", route="/x", body=body, ttl_seconds=-1)
         cached = store.get("k1", tenant_id="t1", principal="p1", route="/x", body=body)
         assert cached is None
         # Because it is treated as new, a *different* body after expiry must
