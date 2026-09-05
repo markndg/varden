@@ -74,7 +74,14 @@ varden-session = "varden_monitor.session:main"
 varden-mcp = "varden_mcp.server:main"
 
 [tool.setuptools.packages.find]
-include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*", "varden_mcp*"]
+include = ["varden*", "varden_sdk*", "varden_langchain*", "varden_monitor*", "varden_mcp*", "skills*"]
 
 [tool.setuptools.package-data]
-"varden" = ["web/**/*", "policy-packs/*.json", "webshield/corpus/*.json", "provenance/corpus/*.json"]
+"varden" = [
+  "web/**/*",
+  "policy-packs/*.json",
+  "webshield/corpus/*.json",
+  "provenance/corpus/*.json",
+  "skills/varden-security/**/*",
+]
+"skills" = ["varden-security/**/*"]

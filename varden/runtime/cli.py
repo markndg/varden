@@ -177,6 +177,66 @@ def coverage_argv(args: argparse.Namespace) -> int:
     return 0
 
 
+def _local_runtime_active() -> bool:
+    from varden.runtime.coverage import get_coverage_registry
+
+    reg = get_coverage_registry()
+    att = reg.attestation()
+    if att.get("mode_locked"):
+        return True
+    return any(s.get("active") for s in (att.get("surfaces") or []))
+
+
+def posture_argv(args: argparse.Namespace) -> int:
+    """Side-effect-free posture attestation (observes; does not repair)."""
+    from varden.runtime.coverage import get_coverage_registry
+    from varden.runtime.posture import evaluate_posture
+
+    as_json = bool(getattr(args, "json", False))
+    attestation: dict[str, Any] | None = None
+    attestation_valid = True
+    source = "local"
+
+    if _local_runtime_active():
+        report = evaluate_posture(get_coverage_registry(), self_test="not_run")
+    else:
+        try:
+            data = _api("GET", "/runtime/coverage")
+            live = data.get("live") or {}
+            if live.get("surfaces") is not None or live.get("categories") is not None:
+                attestation = live
+                source = "control_plane"
+            else:
+                attestation_valid = False
+                attestation = get_coverage_registry().attestation()
+                source = "local_inactive"
+        except Exception:
+            # Control plane unreachable — report local (usually inactive) state.
+            attestation = get_coverage_registry().attestation()
+            # Local inactive registry is still a valid determination of "not protected".
+            attestation_valid = True
+            source = "local_inactive"
+        report = evaluate_posture(
+            attestation=attestation,
+            attestation_valid=attestation_valid,
+            self_test="not_run",
+        )
+
+    if as_json:
+        payload = report.to_dict()
+        payload["source"] = source
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        text = report.format_human()
+        # Keep human output free of ANSI; optional source note for agents/CI.
+        if source == "control_plane":
+            text = text.rstrip() + "\n\nSource: control-plane live coverage registry\n"
+        elif source == "local_inactive":
+            text = text.rstrip() + "\n\nSource: local process registry (runtime not active in this process)\n"
+        print(text, end="" if text.endswith("\n") else "\n")
+    return 0
+
+
 def approvals_argv(args: argparse.Namespace) -> int:
     cmd = getattr(args, "approvals_command", None)
     if cmd == "pending":

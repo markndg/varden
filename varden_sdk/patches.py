@@ -80,6 +80,7 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
         status=ENFORCED,
         interceptor="urllib.request.urlopen",
         active=True,
+        applicable=True,
         enforcement_mode="enforced",
     )
 
@@ -219,6 +220,7 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         status=PARTIAL,
         interceptor="builtins.open+pathlib+os.remove/unlink/rename/replace",
         active=True,
+        applicable=True,
         enforcement_mode="partial",
         limitations=[
             "Python filesystem APIs: ENFORCED for secrets/system paths",

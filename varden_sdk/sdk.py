@@ -215,8 +215,8 @@ class VardenGuard:
         )
         self._mode_locked = True
         # Mark always-available tool surface.
-        reg.mark('tools.python', status=PARTIAL, interceptor='guard_tool/@tool/register_tool', active=True)
-        reg.mark('tools.langchain', status=OBSERVATIONAL, active=False, limitations=['Callbacks alone are observational until dispatch is wrapped.'])
+        reg.mark('tools.python', status=PARTIAL, interceptor='guard_tool/@tool/register_tool', active=True, applicable=True)
+        # LangChain remains non-applicable until the framework is actually in use.
         # Discover MCP configs — strict must not silently READY when NOT_ROUTED.
         discovered_mcp = _discover_mcp_configs(self.mcp_config)
         if discovered_mcp:
@@ -234,6 +234,7 @@ class VardenGuard:
                     'mcp',
                     status=NOT_ROUTED,
                     active=False,
+                    applicable=True,
                     limitations=['MCP config discovered but traffic is not routed through the Varden gateway.'],
                     evidence=discovered_mcp,
                 )
@@ -654,7 +655,7 @@ def patch_runtime(guard: VardenGuard) -> None:
         _runtime_patches.patch_filesystem(guard, _ORIGINALS)
         reg = get_coverage_registry()
         if 'requests.sessions.Session.request' in _ORIGINALS:
-            reg.mark('http.requests', status=ENFORCED, interceptor='requests.Session.request', active=True)
+            reg.mark('http.requests', status=ENFORCED, interceptor='requests.Session.request', active=True, applicable=True)
 
             def _check_requests():
                 try:
@@ -665,29 +666,28 @@ def patch_runtime(guard: VardenGuard) -> None:
 
             reg.register_interceptor_check('http.requests', _check_requests)
         if 'httpx.Client.send' in _ORIGINALS:
-            reg.mark('http.httpx', status=ENFORCED, interceptor='httpx.Client/AsyncClient.send', active=True)
+            reg.mark('http.httpx', status=ENFORCED, interceptor='httpx.Client/AsyncClient.send', active=True, applicable=True)
 
             def _check_httpx():
                 return httpx.Client.send is not _ORIGINALS.get('httpx.Client.send')
 
             reg.register_interceptor_check('http.httpx', _check_httpx)
-        reg.mark('http.raw_sockets', status=UNCOVERED, active=False)
-        reg.mark('http.aiohttp', status='UNSUPPORTED', active=False)
-        reg.mark('http.urllib3', status=UNCOVERED, active=False)
+        reg.mark('http.raw_sockets', status=UNCOVERED, active=False, applicable=True)
+        reg.mark('http.aiohttp', status='UNSUPPORTED', active=False, applicable=True)
+        reg.mark('http.urllib3', status=UNCOVERED, active=False, applicable=True)
         if 'subprocess.Popen' in _ORIGINALS:
-            reg.mark('subprocess', status=ENFORCED, interceptor='subprocess.*', active=True)
+            reg.mark('subprocess', status=ENFORCED, interceptor='subprocess.*', active=True, applicable=True)
 
             def _check_subprocess():
                 return subprocess.Popen is not _ORIGINALS.get('subprocess.Popen')
 
             reg.register_interceptor_check('subprocess', _check_subprocess)
         if 'openai.responses.create' in _ORIGINALS or 'openai.chat.completions.create' in _ORIGINALS:
-            reg.mark('llm.openai', status=ENFORCED, interceptor='openai', active=True)
+            reg.mark('llm.openai', status=ENFORCED, interceptor='openai', active=True, applicable=True)
         if 'anthropic.messages.create' in _ORIGINALS:
-            reg.mark('llm.anthropic', status=ENFORCED, interceptor='anthropic', active=True)
-        # MCP remains NOT_ROUTED unless gateway marks it.
-        if not (reg.get('mcp') and reg.get('mcp').active):
-            reg.mark('mcp', status=NOT_ROUTED, active=False, limitations=['Route MCP configs through varden mcp wrap / gateway.'])
+            reg.mark('llm.anthropic', status=ENFORCED, interceptor='anthropic', active=True, applicable=True)
+        # MCP stays non-applicable until discover()/gateway marks it. Do not
+        # claim NOT_ROUTED merely because protect() ran without MCP configs.
         _PATCHED = True
 
 

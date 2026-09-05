@@ -32,6 +32,60 @@ A runtime governance layer for AI agents, tools and MCP servers.
 
 ---
 
+## Tell your agent to secure itself
+
+Give a compatible coding agent the [Varden security skill](skills/varden-security/SKILL.md) and say:
+
+> Secure this agent with Varden.
+
+```text
+Agent:
+  installs/configures Varden
+        ↓
+  routes supported surfaces
+        ↓
+  asks Varden for posture
+        ↓
+  reports Varden's authoritative result
+```
+
+**Don't ask your agent whether it's secure. Ask Varden to prove what is enforced.**
+
+**The skill is not the firewall. Varden is.**
+
+```bash
+varden posture
+varden posture --json
+```
+
+Example of an honest result (gaps are expected to be visible):
+
+```text
+Protection
+  Network      PARTIAL
+  Subprocess   ENFORCED
+  Filesystem   PARTIAL
+  MCP          NOT_ROUTED
+
+Result
+  NOT FULLY ROUTED
+```
+
+```bash
+# After pip install varden — print the shipped skill path
+varden skill path
+
+# Copy into an agent skills directory (refuses to overwrite)
+varden skill install --target ~/.cursor/skills
+# or, from a clone:
+# cp -R skills/varden-security <your-agent-skills-dir>/
+```
+
+Not every agent runtime supports skills; where unsupported, paste the skill
+instructions or drive the same workflow manually with the CLI below.
+
+---
+
 ## Try it now
 
 ```bash
@@ -89,10 +143,12 @@ surfaces (HTTP, subprocess, filesystem where supported, tools) with
 varden.protect(mode="strict", require_coverage=["http", "subprocess", "mcp"])
 ```
 
-Coverage attestation (`varden coverage`, or Authority → Protection Coverage in the
-UI) reports ENFORCED vs UNCOVERED honestly — including limitations such as saved
-pre-patch function references and raw sockets. See
-[docs/runtime-boundary.md](docs/runtime-boundary.md).
+Coverage attestation (`varden coverage`, `varden coverage --json`) and
+authoritative posture (`varden posture`, `varden posture --json`) report
+ENFORCED vs UNCOVERED honestly — including limitations such as saved pre-patch
+function references and raw sockets. See
+[docs/runtime-boundary.md](docs/runtime-boundary.md) and
+[docs/runtime-posture.md](docs/runtime-posture.md).
 
 Varden patches the Python runtime — `requests`, `httpx`, `subprocess`, filesystem
 APIs, OpenAI, Anthropic — so supported actions are checked before they run. Route
@@ -120,10 +176,13 @@ honest coverage: never claim a surface is ENFORCED if a known path can bypass it
 
 ```bash
 varden coverage
+varden coverage --json
 varden runtime readiness
+varden runtime readiness --json
 varden runtime self-test
 varden mcp wrap ~/.cursor/mcp.json --output /tmp/mcp.wrapped.json
 varden approvals pending
+varden skill path
 ```
 
 Strict mode refuses readiness when discovered relevant surfaces (for example MCP

@@ -349,6 +349,7 @@ def run_stdio_gateway(
             status=ENFORCED,
             interceptor="varden.runtime.mcp_gateway",
             active=True,
+            applicable=True,
             enforcement_mode="enforced",
             evidence={"server_id": server_id},
             limitations=["Direct MCP connections outside the gateway remain uncovered."],

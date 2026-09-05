@@ -16,6 +16,7 @@ def register_runtime_routes(
     get_live_coverage: Callable[[], dict[str, Any]] | None = None,
     session_provenance_store: Any | None = None,
     get_strict_readiness: Callable[[], dict[str, Any]] | None = None,
+    get_posture: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     @app.get("/runtime/coverage")
     def runtime_coverage(
@@ -39,6 +40,21 @@ def register_runtime_routes(
                 "Clients cannot forge ENFORCED status — server/live registry is authoritative."
             ),
         }
+
+    @app.get("/runtime/posture")
+    def runtime_posture(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        require(x_api_key, authorization, "viewer", scope="read")
+        if get_posture:
+            return get_posture()
+        from varden.runtime.posture import evaluate_posture
+
+        live = get_live_coverage() if get_live_coverage else {}
+        if live:
+            return evaluate_posture(attestation=live, self_test="not_run").to_dict()
+        return evaluate_posture(self_test="not_run").to_dict()
 
     @app.get("/runtime/status")
     def runtime_status(

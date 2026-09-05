@@ -44,6 +44,7 @@ from .provenance.engine import enrich as provenance_enrich
 from .provenance.routes import register_provenance_routes
 from .runtime.approvals import ApprovalStore
 from .runtime.coverage import get_coverage_registry
+from .runtime.posture import evaluate_posture
 from .runtime.coverage_store import RuntimeCoverageStore
 from .runtime.routes import register_runtime_routes
 from .runtime.session_provenance import SessionProvenanceStore
@@ -1201,6 +1202,7 @@ def create_app(config: AppConfig) -> FastAPI:
         get_live_coverage=lambda: get_coverage_registry().attestation(),
         session_provenance_store=session_provenance_store,
         get_strict_readiness=lambda: get_coverage_registry().strict_readiness_report(),
+        get_posture=lambda: evaluate_posture().to_dict(),
     )
 
     return app
