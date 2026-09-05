@@ -220,10 +220,14 @@ def main(argv: list[str] | None = None) -> int:
     coverage = sub.add_parser('coverage', help='Show runtime protection coverage attestation')
     coverage.add_argument('--json', action='store_true')
 
+    posture = sub.add_parser('posture', help='Show authoritative runtime security posture')
+    posture.add_argument('--json', action='store_true')
+
     runtime = sub.add_parser('runtime', help='Runtime boundary status and self-test')
     runtime_sub = runtime.add_subparsers(dest='runtime_command')
     runtime_sub.add_parser('status', help='Show runtime status')
-    runtime_sub.add_parser('readiness', help='Show strict-mode readiness')
+    runtime_ready = runtime_sub.add_parser('readiness', help='Show strict-mode readiness')
+    runtime_ready.add_argument('--json', action='store_true')
     runtime_explain = runtime_sub.add_parser('explain', help='Explain a runtime/event id')
     runtime_explain.add_argument('event_id')
     runtime_sub.add_parser('self-test', help='Safely probe active interceptors')
@@ -247,6 +251,19 @@ def main(argv: list[str] | None = None) -> int:
     mcp_patch.add_argument('--output', default=None)
     mcp_sub.add_parser('gateway', help='Explain how to run the MCP gateway')
 
+    skill = sub.add_parser('skill', help='Locate or install the Varden Agent Skill')
+    skill_sub = skill.add_subparsers(dest='skill_command')
+    skill_sub.add_parser('path', help='Print the filesystem path to the shipped varden-security skill')
+    skill_install = skill_sub.add_parser(
+        'install',
+        help='Copy the skill into a target directory (refuses overwrite)',
+    )
+    skill_install.add_argument(
+        '--target',
+        required=True,
+        help='Parent directory (skill is copied to <target>/varden-security)',
+    )
+
     monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
     monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
     session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
@@ -265,6 +282,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'coverage':
         from .runtime.cli import coverage_argv
         return coverage_argv(args)
+    if args.command == 'posture':
+        from .runtime.cli import posture_argv
+        return posture_argv(args)
     if args.command == 'runtime':
         from .runtime.cli import runtime_argv
         return runtime_argv(args)
@@ -274,6 +294,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'mcp':
         from .runtime.cli import mcp_argv
         return mcp_argv(args)
+    if args.command == 'skill':
+        from .skills.cli import skill_argv
+        return skill_argv(args)
     if args.command == 'monitor':
         try:
             from varden_monitor.cli import monitor_argv

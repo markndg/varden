@@ -26,6 +26,10 @@ class CoverageSurface:
     enforcement_mode: str = "none"
     interceptor: str | None = None
     active: bool = False
+    # When False, the surface exists in the catalog but is not relevant to this
+    # runtime (e.g. MCP with no discovered config). Posture must not treat
+    # NOT_ROUTED on a non-applicable surface as a material gap.
+    applicable: bool = True
     limitations: list[str] = field(default_factory=list)
     evidence: dict[str, Any] = field(default_factory=dict)
     last_verified: float | None = None
@@ -40,42 +44,49 @@ _CATALOG: list[dict[str, Any]] = [
         "name": "http.requests",
         "category": "http",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": ["Saved pre-patch Session.request references bypass monkeypatching."],
     },
     {
         "name": "http.httpx",
         "category": "http",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": ["Custom transports / mounts may bypass Client.send wrapping."],
     },
     {
         "name": "http.urllib",
         "category": "http",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": ["urllib.request.urlopen only; lower-level handlers may differ."],
     },
     {
         "name": "http.raw_sockets",
         "category": "http",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": ["socket / ssl sockets are not monkeypatched."],
     },
     {
         "name": "http.aiohttp",
         "category": "http",
         "default_status": UNSUPPORTED,
+        "applicable": False,
         "limitations": ["aiohttp is not automatically intercepted."],
     },
     {
         "name": "http.urllib3",
         "category": "http",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": ["Direct urllib3 PoolManager calls bypass requests/httpx patches."],
     },
     {
         "name": "subprocess",
         "category": "subprocess",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": [
             "Saved pre-patch function references bypass monkeypatching.",
             "Native forks from extensions are outside Python hooks.",
@@ -85,6 +96,7 @@ _CATALOG: list[dict[str, Any]] = [
         "name": "filesystem",
         "category": "filesystem",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": [
             "Python filesystem APIs only.",
             "Native extensions / external processes: PARTIAL at best.",
@@ -94,13 +106,17 @@ _CATALOG: list[dict[str, Any]] = [
     {
         "name": "mcp",
         "category": "mcp",
+        # NOT_ROUTED is only meaningful once MCP is applicable (discovered /
+        # required / gateway-enforced). Default catalog entry is not applicable.
         "default_status": NOT_ROUTED,
+        "applicable": False,
         "limitations": ["Direct MCP stdio connections outside the gateway are uncovered."],
     },
     {
         "name": "tools.python",
         "category": "tools",
         "default_status": PARTIAL,
+        "applicable": False,
         "limitations": [
             "Python tool dispatch: PARTIAL — requires @varden.tool / guard_tool / register_tool.",
             "Model cognition itself is never covered.",
@@ -110,6 +126,7 @@ _CATALOG: list[dict[str, Any]] = [
         "name": "tools.langchain",
         "category": "tools",
         "default_status": OBSERVATIONAL,
+        "applicable": False,
         "limitations": [
             "LangChain tool dispatch: PARTIAL when wrapped; callbacks alone are OBSERVATIONAL.",
         ],
@@ -118,6 +135,7 @@ _CATALOG: list[dict[str, Any]] = [
         "name": "llm.openai_transport",
         "category": "llm",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": [
             "OpenAI API transport: covered only when HTTP client patches apply to the SDK transport.",
             "Does not cover model cognition or tool-choice reasoning.",
@@ -127,6 +145,7 @@ _CATALOG: list[dict[str, Any]] = [
         "name": "llm.anthropic_transport",
         "category": "llm",
         "default_status": UNCOVERED,
+        "applicable": False,
         "limitations": [
             "Anthropic API transport: covered only when HTTP client patches apply to the SDK transport.",
             "Does not cover model cognition or tool-choice reasoning.",
@@ -136,6 +155,7 @@ _CATALOG: list[dict[str, Any]] = [
         "name": "llm.framework_callbacks",
         "category": "llm",
         "default_status": OBSERVATIONAL,
+        "applicable": False,
         "limitations": ["Framework callbacks are observational unless dispatch is wrapped."],
     },
 ]
@@ -166,6 +186,7 @@ class CoverageRegistry:
                     name=item["name"],
                     category=item["category"],
                     status=item["default_status"],
+                    applicable=bool(item.get("applicable", True)),
                     limitations=list(item.get("limitations") or []),
                     active=False,
                 )
@@ -197,6 +218,30 @@ class CoverageRegistry:
             self._allow_uncovered = {str(x).strip().lower() for x in (allow_uncovered or [])}
             if lock_mode or mode == "strict":
                 self._mode_locked = True
+            self._apply_requirement_applicability()
+
+    def _apply_requirement_applicability(self) -> None:
+        """Surfaces explicitly required by the coverage contract become applicable."""
+        primary_for_category = {
+            "http": ("http.requests", "http.httpx", "http.urllib"),
+            "network": ("http.requests", "http.httpx", "http.urllib"),
+            "subprocess": ("subprocess",),
+            "filesystem": ("filesystem",),
+            "tools": ("tools.python",),
+            "mcp": ("mcp",),
+            "llm": ("llm.openai", "llm.anthropic", "llm.openai_transport", "llm.anthropic_transport"),
+        }
+        for item in self._require_coverage:
+            key = str(item).strip().lower()
+            if key in primary_for_category:
+                for name in primary_for_category[key]:
+                    surface = self._surfaces.get(name)
+                    if surface is not None:
+                        surface.applicable = True
+                continue
+            for surface in self._surfaces.values():
+                if surface.name == key:
+                    surface.applicable = True
 
     def register_interceptor_check(self, name: str, checker: Any) -> None:
         """Register a callable that returns True if the interceptor is still active."""
@@ -207,6 +252,9 @@ class CoverageRegistry:
         """Record a discovered relevant surface (e.g. MCP config present)."""
         with self._lock:
             self._discovered[name] = {"name": name, "detail": detail or {}, "at": time.time()}
+            surface = self._surfaces.get(name)
+            if surface is not None:
+                surface.applicable = True
 
     def mark(
         self,
@@ -218,6 +266,7 @@ class CoverageRegistry:
         limitations: list[str] | None = None,
         evidence: dict[str, Any] | None = None,
         enforcement_mode: str | None = None,
+        applicable: bool | None = None,
     ) -> CoverageSurface:
         if status not in VALID_STATUSES:
             raise ValueError(f"invalid coverage status: {status}")
@@ -231,6 +280,8 @@ class CoverageRegistry:
             surface.active = active
             surface.interceptor = interceptor or surface.interceptor
             surface.enforcement_mode = enforcement_mode or ("enforced" if status == ENFORCED else status.lower())
+            if applicable is not None:
+                surface.applicable = bool(applicable)
             if limitations is not None:
                 surface.limitations = list(limitations)
             if evidence:
@@ -300,6 +351,8 @@ class CoverageRegistry:
             status = _worst_status([s.status for s in surfaces])
             if cat == "mcp":
                 mcp = next((s for s in surfaces if s.name == "mcp"), None)
+                if mcp and not mcp.applicable and not (mcp.active and mcp.status == ENFORCED):
+                    continue  # omit non-applicable MCP from rollup
                 if mcp and mcp.status == ENFORCED:
                     status = "ENFORCED VIA GATEWAY"
                 elif mcp:
@@ -447,12 +500,14 @@ class CoverageRegistry:
                 "surfaces": [s.to_dict() for s in self.list_surfaces()],
                 "categories": self.category_rollup(),
                 "strict_readiness": self.strict_readiness(),
+                "require_coverage": list(self._require_coverage),
                 "accepted_exceptions": sorted(self._allow_uncovered),
                 "discovered": list(self._discovered.values()),
                 "known_bypass_surfaces": [
                     s.to_dict()
                     for s in self.list_surfaces()
-                    if s.status in {UNCOVERED, UNSUPPORTED, NOT_ROUTED, OBSERVATIONAL}
+                    if s.applicable
+                    and s.status in {UNCOVERED, UNSUPPORTED, NOT_ROUTED, OBSERVATIONAL, PARTIAL}
                 ],
             }
 

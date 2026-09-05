@@ -13,7 +13,9 @@ Statuses:
 
 ```bash
 varden coverage
+varden coverage --json
 varden runtime status
+varden runtime readiness --json
 ```
 
 ```http

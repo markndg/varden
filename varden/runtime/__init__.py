@@ -21,6 +21,17 @@ from .coverage import (
     get_coverage_registry,
 )
 from .modes import GUARDED, OBSERVE, STRICT, describe_mode, is_enforcing, normalize_mode
+from .posture import (
+    NOT_FULLY_ROUTED,
+    NOT_PROTECTED,
+    NOT_READY,
+    PROTECTED,
+    PROTECTED_WITH_GAPS,
+    PostureGap,
+    PostureReport,
+    evaluate_posture,
+    report_posture,
+)
 
 __all__ = [
     "ApprovalStore",
@@ -29,18 +40,27 @@ __all__ = [
     "CoverageSurface",
     "ENFORCED",
     "GUARDED",
+    "NOT_FULLY_ROUTED",
+    "NOT_PROTECTED",
+    "NOT_READY",
     "NOT_ROUTED",
     "OBSERVE",
     "OBSERVATIONAL",
     "PARTIAL",
+    "PROTECTED",
+    "PROTECTED_WITH_GAPS",
+    "PostureGap",
+    "PostureReport",
     "STRICT",
     "UNCOVERED",
     "UNSUPPORTED",
     "describe_mode",
     "enrich_action_runtime_metadata",
+    "evaluate_posture",
     "format_startup_attestation",
     "get_coverage_registry",
     "hash_action_scope",
     "is_enforcing",
     "normalize_mode",
+    "report_posture",
 ]
