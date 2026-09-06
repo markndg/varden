@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Filesystem containment hardening
+
+- Canonical / symlink-aware effective filesystem targets for policy decisions
+- Path-component containment (no naïve string-prefix checks)
+- Rename/replace evaluates source and destination independently
+- Pre-use effective-target re-check narrows check/use gaps (TOCTOU not eliminated)
+- Fail-closed behaviour on ambiguous security-sensitive path resolution
+- Coverage remains truthful PARTIAL; residual TOCTOU documented
+
+### Tamper-evident audit integrity
+
+- Atomic hash-chained appends on the existing `events` store (`BEGIN IMMEDIATE` + rollback safety)
+- Deterministic canonical event hashing (`hash_version` 1) with genesis value
+- Single chained era after optional legacy prefix; unexpected unchained rows fail verify
+- Policy fingerprint is order-stable for rules and excludes volatile config noise
+- CLI: `varden audit verify` (exit 0 = PASS, non-zero = FAIL)
+- Legacy NULL `event_hash` rows reported as unchained (not retroactively sealed)
+- Verifier rejects malformed hashes and unsupported hash versions
+
 ### Runtime posture attestation
 
 - Added `varden posture` and `varden posture --json`

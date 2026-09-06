@@ -1,11 +1,18 @@
-"""Filesystem path classification for runtime boundary enforcement."""
+"""Filesystem path classification and containment for runtime boundary enforcement.
+
+Security decisions use the strongest safely established *effective* target.
+The caller-supplied path is preserved for audit and explanation.
+"""
 
 from __future__ import annotations
 
 import os
 import re
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
+
+ResolutionStatus = Literal["resolution_success", "resolution_partial", "resolution_failed"]
 
 _SECRET_PATTERNS = (
     re.compile(r"(^|/)\.ssh(/|$)", re.I),
@@ -57,44 +64,262 @@ _CODE_EXTS = {
 
 _CODE_DIRS = ("src/", "lib/", "app/", "pkg/", "cmd/", "internal/")
 
+_MAX_SYMLINK_DEPTH = 32
+
+
+@dataclass
+class CanonicalTarget:
+    """Internal representation of a filesystem target for policy decisions."""
+
+    supplied_path: str
+    absolute_lexical: str
+    effective_path: str | None
+    parent_effective: str | None
+    workspace_root: str | None
+    exists: bool | None
+    symlink_involved: bool
+    operation: str
+    resolution: ResolutionStatus
+    resolution_error: str | None = None
+    inside_workspace: bool | None = None
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
 
 def _expand(path: str | os.PathLike[str]) -> Path:
     return Path(os.path.expanduser(os.path.expandvars(str(path))))
 
 
-def canonicalize_path(path: str | os.PathLike[str], *, workspace: str | None = None) -> dict[str, Any]:
-    raw = str(path)
-    expanded = _expand(path)
-    absolute = expanded if expanded.is_absolute() else (Path.cwd() / expanded)
+def is_path_contained(candidate: str | os.PathLike[str], root: str | os.PathLike[str]) -> bool:
+    """Return True iff candidate is root or a descendant (path-component aware).
+
+    Never use naïve string-prefix checks: ``/workspace-safe`` is not inside
+    ``/workspace``.
+    """
     try:
-        real = str(absolute.resolve(strict=False))
+        cand = Path(os.fspath(candidate))
+        base = Path(os.fspath(root))
+        cand_parts = cand.parts
+        base_parts = base.parts
+        if len(cand_parts) < len(base_parts):
+            return False
+        return cand_parts[: len(base_parts)] == base_parts
     except Exception:
-        real = str(absolute)
-    workspace_root = None
+        return False
+
+
+def _lexically_absolute(path: str | os.PathLike[str], *, cwd: Path | None = None) -> Path:
+    expanded = _expand(path)
+    if expanded.is_absolute():
+        return Path(os.path.normpath(str(expanded)))
+    base = cwd or Path.cwd()
+    return Path(os.path.normpath(str(base / expanded)))
+
+
+def _symlink_in_chain(path: Path, *, stop_at: Path | None = None) -> bool:
+    """True if path or an ancestor at/below stop_at is a symlink.
+
+    Limiting the walk to the workspace (when known) avoids false positives from
+    platform prefix links such as macOS ``/var`` → ``/private/var``.
+    """
+    cur = path
+    stop = None
+    if stop_at is not None:
+        try:
+            stop = Path(os.path.realpath(str(stop_at)))
+        except Exception:
+            stop = Path(os.path.normpath(str(stop_at)))
+    for _ in range(_MAX_SYMLINK_DEPTH):
+        try:
+            if cur.exists() and cur.is_symlink():
+                return True
+        except OSError:
+            return False
+        parent = cur.parent
+        if parent == cur:
+            break
+        if stop is not None:
+            # Stop once we leave the workspace tree (do not inspect OS prefix links).
+            try:
+                if cur == stop or not is_path_contained(cur, stop):
+                    # Still check `cur` itself above; next iteration would leave workspace.
+                    if cur == stop:
+                        break
+                    if not is_path_contained(parent, stop) and parent != stop:
+                        break
+            except Exception:
+                break
+        cur = parent
+    return False
+
+
+def resolve_filesystem_target(
+    path: str | os.PathLike[str],
+    *,
+    workspace: str | None = None,
+    operation: str = "open",
+    cwd: str | os.PathLike[str] | None = None,
+) -> CanonicalTarget:
+    """Resolve the effective filesystem target for policy decisions.
+
+    For non-existent create/write targets, resolve the nearest existing parent
+    and append the remaining lexical components — never treat unresolved
+    ``Path.resolve(strict=False)`` as proof of containment.
+    """
+    supplied = str(path)
+    notes: list[str] = []
+    cwd_path = Path(cwd) if cwd is not None else Path.cwd()
+    try:
+        lexical = _lexically_absolute(path, cwd=cwd_path)
+    except Exception as exc:
+        return CanonicalTarget(
+            supplied_path=supplied,
+            absolute_lexical=supplied,
+            effective_path=None,
+            parent_effective=None,
+            workspace_root=None,
+            exists=None,
+            symlink_involved=False,
+            operation=operation,
+            resolution="resolution_failed",
+            resolution_error=f"lexical_failed:{exc}",
+            notes=["failed to compute absolute lexical path"],
+        )
+
+    workspace_root: str | None = None
     if workspace:
         try:
             workspace_root = str(Path(workspace).resolve())
         except Exception:
-            workspace_root = str(Path(workspace))
+            workspace_root = str(_lexically_absolute(workspace))
+
+    symlink_involved = False
+    exists: bool | None = None
+    effective: str | None = None
+    parent_effective: str | None = None
+    resolution: ResolutionStatus = "resolution_partial"
+    resolution_error: str | None = None
+
+    try:
+        exists = lexical.exists()
+    except OSError as exc:
+        exists = None
+        resolution = "resolution_failed"
+        resolution_error = f"exists_check_failed:{exc}"
+        notes.append("could not determine existence")
+
+    stop = Path(workspace_root) if workspace_root else None
+
+    if exists is True:
+        try:
+            real = Path(os.path.realpath(str(lexical)))
+            if lexical.is_symlink() or _symlink_in_chain(lexical, stop_at=stop):
+                symlink_involved = True
+                notes.append("symlink involved in resolution")
+            effective = str(real)
+            parent_effective = str(real.parent)
+            resolution = "resolution_success"
+        except Exception as exc:
+            resolution = "resolution_failed"
+            resolution_error = f"realpath_failed:{exc}"
+            notes.append("existing path could not be fully resolved")
+    elif exists is False:
+        remainder: list[str] = []
+        cur = lexical
+        found_parent: Path | None = None
+        try:
+            for _ in range(len(lexical.parts) + 2):
+                try:
+                    if cur.exists():
+                        found_parent = cur
+                        break
+                except OSError:
+                    break
+                if cur.parent == cur:
+                    break
+                remainder.insert(0, cur.name)
+                cur = cur.parent
+            if found_parent is None:
+                resolution = "resolution_failed"
+                resolution_error = "no_existing_ancestor"
+                notes.append("no existing ancestor for non-existent target")
+            else:
+                try:
+                    parent_real = Path(os.path.realpath(str(found_parent)))
+                    if found_parent.is_symlink() or _symlink_in_chain(found_parent, stop_at=stop):
+                        symlink_involved = True
+                        notes.append("symlink involved in parent resolution")
+                    parent_effective = str(parent_real)
+                    effective_path = parent_real.joinpath(*remainder) if remainder else parent_real
+                    effective = str(Path(os.path.normpath(str(effective_path))))
+                    if remainder:
+                        resolution = "resolution_partial"
+                        notes.append("target does not exist; containment via resolved parent")
+                    else:
+                        resolution = "resolution_success"
+                except Exception as exc:
+                    resolution = "resolution_failed"
+                    resolution_error = f"parent_resolve_failed:{exc}"
+                    notes.append("nearest parent could not be resolved")
+        except OSError as exc:
+            resolution = "resolution_failed"
+            resolution_error = f"ancestor_walk_failed:{exc}"
+
+    inside: bool | None = None
+    if workspace_root and effective:
+        inside = is_path_contained(effective, workspace_root)
+
+    return CanonicalTarget(
+        supplied_path=supplied,
+        absolute_lexical=str(lexical),
+        effective_path=effective,
+        parent_effective=parent_effective,
+        workspace_root=workspace_root,
+        exists=exists,
+        symlink_involved=symlink_involved,
+        operation=operation,
+        resolution=resolution,
+        resolution_error=resolution_error,
+        inside_workspace=inside,
+        notes=notes,
+    )
+
+
+def canonicalize_path(path: str | os.PathLike[str], *, workspace: str | None = None) -> dict[str, Any]:
+    """Backwards-compatible path dict, now backed by CanonicalTarget."""
+    target = resolve_filesystem_target(path, workspace=workspace, operation="canonicalize")
     return {
-        "raw": raw,
-        "expanded": str(expanded),
-        "absolute": str(absolute),
-        "real_path": real,
-        "workspace": workspace_root,
-        "is_relative": not expanded.is_absolute(),
+        "raw": target.supplied_path,
+        "expanded": str(_expand(path)),
+        "absolute": target.absolute_lexical,
+        "real_path": target.effective_path or target.absolute_lexical,
+        "workspace": target.workspace_root,
+        "is_relative": not _expand(path).is_absolute(),
+        "canonical_target": target.to_dict(),
+        "resolution": target.resolution,
+        "symlink_involved": target.symlink_involved,
+        "exists": target.exists,
+        "parent_effective": target.parent_effective,
     }
 
 
-def classify_workspace_mutation(path: str | os.PathLike[str], *, workspace: str | None = None, mode: str = "r") -> dict[str, Any]:
+def classify_workspace_mutation(
+    path: str | os.PathLike[str], *, workspace: str | None = None, mode: str = "r"
+) -> dict[str, Any]:
     info = canonicalize_path(path, workspace=workspace)
     writing = any(c in str(mode or "r") for c in "wxa+")
     real = info.get("real_path") or info.get("absolute") or ""
     name = os.path.basename(real).lower()
     rel = real
     ws = info.get("workspace")
-    if ws and real.startswith(ws + os.sep):
-        rel = real[len(ws) + 1 :]
+    if ws and real and is_path_contained(real, ws):
+        try:
+            rel = str(Path(real).relative_to(ws))
+        except Exception:
+            if real.startswith(ws + os.sep):
+                rel = real[len(ws) + 1 :]
     rel_l = rel.replace("\\", "/").lower()
 
     mutation = "READ_WORKSPACE"
@@ -122,7 +347,15 @@ def classify_workspace_mutation(path: str | os.PathLike[str], *, workspace: str 
 
 def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None, mode: str = "r") -> dict[str, Any]:
     info = canonicalize_path(path, workspace=workspace)
-    candidates = [info["raw"], info["expanded"], info["absolute"], info["real_path"] or ""]
+    target = info.get("canonical_target") or {}
+    candidates = [
+        info["raw"],
+        info["expanded"],
+        info["absolute"],
+        info.get("real_path") or "",
+        target.get("effective_path") or "",
+        target.get("parent_effective") or "",
+    ]
     home = str(Path.home())
     classification = "unknown"
     reasons: list[str] = []
@@ -149,7 +382,7 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
                 classification = "system"
                 reasons.append("system path")
                 break
-            if home and (c == home or c.startswith(home + os.sep)):
+            if home and (c == home or is_path_contained(c, home)):
                 classification = "home"
                 reasons.append("home directory path")
                 break
@@ -157,10 +390,12 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
     if classification in {"unknown", "home"} and info.get("workspace") and info.get("real_path"):
         ws = info["workspace"]
         real = info["real_path"]
-        if real == ws or real.startswith(ws + os.sep):
+        if is_path_contained(real, ws):
             if classification != "secrets":
                 classification = "workspace"
-                reasons.append("inside workspace")
+                reasons.append("inside workspace (effective target)")
+        elif target.get("symlink_involved"):
+            reasons.append("effective target outside workspace via symlink or traversal")
 
     mutation = classify_workspace_mutation(path, workspace=workspace, mode=mode)
     if classification == "workspace" and str(mutation.get("mutation") or "").startswith("WRITE_"):
@@ -188,4 +423,16 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
         "mutation": mutation.get("mutation"),
         "required_authority": mutation.get("authority"),
         "writing": mutation.get("writing"),
+        "resolution": info.get("resolution"),
+        "symlink_involved": info.get("symlink_involved"),
     }
+
+
+def resolution_blocks_under_fail_closed(info: dict[str, Any]) -> bool:
+    """True when ambiguous resolution must not silently ALLOW under fail-closed."""
+    status = str(info.get("resolution") or "")
+    if status == "resolution_failed":
+        return True
+    if status == "resolution_partial" and not info.get("real_path"):
+        return True
+    return False

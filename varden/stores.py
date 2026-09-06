@@ -1,11 +1,13 @@
 from __future__ import annotations
-import hashlib, json, time
+import json, time
 from collections import Counter, defaultdict
+from .audit_integrity import GENESIS_PREV_HASH, compute_event_hash, stable_json as _audit_stable_json
 from .db import connect, init_db
 
 
 def stable_json(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    """Public alias used by callers; matches audit canonical JSON."""
+    return _audit_stable_json(value)
 
 
 class EventStore:
@@ -40,37 +42,152 @@ class EventStore:
         }
 
     def log(self, event: dict):
-        prev_hash = self._latest_hash()
-        event_hash = hashlib.sha256((stable_json(event) + (prev_hash or "")).encode("utf-8")).hexdigest()
-        event["prev_hash"] = prev_hash
-        event["event_hash"] = event_hash
+        """Append an event with an atomic hash-chain update.
+
+        Transactional unit (single source of truth — no separate chain-head table):
+
+            BEGIN IMMEDIATE
+                read last committed event_hash (chain head)
+                bind immutable column payloads
+                compute event_hash from bound security fields + previous_hash
+                INSERT event
+            COMMIT
+
+        On any failure after BEGIN, ROLLBACK leaves the chain unchanged.
+        Cross-process safety relies on SQLite WAL locking for the same DB file.
+
+        Optional test hooks (``_log_hooks``) may raise at named stages without
+        changing production behaviour when unset.
+        """
+        hooks = getattr(self, "_log_hooks", None) or {}
+
+        def _hook(name: str, **kwargs):
+            fn = hooks.get(name)
+            if fn:
+                fn(**kwargs)
+
+        # Snapshot caller fields before the transaction so mutations during a
+        # failed attempt cannot alter the next successful append's inputs.
+        snapshot = {
+            "timestamp": event["timestamp"],
+            "action": event["action"],
+            "decision": event["decision"],
+            "status": event["status"],
+            "input_payload": event.get("input_payload"),
+            "output_payload": event.get("output_payload"),
+            "error": event.get("error"),
+            "replayable": bool(event.get("replayable")),
+            "replay_key": event.get("replay_key"),
+            "workflow_id": event.get("workflow_id"),
+            "agent_name": event.get("agent_name"),
+            "parent_event_id": event.get("parent_event_id"),
+            "trace_id": event.get("trace_id"),
+            "tenant_id": event.get("tenant_id"),
+        }
+
         with connect(self.db_path) as conn:
-            cur = conn.execute(
-                """INSERT INTO events (
-                    timestamp, action_json, decision_json, status, input_payload_json, output_payload_json, error,
-                    replayable, replay_key, workflow_id, agent_name, parent_event_id, trace_id, tenant_id, event_hash, prev_hash
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    event["timestamp"],
-                    json.dumps(event["action"], ensure_ascii=False),
-                    json.dumps(event["decision"], ensure_ascii=False),
-                    event["status"],
-                    json.dumps(event.get("input_payload"), ensure_ascii=False),
-                    json.dumps(event.get("output_payload"), ensure_ascii=False),
-                    event.get("error"),
-                    1 if event.get("replayable") else 0,
-                    event.get("replay_key"),
-                    event.get("workflow_id"),
-                    event.get("agent_name"),
-                    event.get("parent_event_id"),
-                    event.get("trace_id"),
-                    event.get("tenant_id"),
-                    event_hash,
-                    prev_hash,
-                ),
-            )
-            conn.commit()
-            return int(cur.lastrowid)
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                _hook("after_begin", conn=conn, event=snapshot)
+                row = conn.execute(
+                    "SELECT event_hash FROM events WHERE event_hash IS NOT NULL ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                prev_hash = row["event_hash"] if row else None
+                _hook("after_read_head", conn=conn, prev_hash=prev_hash)
+                stored_prev = prev_hash if prev_hash is not None else GENESIS_PREV_HASH
+                _hook("before_serialize", event=snapshot)
+                # Bind storage payloads once — hash is computed from the same
+                # logical event fields that are inserted (not a second mutated copy).
+                action_json = json.dumps(snapshot["action"], ensure_ascii=False)
+                decision_json = json.dumps(snapshot["decision"], ensure_ascii=False)
+                input_json = json.dumps(snapshot["input_payload"], ensure_ascii=False)
+                output_json = json.dumps(snapshot["output_payload"], ensure_ascii=False)
+                hash_event = {
+                    "timestamp": snapshot["timestamp"],
+                    "action": json.loads(action_json),
+                    "decision": json.loads(decision_json),
+                    "status": snapshot["status"],
+                    "input_payload": json.loads(input_json) if snapshot["input_payload"] is not None else None,
+                    "output_payload": json.loads(output_json) if snapshot["output_payload"] is not None else None,
+                    "error": snapshot["error"],
+                    "replayable": snapshot["replayable"],
+                    "replay_key": snapshot["replay_key"],
+                    "workflow_id": snapshot["workflow_id"],
+                    "agent_name": snapshot["agent_name"],
+                    "parent_event_id": snapshot["parent_event_id"],
+                    "trace_id": snapshot["trace_id"],
+                    "tenant_id": snapshot["tenant_id"],
+                }
+                _hook("before_hash", event=hash_event, prev_hash=prev_hash)
+                event_hash = compute_event_hash(hash_event, None if prev_hash is None else prev_hash)
+                _hook("after_hash", event_hash=event_hash, stored_prev=stored_prev)
+                _hook("before_insert", conn=conn)
+                cur = conn.execute(
+                    """INSERT INTO events (
+                        timestamp, action_json, decision_json, status, input_payload_json, output_payload_json, error,
+                        replayable, replay_key, workflow_id, agent_name, parent_event_id, trace_id, tenant_id, event_hash, prev_hash
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        snapshot["timestamp"],
+                        action_json,
+                        decision_json,
+                        snapshot["status"],
+                        input_json,
+                        output_json,
+                        snapshot["error"],
+                        1 if snapshot["replayable"] else 0,
+                        snapshot["replay_key"],
+                        snapshot["workflow_id"],
+                        snapshot["agent_name"],
+                        snapshot["parent_event_id"],
+                        snapshot["trace_id"],
+                        snapshot["tenant_id"],
+                        event_hash,
+                        stored_prev,
+                    ),
+                )
+                _hook("after_insert", conn=conn, lastrowid=cur.lastrowid)
+                _hook("before_commit", conn=conn)
+                conn.commit()
+                _hook("after_commit", conn=conn)
+                event["prev_hash"] = stored_prev
+                event["event_hash"] = event_hash
+                return int(cur.lastrowid)
+            except Exception:
+                conn.rollback()
+                _hook("after_rollback")
+                raise
+
+    def list_events_ascending(self, *, limit: int | None = None, tenant_id: str | None = None):
+        """Return events in chain order (ascending id)."""
+        with connect(self.db_path) as conn:
+            if tenant_id:
+                sql = "SELECT * FROM events WHERE tenant_id = ? ORDER BY id ASC"
+                params: tuple = (tenant_id,)
+            else:
+                sql = "SELECT * FROM events ORDER BY id ASC"
+                params = ()
+            if limit is not None:
+                sql += " LIMIT ?"
+                params = params + (limit,)
+            rows = conn.execute(sql, params).fetchall()
+            return [self._row_to_event(r) for r in rows]
+
+    def verify_integrity(self, *, tenant_id: str | None = None, limit: int | None = None) -> dict:
+        from .audit_integrity import verify_event_chain
+
+        # Global chain is authoritative. Tenant filter is informational only and
+        # can produce false breaks; default verify walks the full chain.
+        if tenant_id:
+            events = self.list_events_ascending(limit=limit, tenant_id=tenant_id)
+            note = "tenant-filtered verification may report false breaks on a global chain"
+        else:
+            events = self.list_events_ascending(limit=limit)
+            note = None
+        result = verify_event_chain(events)
+        if note:
+            result.setdefault("notes", []).insert(0, note)
+        return result
 
     def list_events(self, limit: int = 50, tenant_id: str | None = None):
         with connect(self.db_path) as conn:
