@@ -31,6 +31,7 @@ TOP_LEVEL_COMMANDS = {
     "demo",
     "budget",
     "monitor",
+    "audit",
 }
 
 

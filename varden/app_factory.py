@@ -465,8 +465,50 @@ def create_app(config: AppConfig) -> FastAPI:
         return action
 
     def persist_event(*, action: Action, decision, status: str, input_payload=None, output_payload=None, error=None, replay_key=None):
+        from .audit_integrity import stamp_policy_fingerprint
+
+        action_dict = action.to_dict()
+        try:
+            meta0 = action_dict.get("metadata") or {}
+            runtime0 = meta0.get("runtime") or {}
+            action_dict = stamp_policy_fingerprint(
+                action_dict,
+                policy.get_policy(),
+                mode=runtime0.get("mode"),
+                fail_mode=runtime0.get("fail_mode"),
+            )
+        except Exception:
+            # Fingerprint is additive evidence; never fail the decision path.
+            pass
+        # Capture coverage/posture snapshot when available (does not affect decision).
+        try:
+            from .runtime.coverage import get_coverage_registry
+            from .runtime.posture import evaluate_posture
+
+            att = get_coverage_registry().attestation()
+            meta = dict(action_dict.get("metadata") or {})
+            runtime_meta = dict(meta.get("runtime") or {})
+            if not runtime_meta.get("coverage"):
+                runtime_meta["coverage_mode"] = att.get("mode")
+                surf = (meta.get("runtime") or {}).get("surface")
+                if surf:
+                    for s in att.get("surfaces") or []:
+                        if s.get("name") == surf or s.get("category") == surf:
+                            runtime_meta["coverage"] = s.get("status")
+                            runtime_meta["coverage_applicable"] = s.get("applicable")
+                            break
+            try:
+                posture = evaluate_posture(attestation=att)
+                runtime_meta["posture_result"] = posture.result
+            except Exception:
+                pass
+            meta["runtime"] = runtime_meta
+            action_dict["metadata"] = meta
+        except Exception:
+            pass
+
         event_id = event_store.log(EventRecord.new(
-            action=action.to_dict(),
+            action=action_dict,
             decision=decision.to_dict() if hasattr(decision, 'to_dict') else decision,
             status=status,
             input_payload=input_payload,

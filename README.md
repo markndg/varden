@@ -167,12 +167,29 @@ honest coverage: never claim a surface is ENFORCED if a known path can bypass it
 |---------|----------------|-------|
 | `requests` / `httpx` / `urllib` | ENFORCED | Monkeypatch after `protect()` |
 | Subprocess | ENFORCED / PARTIAL | Saved pre-patch refs bypass |
-| Filesystem | PARTIAL | Classifies `WRITE_CI` / `WRITE_CONFIG` / `WRITE_CODE` |
+| Filesystem | PARTIAL | Canonical/symlink-aware targets; `WRITE_CI` / `WRITE_CONFIG` / `WRITE_CODE`; residual TOCTOU |
 | MCP | ENFORCED via gateway, else NOT_ROUTED | Use `varden mcp wrap` |
 | Raw sockets / aiohttp / urllib3-direct | UNCOVERED | Reported in coverage |
 
 **Modes:** `observe` · `guarded` (default) · `strict`  
 **Fail mode:** `closed` by default for guarded/strict (control-plane outage blocks).
+
+Filesystem containment uses effective targets (traversal/symlink-aware) with a
+pre-use re-check. Coverage remains PARTIAL. See
+[docs/runtime-filesystem-containment.md](docs/runtime-filesystem-containment.md).
+
+Persistent decisions are stored in an atomic SHA-256 hash chain; verify with
+`varden audit verify` ([docs/audit-integrity.md](docs/audit-integrity.md)).
+
+**Same API. Stronger boundary. Verifiable evidence.**
+
+| Capability | Status |
+|------------|--------|
+| Filesystem target containment | supported |
+| Filesystem full mediation | PARTIAL |
+| Audit hash chain | supported |
+| Audit verification (`varden audit verify`) | supported |
+| External signed checkpoint | not provided |
 
 ```bash
 varden coverage

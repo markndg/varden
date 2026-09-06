@@ -9,7 +9,6 @@ import subprocess
 from typing import Any, Callable
 
 from varden.runtime.coverage import ENFORCED, PARTIAL, get_coverage_registry
-from varden.runtime.filesystem import classify_path
 from varden.runtime.modes import is_enforcing
 
 SHELL_ELEVATED = frozenset(
@@ -88,6 +87,8 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
 def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
     import contextvars
 
+    from varden.runtime import filesystem as fs_mod
+
     _fs_depth: contextvars.ContextVar[int] = contextvars.ContextVar("varden_fs_depth", default=0)
 
     def _should_enforce(path: Any, mode: str, info: dict[str, Any]) -> bool:
@@ -98,6 +99,93 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         if mutation in {"WRITE_CI", "WRITE_CONFIG", "WRITE_CODE"}:
             return True
         return False
+
+    def _fail_closed(current: Any) -> bool:
+        return str(getattr(current, "fail_mode", "closed") or "closed").lower() == "closed"
+
+    def _guard_filesystem(
+        current: Any,
+        *,
+        tool: str,
+        path: Any,
+        mode: str,
+        info: dict[str, Any],
+        payload: dict[str, Any],
+        metadata_extra: dict[str, Any] | None = None,
+    ) -> None:
+        """Raise when policy blocks or when fail-closed resolution is ambiguous."""
+        if fs_mod.resolution_blocks_under_fail_closed(info) and _enforcing(current) and _fail_closed(current):
+            # Ambiguous security-sensitive resolution must not silently ALLOW.
+            if _should_enforce(path, mode, info) or info.get("symlink_involved") or info.get("classification") in {
+                "secrets",
+                "system",
+                "unknown",
+            }:
+                raise _blocked_error(current)(
+                    f"filesystem {tool} blocked: path resolution failed ({info.get('resolution')})",
+                    {"action": "block", "reason": f"filesystem_resolution_{info.get('resolution')}"},
+                )
+
+        if not _should_enforce(path, mode, info):
+            return
+        meta = {
+            "runtime": {"surface": "filesystem", "boundary": True},
+            "filesystem": info,
+            "sensitivity": info.get("sensitivity"),
+            "mutation": info.get("mutation"),
+            "required_authority": info.get("required_authority"),
+        }
+        if metadata_extra:
+            meta.update(metadata_extra)
+        result = current.guarded_action(
+            type="filesystem",
+            tool=tool,
+            args=payload,
+            payload=payload,
+            metadata=meta,
+        )
+        if result and result.blocked and _enforcing(current):
+            raise _blocked_error(current)(f"filesystem {tool} blocked: {path}", result.decision)
+
+    def _recheck_effective_target(
+        current: Any,
+        *,
+        tool: str,
+        path: Any,
+        mode: str,
+        prior_info: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Re-resolve immediately before the underlying call (TOCTOU narrowing).
+
+        Does not claim race-free mediation. If the effective target changed to a
+        newly security-sensitive destination after policy evaluation, fail closed
+        under enforcing + fail-closed modes.
+        """
+        fresh = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
+        prior_eff = prior_info.get("real_path")
+        fresh_eff = fresh.get("real_path")
+        mutated = prior_eff != fresh_eff or (
+            bool(fresh.get("symlink_involved")) and not bool(prior_info.get("symlink_involved"))
+        )
+        if not mutated:
+            return fresh
+        if not (_enforcing(current) and _fail_closed(current)):
+            return fresh
+        if _should_enforce(path, mode, fresh) or fs_mod.resolution_blocks_under_fail_closed(fresh):
+            raise _blocked_error(current)(
+                f"filesystem {tool} blocked: effective target changed between check and use",
+                {"action": "block", "reason": "filesystem_toctou_target_changed"},
+            )
+        if fresh.get("classification") in {"secrets", "system"} or fresh.get("mutation") in {
+            "WRITE_CI",
+            "WRITE_CONFIG",
+            "WRITE_CODE",
+        }:
+            raise _blocked_error(current)(
+                f"filesystem {tool} blocked: effective target changed between check and use",
+                {"action": "block", "reason": "filesystem_toctou_target_changed"},
+            )
+        return fresh
 
     key = "builtins.open"
     if key not in originals:
@@ -115,24 +203,16 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
                 path = file if isinstance(file, (str, os.PathLike)) else None
                 if path is not None:
                     mode = args[0] if args else kwargs.get("mode", "r")
-                    info = classify_path(path, workspace=os.getcwd(), mode=str(mode))
-                    if _should_enforce(path, mode, info):
-                        payload = {"path": str(path), "mode": mode, "classification": info}
-                        result = current.guarded_action(
-                            type="filesystem",
-                            tool="open",
-                            args=payload,
-                            payload=payload,
-                            metadata={
-                                "runtime": {"surface": "filesystem", "boundary": True},
-                                "filesystem": info,
-                                "sensitivity": info.get("sensitivity"),
-                                "mutation": info.get("mutation"),
-                                "required_authority": info.get("required_authority"),
-                            },
-                        )
-                        if result and result.blocked and _enforcing(current):
-                            raise _blocked_error(current)(f"filesystem open blocked: {path}", result.decision)
+                    info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
+                    payload = {
+                        "path": str(path),
+                        "mode": mode,
+                        "classification": info,
+                        "effective_path": info.get("real_path"),
+                        "resolution": info.get("resolution"),
+                    }
+                    _guard_filesystem(current, tool="open", path=path, mode=str(mode), info=info, payload=payload)
+                    _recheck_effective_target(current, tool="open", path=path, mode=str(mode), prior_info=info)
                 return originals[key](file, *args, **kwargs)
             finally:
                 _fs_depth.reset(token)
@@ -156,18 +236,20 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
                 try:
                     current = current_guard() or guard
                     mode = args[0] if args else kwargs.get("mode", "r")
-                    info = classify_path(self, workspace=os.getcwd(), mode=str(mode))
-                    if _should_enforce(self, mode, info):
-                        payload = {"path": str(self), "classification": info, "mode": mode}
-                        result = current.guarded_action(
-                            type="filesystem",
-                            tool="pathlib.Path.open",
-                            args=payload,
-                            payload=payload,
-                            metadata={"runtime": {"surface": "filesystem", "boundary": True}, "filesystem": info},
-                        )
-                        if result and result.blocked and _enforcing(current):
-                            raise _blocked_error(current)(f"filesystem Path.open blocked: {self}", result.decision)
+                    info = fs_mod.classify_path(self, workspace=os.getcwd(), mode=str(mode))
+                    payload = {
+                        "path": str(self),
+                        "classification": info,
+                        "mode": mode,
+                        "effective_path": info.get("real_path"),
+                        "resolution": info.get("resolution"),
+                    }
+                    _guard_filesystem(
+                        current, tool="pathlib.Path.open", path=self, mode=str(mode), info=info, payload=payload
+                    )
+                    _recheck_effective_target(
+                        current, tool="pathlib.Path.open", path=self, mode=str(mode), prior_info=info
+                    )
                     return originals[key_po](self, *args, **kwargs)
                 finally:
                     _fs_depth.reset(token)
@@ -194,19 +276,68 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
                 token = _fs_depth.set(_fs_depth.get() + 1)
                 try:
                     current = current_guard() or guard
-                    path = args[0] if args else None
-                    info = classify_path(path, workspace=os.getcwd(), mode='w') if path is not None else {}
-                    if _should_enforce(path, "w", info):
-                        payload = {"args": [str(a) for a in args], "classification": info}
-                        result = current.guarded_action(
-                            type="filesystem",
-                            tool=tool,
-                            args=payload,
-                            payload=payload,
-                            metadata={"runtime": {"surface": "filesystem", "boundary": True}, "filesystem": info},
+                    src = args[0] if args else None
+                    dst = args[1] if len(args) > 1 else None
+                    src_info = fs_mod.classify_path(src, workspace=os.getcwd(), mode="w") if src is not None else {}
+                    # Dual-target: rename/replace destinations are independently sensitive.
+                    if tool in {"os.rename", "os.replace"} and dst is not None:
+                        dst_info = fs_mod.classify_path(dst, workspace=os.getcwd(), mode="w")
+                        enforce_src = _should_enforce(src, "w", src_info)
+                        enforce_dst = _should_enforce(dst, "w", dst_info)
+                        # Resolution failure on either side under fail-closed.
+                        for side, info in (("source", src_info), ("destination", dst_info)):
+                            if fs_mod.resolution_blocks_under_fail_closed(info) and _enforcing(current) and _fail_closed(current):
+                                if _should_enforce(src if side == "source" else dst, "w", info) or info.get(
+                                    "symlink_involved"
+                                ):
+                                    raise _blocked_error(current)(
+                                        f"filesystem {tool} blocked: {side} path resolution failed",
+                                        {"action": "block", "reason": f"filesystem_resolution_{info.get('resolution')}"},
+                                    )
+                        if enforce_src or enforce_dst:
+                            payload = {
+                                "path": str(src),
+                                "destination": str(dst),
+                                "source_classification": src_info,
+                                "destination_classification": dst_info,
+                                "args": [str(a) for a in args],
+                                "effective_path": src_info.get("real_path"),
+                                "destination_effective_path": dst_info.get("real_path"),
+                            }
+                            # Use the more sensitive of the two for primary metadata.
+                            primary = dst_info if enforce_dst else src_info
+                            result = current.guarded_action(
+                                type="filesystem",
+                                tool=tool,
+                                args=payload,
+                                payload=payload,
+                                metadata={
+                                    "runtime": {"surface": "filesystem", "boundary": True},
+                                    "filesystem": primary,
+                                    "filesystem_source": src_info,
+                                    "filesystem_destination": dst_info,
+                                    "sensitivity": primary.get("sensitivity"),
+                                    "mutation": primary.get("mutation"),
+                                    "required_authority": primary.get("required_authority"),
+                                },
+                            )
+                            if result and result.blocked and _enforcing(current):
+                                raise _blocked_error(current)(f"filesystem {tool} blocked", result.decision)
+                        _recheck_effective_target(current, tool=tool, path=src, mode="w", prior_info=src_info)
+                        _recheck_effective_target(current, tool=tool, path=dst, mode="w", prior_info=dst_info)
+                    else:
+                        payload = {
+                            "path": str(src) if src is not None else None,
+                            "args": [str(a) for a in args],
+                            "classification": src_info,
+                            "effective_path": src_info.get("real_path"),
+                            "resolution": src_info.get("resolution"),
+                        }
+                        _guard_filesystem(
+                            current, tool=tool, path=src, mode="w", info=src_info, payload=payload
                         )
-                        if result and result.blocked and _enforcing(current):
-                            raise _blocked_error(current)(f"filesystem {tool} blocked", result.decision)
+                        if src is not None:
+                            _recheck_effective_target(current, tool=tool, path=src, mode="w", prior_info=src_info)
                     return original(*args, **kwargs)
                 finally:
                     _fs_depth.reset(token)
@@ -225,6 +356,7 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         limitations=[
             "Python filesystem APIs: ENFORCED for secrets/system paths",
             "Benign workspace/home reads and writes may not hit the control plane",
+            "Canonical target + symlink-aware classification with re-check before use; residual TOCTOU races remain",
             "Native extensions / external processes: PARTIAL",
             "OS-global filesystem: NOT GUARANTEED",
         ],
