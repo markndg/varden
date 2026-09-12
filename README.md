@@ -189,7 +189,42 @@ Persistent decisions are stored in an atomic SHA-256 hash chain; verify with
 | Filesystem full mediation | PARTIAL |
 | Audit hash chain | supported |
 | Audit verification (`varden audit verify`) | supported |
+| Predictive Authority (observe/enforce) | supported (opt-in) |
 | External signed checkpoint | not provided |
+
+### Predictive Authority
+
+Varden Predictive Authority evaluates not only whether an action is allowed, but
+what authority and sensitive resources become **reachable** if that action is
+permitted.
+
+It performs **deterministic reachability analysis** over evidence-backed
+authority state — not an LLM risk classifier, and not a prediction of what the
+agent will do next. It is **disabled by default**. `observe` records
+recommendations without changing decisions; `enforce` may strengthen existing
+decisions but never weakens them.
+
+Within configured bounds, sequential AuthorityState accumulation allows Varden
+to identify hazardous trajectories as prerequisite authority becomes reachable
+(see adversarial validation). Hazard analysis is bounded by authority-relevant
+transitions rather than arbitrary alias hops, while independent node, edge and
+visit limits bound computational work. Large graphs may produce a hazardous
+finding together with `TRUNCATED` status: the identified path is valid, but
+analysis was not exhaustive. Incomplete analysis is never treated as safe.
+
+```bash
+varden authority demo
+varden authority status
+varden predictive demo
+```
+
+Dashboard: **Predictive** (`/ui/predictive`) visualises observed vs predicted
+(reachable) authority, evidence-backed trajectories, and the enforcement
+interrupt point.
+
+See [docs/predictive-authority.md](docs/predictive-authority.md) and
+[docs/predictive-authority-adversarial-validation.md](docs/predictive-authority-adversarial-validation.md).
+
 
 ```bash
 varden coverage

@@ -1134,6 +1134,12 @@ def incident_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         ),
         "quiet": decision in {"allowed", "monitored"} and len(findings) == 0,
         "sanitiser": meta.get("sanitiser"),
+        "has_predictive": bool(isinstance(meta.get("predictive_authority"), dict) and meta.get("predictive_authority")),
+        "predictive_snapshot_hash": (
+            (meta.get("predictive_authority") or {}).get("snapshot_content_hash")
+            if isinstance(meta.get("predictive_authority"), dict)
+            else None
+        ),
     }
     # Surface typed sanitiser success without rewriting the policy action.
     if (

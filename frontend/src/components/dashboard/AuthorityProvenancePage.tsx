@@ -311,12 +311,14 @@ function InvestigationPanel({
   onClose,
   showFullLineage,
   onToggleLineage,
+  onOpenPredictive,
 }: {
   incident: Incident;
   classNames: Helpers['classNames'];
   onClose: () => void;
   showFullLineage: boolean;
   onToggleLineage: () => void;
+  onOpenPredictive?: (id: number) => void;
 }) {
   const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>('explanation');
   const [selectedNode, setSelectedNode] = useState<AttackPathNode | null>(null);
@@ -354,7 +356,19 @@ function InvestigationPanel({
             {incident.trace_id ? ` · Trace ${incident.trace_id}` : ''}
           </p>
         </div>
-        <button type="button" className="button button--ghost" onClick={onClose}>Close</button>
+        <div className="toggleRow">
+          {incident.has_predictive && incident.event_id && onOpenPredictive ? (
+            <button
+              type="button"
+              className="button"
+              data-testid="audit-view-predictive"
+              onClick={() => onOpenPredictive(Number(incident.event_id))}
+            >
+              View Predictive Analysis
+            </button>
+          ) : null}
+          <button type="button" className="button button--ghost" onClick={onClose}>Close</button>
+        </div>
       </div>
 
       {!complete ? (
@@ -623,7 +637,13 @@ function ReachabilityMap({
   );
 }
 
-export function AuthorityProvenancePage({ helpers }: { helpers: Helpers }) {
+export function AuthorityProvenancePage({
+  helpers,
+  onOpenPredictive,
+}: {
+  helpers: Helpers;
+  onOpenPredictive?: (id: number) => void;
+}) {
   const { api, classNames, token } = helpers;
   const [summary, setSummary] = useState<any>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
@@ -1154,6 +1174,7 @@ export function AuthorityProvenancePage({ helpers }: { helpers: Helpers }) {
             onClose={closeInvestigation}
             showFullLineage={showFullLineage}
             onToggleLineage={() => setShowFullLineage((v) => !v)}
+            onOpenPredictive={onOpenPredictive}
           />
         ) : null}
       </div>

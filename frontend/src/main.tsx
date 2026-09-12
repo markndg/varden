@@ -8,8 +8,9 @@ import { OverviewPage as OverviewPageView } from './components/dashboard/Overvie
 import { RulesPage as RulesPageView } from './components/dashboard/RulesPage';
 import { WebShieldPage } from './components/dashboard/WebShieldPage';
 import { AuthorityProvenancePage } from './components/dashboard/AuthorityProvenancePage';
+import { PredictiveAuthorityPage } from './components/dashboard/PredictiveAuthorityPage';
 import { ADVANCED_FIELDS, BUDGET_RULES_BUCKET, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, POLICY_BUCKETS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
-import { detailIdFromLocation, pageFromLocation, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
+import { detailIdFromLocation, eventIdFromSearch, pageFromLocation, predictiveDeepLink, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
 import { averageLatencyFromPoints, classNames, fmtNum, fmtTs, fromDateTimeLocalValue, latencyValueFromPoint, toDateTimeLocalValue } from './lib/format';
 import { coerceRuleInput, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, getBucketRules, getRuleOperator, getRuleValue, isBudgetRulesBucket, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, ruleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, safeParsePolicy, semanticRuleFingerprint, setRuleOperatorValue, setRuleSimpleValue, summarizeBudgetRule, summarizeRule, summarizeRuleConditions, withBucketRules } from './lib/policy';
 
@@ -413,6 +414,7 @@ function Shell() {
   const [token, setToken] = usePersistentState<string>('varden.token', '');
   const [page, setPage] = useState<string>(pageFromLocation(location.pathname));
   const [detailId, setDetailId] = useState<number | null>(detailIdFromLocation(location.pathname));
+  const [predictiveEventId, setPredictiveEventId] = useState<number | null>(eventIdFromSearch(location.search));
   const [overview, setOverview] = useState<DashboardPayload | null>(null);
   const [detail, setDetail] = useState<EventDetail | null>(null);
   const [policy, setPolicy] = useState<PolicyDoc>(ensurePolicyDoc({}));
@@ -459,6 +461,7 @@ function Shell() {
     const handlePop = () => {
       setPage(pageFromLocation(location.pathname));
       setDetailId(detailIdFromLocation(location.pathname));
+      setPredictiveEventId(eventIdFromSearch(location.search));
       setRuleFocus(new URLSearchParams(location.search).get('rule') || '');
       setRuleFocusBucket(ruleBucketFromSearch(location.search));
       setRuleFocusToken(ruleFocusTokenFromSearch(location.search));
@@ -627,12 +630,17 @@ function Shell() {
     setPage(next);
     setDetailId(detailIdFromLocation(path));
     const search = '?' + (path.split('?')[1] || '');
+    setPredictiveEventId(eventIdFromSearch(search));
     setRuleFocus(new URLSearchParams(path.split('?')[1] || '').get('rule') || '');
     setRuleFocusBucket(ruleBucketFromSearch(search));
     setRuleFocusToken(ruleFocusTokenFromSearch(search));
     setRuleReturnTo(ruleReturnToFromSearch(search));
     setRuleDraft(new URLSearchParams(path.split('?')[1] || '').get('draft') || '');
     setRouteFocus(new URLSearchParams(path.split('?')[1] || '').get('focus') || '');
+  }
+
+  function openPredictiveAnalysis(eventId: number) {
+    navigate('predictive', predictiveDeepLink(eventId));
   }
 
   async function savePolicy() {
@@ -750,6 +758,7 @@ function Shell() {
           <button className={classNames('nav__item', page === 'coverage' && 'is-active')} onClick={() => navigate('coverage', '/ui/coverage-gaps')}>Coverage Gaps</button>
           <button className={classNames('nav__item', page === 'webshield' && 'is-active')} onClick={() => navigate('webshield', '/ui/web-shield')}>Web Shield</button>
           <button className={classNames('nav__item', page === 'authority' && 'is-active')} onClick={() => navigate('authority', '/ui/authority')}>Authority & Provenance</button>
+          <button className={classNames('nav__item', page === 'predictive' && 'is-active')} onClick={() => navigate('predictive', '/ui/predictive')}>Predictive</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
         <div className="sidebar__section">
@@ -809,7 +818,7 @@ function Shell() {
           </div>
           <p className="muted">{overview?.config?.notes?.[currentScanMode] || 'Policy depth for agent actions.'}</p>
         </div>
-        {page === 'authority' ? null : (
+        {page === 'authority' || page === 'predictive' ? null : (
         <div className="sidebar__section sidebar__section--grow">
             <>
               <div className="sidebar__label">Operational highlights</div>
@@ -833,11 +842,11 @@ function Shell() {
       </aside>
 
       <main className="main">
-        <header className={classNames('topbar', 'card', (page === 'authority' || page === 'webshield') && 'topbar--compact')}>
+        <header className={classNames('topbar', 'card', (page === 'authority' || page === 'webshield' || page === 'predictive') && 'topbar--compact')}>
           <div>
             <div className="eyebrow">Live operations</div>
-            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : 'Trace and flow mission control'}</h1>
-            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
+            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : page === 'predictive' ? 'Predictive Authority' : 'Trace and flow mission control'}</h1>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : page === 'predictive' ? 'What authority this action would create, what becomes reachable, and where Varden interrupts the trajectory.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -873,6 +882,7 @@ function Shell() {
             traceCandidates={traceCandidates}
             onRunDemo={async () => { if (!token) return; try { const payload = await api<any>('/demo/run', { method: 'POST', body: '{}' }, token); setOverview(payload.dashboard); const traces = await refreshTraceList().catch(() => []); const firstTrace = payload.dashboard?.trace_catalogue?.[0]?.trace_id || payload.dashboard?.recent_traces?.[0]?.trace_id || traces?.[0]?.trace_id || ''; if (firstTrace) setSelectedTraceId(firstTrace); setNotice('OSS demo seeded with allow, warn, and block traces'); } catch (e: any) { setError(e?.message || 'Failed to run demo'); } }}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
+            onOpenPredictive={openPredictiveAnalysis}
             onOpenRule={(label: string, bucket?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}&focus=${Date.now()}`)}
             mcpInventory={mcpInventory}
             mcpLoading={mcpLoading}
@@ -922,6 +932,7 @@ function Shell() {
           <DecisionPageView
             detail={detail}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
+            onOpenPredictive={openPredictiveAnalysis}
             onOpenRule={(label: string, bucket?: string, token?: string) => navigate('rules', `/ui/rules?rule=${encodeURIComponent(label)}${bucket ? `&bucket=${encodeURIComponent(bucket)}` : ''}${token ? `&token=${encodeURIComponent(token)}` : ''}&returnTo=${encodeURIComponent(`/ui/decision/${detailId}`)}&focus=${Date.now()}`)}
             helpers={{ statusTone, eventOutcomeStatus, fmtTs, deriveMatchedRuleLabel, summarizeRiskReasonLabels, eventRoleTone, eventRoleDescription, displayValue, eventRuleBucket, semanticRuleFingerprint, formatRuleFieldLabel, describeMatchedField, compactValue, summarizeMatchedFields, deriveRuleLabelFromRuleObject, normalizeEventRow, classNames }}
           />
@@ -948,6 +959,16 @@ function Shell() {
         {page === 'authority' ? (
           <AuthorityProvenancePage
             helpers={{ api, classNames, token }}
+            onOpenPredictive={openPredictiveAnalysis}
+          />
+        ) : null}
+
+        {page === 'predictive' ? (
+          <PredictiveAuthorityPage
+            helpers={{ api, classNames, token }}
+            initialEventId={predictiveEventId}
+            onClearHistorical={() => navigate('predictive', '/ui/predictive')}
+            onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
           />
         ) : null}
       </main>

@@ -207,15 +207,59 @@ def main(argv: list[str] | None = None) -> int:
     prov_sources.add_argument('trace_id')
     prov_sources.add_argument('--db', default=None)
 
-    authority = sub.add_parser('authority', help='Authority delegation and violation inspection')
+    authority = sub.add_parser('authority', help='Authority inspection and Predictive Authority diagnostics')
     auth_sub = authority.add_subparsers(dest='authority_command')
     auth_viol = auth_sub.add_parser('violations', help='List recorded authority-flow violations')
     auth_viol.add_argument('--db', default=None)
     auth_viol.add_argument('--limit', type=int, default=50)
     auth_viol.add_argument('--json', action='store_true')
-    auth_explain = auth_sub.add_parser('explain', help='Explain authority-flow for an event id')
-    auth_explain.add_argument('event_id')
+    auth_explain = auth_sub.add_parser('explain', help='Explain authority-flow or predictive counterfactual for an event/session')
+    auth_explain.add_argument('event_id', nargs='?', default=None)
     auth_explain.add_argument('--db', default=None)
+    auth_explain.add_argument('--trace-id', default='default')
+    auth_explain.add_argument('--tenant', default='default')
+    auth_explain.add_argument('--json', action='store_true')
+    auth_explain.add_argument('--predictive', action='store_true', help='Show Predictive Authority explanation')
+    auth_status = auth_sub.add_parser('status', help='Predictive Authority session status')
+    auth_status.add_argument('--trace-id', default='default')
+    auth_status.add_argument('--tenant', default='default')
+    auth_status.add_argument('--json', action='store_true')
+    auth_graph = auth_sub.add_parser('graph', help='Dump Predictive Authority capability graph (JSON)')
+    auth_graph.add_argument('--trace-id', default='default')
+    auth_graph.add_argument('--tenant', default='default')
+    auth_paths = auth_sub.add_parser('paths', help='List hazardous paths in the current session graph')
+    auth_paths.add_argument('--trace-id', default='default')
+    auth_paths.add_argument('--tenant', default='default')
+    auth_paths.add_argument('--max-depth', type=int, default=3)
+    auth_budget = auth_sub.add_parser('budget', help='Show Predictive Authority budget accounting')
+    auth_budget.add_argument('--trace-id', default='default')
+    auth_budget.add_argument('--tenant', default='default')
+    auth_demo = auth_sub.add_parser('demo', help='Run the Predictive Authority trajectory demo')
+    auth_demo.add_argument('--json', action='store_true')
+
+    predictive = sub.add_parser('predictive', help='Predictive Authority diagnostics (alias)')
+    pred_sub = predictive.add_subparsers(dest='predictive_command')
+    for name, help_text in (
+        ('status', 'Session status'),
+        ('graph', 'Capability graph JSON'),
+        ('paths', 'Hazardous paths'),
+        ('budget', 'Authority budget'),
+        ('demo', 'Trajectory demo'),
+    ):
+        p = pred_sub.add_parser(name, help=help_text)
+        if name != 'demo':
+            p.add_argument('--trace-id', default='default')
+            p.add_argument('--tenant', default='default')
+        if name in {'status', 'demo'}:
+            p.add_argument('--json', action='store_true')
+        if name == 'paths':
+            p.add_argument('--max-depth', type=int, default=3)
+    pred_explain = pred_sub.add_parser('explain', help='Counterfactual explanation')
+    pred_explain.add_argument('event_id', nargs='?', default=None)
+    pred_explain.add_argument('--db', default=None)
+    pred_explain.add_argument('--trace-id', default='default')
+    pred_explain.add_argument('--tenant', default='default')
+    pred_explain.add_argument('--json', action='store_true')
 
     coverage = sub.add_parser('coverage', help='Show runtime protection coverage attestation')
     coverage.add_argument('--json', action='store_true')
@@ -283,8 +327,23 @@ def main(argv: list[str] | None = None) -> int:
         from .webshield.cli import webshield_argv
         return webshield_argv(args)
     if args.command in {'provenance', 'authority'}:
+        auth_cmd = getattr(args, 'authority_command', None)
+        if args.command == 'authority' and auth_cmd in {'status', 'graph', 'paths', 'budget', 'demo'}:
+            from .predictive_authority.cli import predictive_authority_argv
+            return predictive_authority_argv(args)
+        if args.command == 'authority' and auth_cmd == 'explain' and (
+            getattr(args, 'predictive', False) or getattr(args, 'event_id', None) is None
+        ):
+            from .predictive_authority.cli import predictive_authority_argv
+            return predictive_authority_argv(args)
         from .provenance.cli import provenance_argv
         return provenance_argv(args)
+    if args.command == 'predictive':
+        from .predictive_authority.cli import predictive_authority_argv
+        # Normalize predictive_command → authority_command for shared handler.
+        if getattr(args, 'predictive_command', None) and not getattr(args, 'authority_command', None):
+            args.authority_command = args.predictive_command
+        return predictive_authority_argv(args)
     if args.command == 'coverage':
         from .runtime.cli import coverage_argv
         return coverage_argv(args)

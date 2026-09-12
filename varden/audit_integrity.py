@@ -75,6 +75,7 @@ _POLICY_FINGERPRINT_KEYS = frozenset(
         "fail_mode",
         "require_coverage",
         "allow_uncovered",
+        "predictive_authority",
     }
 )
 

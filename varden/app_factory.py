@@ -48,6 +48,7 @@ from .runtime.posture import evaluate_posture
 from .runtime.coverage_store import RuntimeCoverageStore
 from .runtime.routes import register_runtime_routes
 from .runtime.session_provenance import SessionProvenanceStore
+from .predictive_authority.routes import register_predictive_authority_routes
 
 
 class EventStreamBroker:
@@ -522,6 +523,30 @@ def create_app(config: AppConfig) -> FastAPI:
             tenant_id=action.tenant_id,
             error=error,
         ).to_dict())
+        # Durable Predictive snapshot bound to this audit event_id.
+        try:
+            from .predictive_authority.persistence import persist_predictive_snapshot
+            from .predictive_authority.registry import get_authority_registry
+
+            persist_predictive_snapshot(
+                db_path=config.db_path,
+                event_id=int(event_id),
+                action=action,
+                tenant_id=action.tenant_id,
+            )
+            try:
+                reg = get_authority_registry()
+                key = reg.session_key(
+                    tenant_id=action.tenant_id,
+                    trace_id=action.trace_id,
+                    workflow_id=action.workflow_id,
+                )
+                reg.stamp_last_event_id(key, int(event_id))
+            except Exception:
+                pass
+        except Exception:
+            # Snapshot persistence must not break decision audit logging.
+            pass
         event_row = event_store.get_event(event_id, tenant_id=action.tenant_id) or {}
         action_row = event_row.get("action") or {}
         decision_row = event_row.get("decision") or {}
@@ -570,6 +595,24 @@ def create_app(config: AppConfig) -> FastAPI:
                     decision = budget_decision
                 elif budget_decision and budget_decision.action == "block":
                     decision = budget_decision
+        # Predictive Authority: optional post-policy enrichment. Disabled by
+        # default. Observe records recommendations without changing decisions;
+        # enforce may strengthen but never weaken the existing decision.
+        # Failures keep the existing decision (fail-safe).
+        try:
+            import os as _os
+
+            from .predictive_authority import apply_predictive_authority
+
+            decision, _pa_result = apply_predictive_authority(
+                action,
+                decision,
+                policy=policy.get_policy(),
+                env=dict(_os.environ),
+            )
+        except Exception:
+            # Predictive Authority must never bypass or break core enforcement.
+            pass
         recent_events = event_store.list_events(limit=120, tenant_id=tenant_id)
         trace_events = event_store.list_trace_events(action.trace_id, tenant_id=tenant_id, limit=60) if action.trace_id else []
         action = intelligence.apply_decision_context(action, decision, recent_events=recent_events, trace_events=trace_events)
@@ -665,6 +708,10 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get("/ui/authority", response_class=HTMLResponse)
     def ui_authority():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/predictive", response_class=HTMLResponse)
+    def ui_predictive():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
     @app.get("/webshield/lab", response_class=HTMLResponse)
@@ -1236,6 +1283,9 @@ def create_app(config: AppConfig) -> FastAPI:
 
     register_webshield_routes(app, require=require, webshield_store=webshield_store, idem=idem)
     register_provenance_routes(app, require=require, provenance_store=provenance_store, event_store=event_store)
+    register_predictive_authority_routes(
+        app, require=require, event_store=event_store, db_path=config.db_path
+    )
     register_runtime_routes(
         app,
         require=require,

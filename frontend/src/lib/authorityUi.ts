@@ -38,6 +38,7 @@ export type Incident = {
   agent_name?: string;
   decision?: string;
   display_decision?: string;
+  has_predictive?: boolean;
   severity?: string;
   title?: string;
   summary?: string;

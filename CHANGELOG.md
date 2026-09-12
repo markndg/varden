@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Predictive Authority adversarial validation
+
+- Clarified determinism: identical state/evidence/action/policy/bounds → identical
+  reachability analysis (not prediction of agent behaviour)
+- Hazardous reachability uses authority-relevant hop depth (defeats alias horizon camping)
+- Property-scoped trusted declassification metadata; fake sanitisation remains rejected
+- AQ/AR: clearing SECRET has operational effect without unrelated provenance false positives;
+  retained provenance still fires provenance-sensitive hazards independently
+- AS–AU: raw topological vs authority-relevant distance kept distinct (executable regression)
+- AV/AW: positive hazard survives TRUNCATED; negative truncation never SAFE
+- BA–BC: worst-case traversal benchmarks near `max_visits`; incomplete search never SAFE
+- Propagate reachability visit-bound truncation into engine analysis status (fail-safe)
+- Large-graph benchmarks report total nodes vs BFS visited + status honestly
+- AX: loose order-of-magnitude CI performance smoke guards (separate from benchmarks)
+- Enforce config default `failure_mode=require_approval` for truncated analysis
+- Determinism + long-horizon adversarial suites (AA–AP)
+- Docs: prediction contract, adversarial validation report; UI About + analysis bounds
+
+### Predictive Authority hardening + UI
+
+- First-class edge evidence model (`EvidenceKind` / lifecycle)
+- Graph poisoning defence for untrusted MCP self-declarations
+- Trusted sanitisation boundaries vs fake sanitisation claims
+- Analysis status: complete / truncated / failed (never false-safe)
+- Enforce-mode failure default: `require_approval`
+- Capability confirm / disprove / revoke with cache invalidation
+- Dashboard **Predictive** page (`/ui/predictive`) + `/predictive/*` APIs
+- Scenarios P–Y and UI API tests
+
+### Predictive Authority
+
+- Session capability graph with confirmed vs potential capabilities
+- Structural AuthorityDelta and bounded hazardous-path reachability
+- Modes: `off` (default) / `observe` / `enforce` (strengthen-only)
+- Optional authority budget derived from structural units
+- CLI: `varden authority status|graph|paths|budget|demo` and `varden predictive …`
+- Opt-in policy pack `predictive-authority`
+- Docs: `docs/predictive-authority.md`
+
 ## v0.4.0
 
 ### Filesystem containment hardening

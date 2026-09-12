@@ -5,6 +5,7 @@ import { CodeCard, KeyValue } from '../ui/Cards';
 type DecisionPageProps = {
   detail: any;
   onOpenDecision: (id: number) => void;
+  onOpenPredictive?: (id: number) => void;
   onOpenRule: (label: string, bucket?: string, token?: string) => void;
   helpers: {
     statusTone: (status: string) => string;
@@ -27,10 +28,13 @@ type DecisionPageProps = {
   };
 };
 
-export function DecisionPage({ detail, onOpenDecision, onOpenRule, helpers }: DecisionPageProps) {
+export function DecisionPage({ detail, onOpenDecision, onOpenPredictive, onOpenRule, helpers }: DecisionPageProps) {
   const { statusTone, eventOutcomeStatus, fmtTs, deriveMatchedRuleLabel, summarizeRiskReasonLabels, eventRoleTone, eventRoleDescription, displayValue, eventRuleBucket, semanticRuleFingerprint, formatRuleFieldLabel, describeMatchedField, compactValue, summarizeMatchedFields, deriveRuleLabelFromRuleObject, normalizeEventRow, classNames } = helpers;
   const event = detail.event || {};
   const action = event.action || {};
+  const pa = action?.metadata?.predictive_authority;
+  const hasPredictive = Boolean(pa && typeof pa === 'object' && Object.keys(pa).length);
+  const eventId = Number(event.id || detail.id || 0);
   return (
     <div className="pageGrid">
       <section className="layout layout--twoThirds">
@@ -42,6 +46,16 @@ export function DecisionPage({ detail, onOpenDecision, onOpenRule, helpers }: De
                 <h3>{action.tool || action.type || 'event'} <span className={`badge badge--${statusTone(eventOutcomeStatus(event))}`}>{eventOutcomeStatus(event)}</span></h3>
               </div>
               <div className="toggleRow">
+                {hasPredictive && eventId && onOpenPredictive ? (
+                  <button
+                    type="button"
+                    className="button"
+                    data-testid="view-predictive-analysis"
+                    onClick={() => onOpenPredictive(eventId)}
+                  >
+                    View Predictive Analysis
+                  </button>
+                ) : null}
                 {detail.neighbors?.previous_event_id ? <button className="button button--ghost" onClick={() => onOpenDecision(detail.neighbors.previous_event_id)}>Previous</button> : null}
                 {detail.neighbors?.next_event_id ? <button className="button button--ghost" onClick={() => onOpenDecision(detail.neighbors.next_event_id)}>Next</button> : null}
               </div>

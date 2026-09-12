@@ -3060,3 +3060,131 @@ button { cursor: pointer; }
 }
 .sidebarPosture__row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .sidebar--investigation .sidebar__section--grow { display: none; }
+
+/* ---- Predictive Authority ---- */
+.paPage { display: flex; flex-direction: column; gap: 14px; }
+.paPage__header { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.paAbout { margin-top: 8px; max-width: 52rem; font-size: 12px; color: var(--muted); }
+.paAbout summary { cursor: pointer; color: var(--text); font-weight: 600; }
+.paAbout p { margin: 8px 0 0; line-height: 1.45; }
+.paPage__actions { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; }
+.paField { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.paField input { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 8px; min-width: 120px; }
+.paMetrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 1100px) { .paMetrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.paMetric { padding: 10px 12px; border-left: 2px solid var(--border); background: transparent; }
+.paMetric__k { display: block; font-size: 10px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.paMetric strong { font-size: 13px; font-weight: 650; }
+.paMetric.is-live { border-left-color: #2a8; }
+.paMetric.is-historical { border-left-color: #d4a017; }
+.paMetric--pred { border-left-color: #c8a24a; }
+.paMetric--final { border-left-color: #e25; }
+.paStatusRow, .paToolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.paToolbar--compact { gap: 10px; }
+.paPill { font-size: 11px; padding: 4px 8px; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.03); }
+.paPill--truncated, .paPill--failed { border-color: #c45; color: #f88; }
+.paPill--complete { border-color: #2a8; color: #8fd; }
+.paPill--pred { border-color: #c80; color: #fc6; }
+.paPill--final { border-color: #7b61ff; color: #cbb; }
+.paPill--historical { border-color: #d4a017; color: #f0d78c; background: rgba(212, 160, 23, 0.12); }
+.paPill--live { border-color: #2a8; color: #8fd; }
+.eventRow--withAction { display: flex; align-items: center; gap: 8px; }
+.eventRow__hit { display: flex; flex: 1; align-items: center; gap: 10px; background: transparent; border: 0; color: inherit; text-align: left; cursor: pointer; padding: 0; }
+.eventRow__pa { flex-shrink: 0; font-size: 12px; }
+.paTab { background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+.paTab.is-active { border-color: var(--text); background: rgba(255,255,255,0.06); }
+.paCheck { font-size: 12px; display: flex; gap: 6px; align-items: center; color: var(--muted); }
+.paLayout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+.paLayout--wide { grid-template-columns: minmax(0, 1fr) 28px; }
+@media (max-width: 980px) { .paLayout, .paLayout--wide { grid-template-columns: 1fr; } }
+.paGraphPanel { padding: 0; background: transparent; border: 0; }
+.paCanvasMeta { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.paGraph {
+  width: 100%;
+  height: auto;
+  background:
+    linear-gradient(90deg, rgba(77,182,160,0.05) 0%, rgba(77,182,160,0.05) 42%, rgba(200,162,74,0.06) 42%, rgba(200,162,74,0.06) 78%, rgba(226,37,85,0.07) 78%, rgba(226,37,85,0.07) 100%);
+  border-radius: 14px;
+  border: 1px solid var(--border);
+}
+.paRegionLabel { fill: var(--muted); font-size: 10px; letter-spacing: 0.08em; font-weight: 600; }
+.paRegionLabel--pred { fill: #c8a24a; }
+.paRegionLabel--gate { fill: #e25; }
+.paRegionRule { stroke: rgba(255,255,255,0.08); stroke-dasharray: 3 4; }
+.paNode { fill: #141820; stroke: #6a8f88; stroke-width: 1.5; }
+.paNode--potential, .paNode--predicted { stroke: #c8a24a; fill: #1a1710; }
+.paNode--confirmed { stroke: #4db6a0; }
+.paNode--revoked, .paNode--disproven, .paNode--expired { stroke: #666; fill: #12141a; }
+.paNode--hazard { stroke: #e25; stroke-width: 2.2; }
+.paNode--sanitise { stroke: #4af; stroke-dasharray: 3 2; }
+.paNode--selected { stroke-width: 2.4; filter: drop-shadow(0 0 0.4px #fff); }
+.paNodeLabel { fill: var(--text); font-size: 11px; font-weight: 650; }
+.paNodeKind { fill: var(--muted); font-size: 9px; }
+.paNodeInner {
+  color: var(--text);
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+  height: 100%;
+  line-height: 1.15;
+}
+.paNodeInner__top { display: flex; justify-content: space-between; align-items: center; gap: 4px; color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; }
+.paNodeInner__icon { display: inline-flex; opacity: 0.85; }
+.paNodeInner__title { font-size: 11px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.paNodeInner__sub { font-size: 9px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.paNodeInner.is-potential .paNodeInner__state { color: #c8a24a; }
+.paNodeInner.is-path .paNodeInner__title { color: #ffb3bf; }
+.paEdge { stroke: #5c6478; stroke-width: 1.35; fill: none; cursor: pointer; }
+.paEdge--potential { stroke: #a8893c; stroke-dasharray: 5 4; stroke-width: 1.15; opacity: 0.55; }
+.paEdge--hazard { stroke: #e25; stroke-width: 2.2; stroke-dasharray: none; opacity: 1; }
+.paArrowHead { fill: #5c6478; }
+.paArrowHead--hazard { fill: #e25; }
+.paGroupFrame { fill: rgba(200,162,74,0.05); stroke: rgba(200,162,74,0.35); stroke-dasharray: 4 3; }
+.paGroupBox { fill: #1a1710; stroke: #c8a24a; stroke-dasharray: 4 3; }
+.paGroupTitle { fill: #c8a24a; font-size: 10px; letter-spacing: 0.04em; }
+.paGate { fill: #1a0d14; stroke: #e25; stroke-width: 2; }
+.paGateEyebrow { fill: #ff8da1; font-size: 9px; letter-spacing: 0.08em; font-weight: 700; }
+.paGateDecision { fill: var(--text); font-size: 12px; font-weight: 750; }
+.paGateStop { fill: var(--muted); font-size: 9px; }
+.paGateX { fill: #e25; font-size: 14px; font-weight: 700; }
+.paStepBadge { fill: #e25; }
+.paStepBadgeText { fill: #fff; font-size: 9px; font-weight: 700; }
+.paInspector {
+  padding: 14px;
+  min-height: 420px;
+  border-left: 1px solid var(--border);
+  background: transparent;
+}
+.paInspectorPeek {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  height: 120px;
+  cursor: pointer;
+}
+.paDl { display: grid; grid-template-columns: 110px 1fr; gap: 6px 8px; font-size: 12px; margin: 10px 0; }
+.paDl dt { color: var(--muted); }
+.paLower { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
+.paTrajectories { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px; }
+.paTrajCard { text-align: left; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
+.paTrajCard.is-active { border-color: #e25; background: rgba(226,37,85,0.06); }
+.paTrajCard__head { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.paTrajPath { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; margin: 8px 0; }
+.paMatrix { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); font-size: 12px; }
+.paMatrix__head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+.paMatrix table { width: auto; border-collapse: collapse; }
+.paMatrix th, .paMatrix td { padding: 4px 10px; text-align: center; }
+.paMatrixDot { background: transparent; border: 0; color: var(--text); cursor: pointer; font-size: 14px; }
+.paMatrixDot.is-potential { color: #c8a24a; }
+.paMatrixDot.is-confirmed { color: #4db6a0; }
+.paDeltaStory { padding-top: 8px; }
+.paDeltaStory__cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.paDeltaStory ul { margin: 6px 0 0; padding-left: 16px; font-size: 12px; }
+.paDeltaGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 10px; }
+.paPre { white-space: pre-wrap; font-size: 12px; background: rgba(0,0,0,0.25); padding: 12px; border-radius: 10px; border: 1px solid var(--border); }
+.paEventList { display: flex; flex-direction: column; gap: 6px; }
+.paEvent { text-align: left; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: transparent; color: var(--text); cursor: pointer; }
+.paEvent.is-active { border-color: var(--accent); }

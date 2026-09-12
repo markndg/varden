@@ -1,0 +1,49 @@
+{
+  "name": "predictive-authority",
+  "description": "Opt-in Predictive Authority escalation rules. Disabled unless predictive_authority.enabled is set. Strengthens decisions on hazardous authority trajectories; never weakens existing Varden rules.",
+  "template": {
+    "predictive_authority": {
+      "enabled": true,
+      "mode": "observe",
+      "max_depth": 3,
+      "rules": {
+        "authority_delta_capabilities": 2,
+        "block_patterns": []
+      }
+    },
+    "require_approval": [
+      {
+        "name": "pa-credential-acquired",
+        "classifier:credential_acquired": true,
+        "description": "Credential acquisition expands future authority"
+      },
+      {
+        "name": "pa-untrusted-external-path",
+        "classifier:untrusted_to_external_path": true,
+        "description": "Untrusted provenance can reach an external sink via sensitive state"
+      },
+      {
+        "name": "pa-cross-trust-domain",
+        "classifier:cross_trust_domain_path": true,
+        "description": "Cross-MCP trust-domain authority path"
+      },
+      {
+        "name": "pa-irreversible",
+        "classifier:irreversible_action_reachable": true,
+        "classifier:authority_expands": true,
+        "description": "Irreversible action after authority expansion"
+      }
+    ],
+    "warn": [
+      {
+        "name": "pa-authority-expands",
+        "classifier:authority_expands": true,
+        "description": "Authority graph expanded"
+      }
+    ],
+    "block": [],
+    "sanitise": [],
+    "monitor": [],
+    "allow": []
+  }
+}
