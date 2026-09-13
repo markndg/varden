@@ -7,7 +7,10 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # Matrix shards report as "test (3.10)" etc. Branch ruleset requires a check
+  # literally named "test", so the aggregator job below is the required gate.
+  test-matrix:
+    name: test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -24,6 +27,17 @@ jobs:
         run: python -m compileall varden varden_sdk varden_langchain varden_monitor varden_mcp
       - name: Python unit and security tests
         run: python -m pytest -q --ignore=tests/browser --ignore=tests/test_clean_wheel_smoke.py
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    needs: [test-matrix]
+    if: always()
+    steps:
+      - name: Require all Python matrix shards
+        run: |
+          echo "matrix result=${{ needs.test-matrix.result }}"
+          test "${{ needs.test-matrix.result }}" = "success"
 
   runtime-security:
     runs-on: ubuntu-latest
