@@ -15,7 +15,7 @@
   "files": ["dist", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node --test test/*.test.js",
     "pretest": "npm run build"
   },
   "keywords": ["webmcp", "mcp", "security", "varden", "browser-agent", "prompt-injection"],

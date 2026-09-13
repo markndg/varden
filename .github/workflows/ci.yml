@@ -7,16 +7,38 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # Matrix shards report as "test (3.10)" etc. Branch ruleset requires a check
+  # literally named "test", so the aggregator job below is the required gate.
+  test-matrix:
+    name: test (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
-      - run: pip install -e ".[langchain,test]"
-      - run: python -m compileall varden
-      - run: python -m pytest -q
+          python-version: ${{ matrix.python-version }}
+      - name: Install package with test extras
+        run: pip install -e ".[langchain,test,all]"
+      - name: Compile packages
+        run: python -m compileall varden varden_sdk varden_langchain varden_monitor varden_mcp
+      - name: Python unit and security tests
+        run: python -m pytest -q --ignore=tests/browser --ignore=tests/test_clean_wheel_smoke.py
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    needs: [test-matrix]
+    if: always()
+    steps:
+      - name: Require all Python matrix shards
+        run: |
+          echo "matrix result=${{ needs.test-matrix.result }}"
+          test "${{ needs.test-matrix.result }}" = "success"
+
   runtime-security:
     runs-on: ubuntu-latest
     steps:
@@ -27,6 +49,7 @@ jobs:
       - run: pip install -e ".[test]"
       - name: Runtime boundary security verification (loopback only)
         run: python demos/runtime/run_security_verification.py
+
   frontend:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +59,84 @@ jobs:
           node-version: "20"
           cache: npm
           cache-dependency-path: frontend/package-lock.json
-      - name: Install and verify dashboard
+      - name: Install, typecheck, unit test, and build dashboard
         working-directory: frontend
-        run: npm ci && npm run build && npx tsc --noEmit
+        run: |
+          npm ci
+          npm test
+          npx tsc --noEmit
+          npm run build
+      - name: Web Shield JS SDK tests
+        working-directory: sdks/js/web-shield
+        run: |
+          npm ci
+          npm test
+
+  clean-wheel:
+    runs-on: ubuntu-latest
+    needs: [frontend]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build dashboard assets into package data
+        working-directory: frontend
+        run: npm ci && npm run build
+      - name: Install build tooling and package
+        run: pip install -e ".[test]" build
+      - name: Clean-wheel packaging smoke
+        run: python -m pytest tests/test_clean_wheel_smoke.py -q --tb=short
+      - name: CLI JSON purity smoke (source tree)
+        run: |
+          python - <<'PY'
+          import io, json, contextlib
+          from varden.cli import main
+          from varden.runtime.cli import run_self_test
+          buf = io.StringIO()
+          with contextlib.redirect_stdout(buf):
+              assert run_self_test(as_json=True) == 0
+          json.loads(buf.getvalue())
+          print("self-test json ok")
+          PY
+
+  browser-ui:
+    runs-on: ubuntu-latest
+    needs: [frontend]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Build dashboard assets
+        working-directory: frontend
+        run: npm ci && npm run build
+      - name: Install Python + Playwright
+        run: |
+          pip install -e ".[test]"
+          python -m playwright install --with-deps chromium
+      - name: Browser UI smoke suite
+        run: python -m pytest tests/browser -q --tb=short
+        env:
+          VARDEN_ENV: dev
+          VARDEN_ENABLE_DEV_BOOTSTRAP: "true"
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-ui-artifacts
+          path: |
+            test-results/
+            playwright-report/
+            .tmp/
+          if-no-files-found: ignore

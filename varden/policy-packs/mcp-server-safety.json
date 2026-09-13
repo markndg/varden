@@ -1,0 +1,119 @@
+{
+  "name": "mcp-server-safety",
+  "description": "Governance for Varden MCP server tools (varden_guard, varden_put_policy, varden_log_event).",
+  "template": {
+    "block": [
+      {
+        "title": "Block destructive action via MCP guard",
+        "name": "mcp_block_destructive_guard",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "varden_guard",
+        "field:args.args": {
+          "contains": "delete_database"
+        },
+        "description": "Blocks MCP guard calls for destructive database tools."
+      },
+      {
+        "title": "Block MCP guard with secrets",
+        "name": "mcp_block_guard_secrets",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "tool": "varden_guard",
+        "classifier:secrets": true,
+        "description": "Blocks MCP guard submissions with secret-like material."
+      },
+      {
+        "title": "Block MCP guard recursive delete",
+        "name": "mcp_block_guard_rm_rf",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "varden_guard",
+        "field:args.args": {
+          "contains": "rm -rf"
+        },
+        "description": "Blocks rm -rf in MCP guard payloads."
+      },
+      {
+        "title": "Block MCP guard metadata SSRF",
+        "name": "mcp_block_guard_metadata_ssrf",
+        "enabled": true,
+        "priority": 98,
+        "type": "tool_call",
+        "tool": "varden_guard",
+        "field:args.args": {
+          "contains": "169.254.169.254"
+        },
+        "description": "Blocks cloud metadata targets in MCP guard payloads."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on MCP policy mutation",
+        "name": "mcp_warn_put_policy",
+        "enabled": true,
+        "priority": 90,
+        "type": "tool_call",
+        "tool": "varden_put_policy",
+        "description": "Warns when MCP client modifies live policy."
+      },
+      {
+        "title": "Warn on MCP direct log bypass",
+        "name": "mcp_warn_log_event",
+        "enabled": true,
+        "priority": 85,
+        "type": "tool_call",
+        "tool": "varden_log_event",
+        "description": "Warns on guard bypass via direct log."
+      },
+      {
+        "title": "Warn on MCP guard high risk",
+        "name": "mcp_warn_guard_high_risk",
+        "enabled": true,
+        "priority": 80,
+        "type": "tool_call",
+        "tool": "varden_guard",
+        "field:risk_score": {
+          "gte": 70
+        },
+        "description": "Warns on high-risk MCP guard submissions."
+      },
+      {
+        "title": "Warn on MCP guard HTTP action",
+        "name": "mcp_warn_guard_http",
+        "enabled": true,
+        "priority": 75,
+        "type": "tool_call",
+        "tool": "varden_guard",
+        "field:args.args": {
+          "contains": "http_request"
+        },
+        "description": "Warns when MCP guard authorizes HTTP actions."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor MCP guard invocations",
+        "name": "mcp_monitor_guard",
+        "enabled": true,
+        "priority": 15,
+        "type": "tool_call",
+        "tool": "varden_guard",
+        "description": "Captures MCP guard calls."
+      },
+      {
+        "title": "Monitor MCP policy reads",
+        "name": "mcp_monitor_get_policy",
+        "enabled": true,
+        "priority": 10,
+        "type": "tool_call",
+        "tool": "varden_get_policy",
+        "description": "Captures MCP policy reads."
+      }
+    ],
+    "allow": []
+  }
+}
