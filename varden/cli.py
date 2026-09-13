@@ -230,7 +230,8 @@ def main(argv: list[str] | None = None) -> int:
     runtime_ready.add_argument('--json', action='store_true')
     runtime_explain = runtime_sub.add_parser('explain', help='Explain a runtime/event id')
     runtime_explain.add_argument('event_id')
-    runtime_sub.add_parser('self-test', help='Safely probe active interceptors')
+    runtime_self = runtime_sub.add_parser('self-test', help='Safely probe active interceptors')
+    runtime_self.add_argument('--json', action='store_true', help='Machine-readable JSON output')
 
     approvals = sub.add_parser('approvals', help='Scoped approval grants')
     approvals_sub = approvals.add_subparsers(dest='approvals_command')

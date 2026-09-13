@@ -683,9 +683,9 @@ def patch_runtime(guard: VardenGuard) -> None:
 
             reg.register_interceptor_check('subprocess', _check_subprocess)
         if 'openai.responses.create' in _ORIGINALS or 'openai.chat.completions.create' in _ORIGINALS:
-            reg.mark('llm.openai', status=ENFORCED, interceptor='openai', active=True, applicable=True)
+            reg.mark('llm.openai_transport', status=ENFORCED, interceptor='openai', active=True, applicable=True)
         if 'anthropic.messages.create' in _ORIGINALS:
-            reg.mark('llm.anthropic', status=ENFORCED, interceptor='anthropic', active=True, applicable=True)
+            reg.mark('llm.anthropic_transport', status=ENFORCED, interceptor='anthropic', active=True, applicable=True)
         # MCP stays non-applicable until discover()/gateway marks it. Do not
         # claim NOT_ROUTED merely because protect() ran without MCP configs.
         _PATCHED = True
