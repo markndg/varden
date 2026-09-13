@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 
 type SankeyPanelProps = {
   overview: any;
@@ -12,8 +12,13 @@ type SankeyPanelProps = {
   };
 };
 
+function nodeId(node: { lane: string; key: string }) {
+  return `${node.lane}:${node.key}`;
+}
+
 export function SankeyPanel({ sourceEvents, onFocus, mode = 'agent_tool_outcome', helpers }: SankeyPanelProps) {
   const { normalizeEventRow, eventOutcomeStatus, deriveMatchedRuleLabel } = helpers;
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
   const events = (sourceEvents || []).map(normalizeEventRow).filter((event) => event.id);
   const laneMaps: Record<string, Map<string, number>> = { left: new Map(), mid: new Map(), right: new Map() } as any;
   const flowCounts = new Map<string, { fromLane: 'left' | 'mid'; fromLabel: string; toLane: 'mid' | 'right'; toLabel: string; value: number; statuses: Record<string, number>; eventIds: number[] }>();
@@ -72,36 +77,90 @@ export function SankeyPanel({ sourceEvents, onFocus, mode = 'agent_tool_outcome'
   }
   const height = Math.max(260, Math.max(leftNodes.length, midNodes.length, rightNodes.length) * (laneHeight + gap) + 40);
   const outcomeTone = (label: string) => label.startsWith('blocked') ? 'danger' : label.startsWith('warned') ? 'warn' : label.startsWith('monitor') ? 'monitor' : 'ok';
+
+  const highlight = useMemo(() => {
+    if (!hoveredId) return null;
+    const relatedNodes = new Set<string>([hoveredId]);
+    const relatedEdges = new Set<number>();
+    const hoverLane = hoveredId.split(':')[0];
+
+    const touch = (predicate: (src: string, tgt: string) => boolean) => {
+      edges.forEach((edge, idx) => {
+        const src = nodeId(edge.source);
+        const tgt = nodeId(edge.target);
+        if (!predicate(src, tgt)) return;
+        relatedEdges.add(idx);
+        relatedNodes.add(src);
+        relatedNodes.add(tgt);
+      });
+    };
+
+    // Direct neighbors of the hovered node.
+    touch((src, tgt) => src === hoveredId || tgt === hoveredId);
+
+    // Expand one hop so the full Agent → Tool → Outcome path stays lit.
+    if (hoverLane === 'left') {
+      const mids = [...relatedNodes].filter((id) => id.startsWith('mid:'));
+      touch((src, tgt) => mids.includes(src) && tgt.startsWith('right:'));
+    } else if (hoverLane === 'right') {
+      const mids = [...relatedNodes].filter((id) => id.startsWith('mid:'));
+      touch((src, tgt) => src.startsWith('left:') && mids.includes(tgt));
+    }
+
+    return { relatedNodes, relatedEdges };
+  }, [hoveredId, edges]);
+
   return (
     <div className="sankeyWrap">
-      <div className="traceSummaryBar"><span>{leftLabel} → {midLabel} → {rightLabel}</span><span>{events.length} observed actions</span><span>Top nodes per column by volume; other flows are not drawn. Click nodes or lanes to filter.</span></div>
+      <div className="traceSummaryBar"><span>{leftLabel} → {midLabel} → {rightLabel}</span><span>{events.length} observed actions</span><span>Top nodes per column by volume; other flows are not drawn. Click nodes or lanes to filter. Hover a node to highlight its path.</span></div>
       <div className="signalLegend"><span><i className="legendSwatch legendSwatch--danger" />Blocked-heavy path</span><span><i className="legendSwatch legendSwatch--warn" />Warn-heavy path</span><span><i className="legendSwatch legendSwatch--monitor" />Monitor-heavy path</span><span><i className="legendSwatch legendSwatch--ok" />Allow-heavy path</span></div>
       <div className="sankeyScroller">
-        <svg width="980" height={height} viewBox={`0 0 980 ${height}`} className="traceSvg">
+        <svg
+          width="980"
+          height={height}
+          viewBox={`0 0 980 ${height}`}
+          className={`traceSvg${highlight ? ' sankeySvg--highlighting' : ''}`}
+        >
           <text x="100" y="20" className="traceNode__meta">{leftLabel}</text><text x="420" y="20" className="traceNode__meta">{midLabel}</text><text x="740" y="20" className="traceNode__meta">{rightLabel}</text>
           {edges.map((edge, idx) => {
             const x1 = edge.source.x + nodeWidth; const y1 = edge.source.y + laneHeight / 2; const x2 = edge.target.x; const y2 = edge.target.y + laneHeight / 2; const dx = (x2 - x1) * 0.5;
-            return <path key={idx} d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`} className={`sankeyEdge sankeyEdge--${edge.tone}`} style={{ strokeWidth: 8 + (edge.value / maxFlow) * 16 }} onClick={() => onFocus({ eventIds: edge.eventIds, label: `${edge.value} events on ${edge.tone} path` })} />;
+            const dimmed = Boolean(highlight && !highlight.relatedEdges.has(idx));
+            return (
+              <path
+                key={idx}
+                d={`M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`}
+                className={`sankeyEdge sankeyEdge--${edge.tone}${dimmed ? ' is-dimmed' : ''}${highlight && highlight.relatedEdges.has(idx) ? ' is-related' : ''}`}
+                style={{ strokeWidth: 8 + (edge.value / maxFlow) * 16 }}
+                onClick={() => onFocus({ eventIds: edge.eventIds, label: `${edge.value} events on ${edge.tone} path` })}
+              />
+            );
           })}
-          {[...leftNodes, ...midNodes, ...rightNodes].map((node) => (
-            <g
-              key={`${node.lane}-${node.key}`}
-              className="sankeyNode"
-              transform={`translate(${node.x}, ${node.y})`}
-              onClick={() => {
-                if (node.lane === 'left') onFocus({ search: node.key, eventIds: events.filter((event) => (mode === 'tool_rule_outcome' ? event.tool : event.agent_name) === node.key).map((event) => event.id), label: `${leftLabel} focus · ${node.key}` });
-                if (node.lane === 'mid') onFocus({ search: node.key, eventIds: events.filter((event) => { const outcome = event.outcome || eventOutcomeStatus(event); return (mode === 'agent_tool_outcome' ? event.tool : (((event as any).matched_rule_label || deriveMatchedRuleLabel(event) || (outcome === 'allowed' ? 'no rule hit' : `${outcome} decision`)))) === node.key; }).map((event) => event.id), label: `${midLabel} focus · ${node.key}` });
-                if (node.lane === 'right') {
-                  const status = node.key.startsWith('blocked') ? 'blocked' : node.key.startsWith('warned') ? 'warned' : node.key.startsWith('monitor') ? 'monitor' : 'allowed';
-                  onFocus({ status, eventIds: events.filter((event) => (event.outcome || eventOutcomeStatus(event)) === status).map((event) => event.id), label: `Outcome focus · ${node.key}` });
-                }
-              }}
-            >
-              <rect width={nodeWidth} height={laneHeight} rx="18" className={`sankeyNode__card sankeyNode__card--${node.lane === 'right' ? outcomeTone(node.key) : 'neutral'}`} />
-              <text x="16" y="24" className="sankeyNode__title">{String(node.key).slice(0, 28)}</text>
-              <text x="16" y="42" className="sankeyNode__meta">{node.value} events</text>
-            </g>
-          ))}
+          {[...leftNodes, ...midNodes, ...rightNodes].map((node) => {
+            const id = nodeId(node);
+            const dimmed = Boolean(highlight && !highlight.relatedNodes.has(id));
+            const related = Boolean(highlight && highlight.relatedNodes.has(id));
+            return (
+              <g
+                key={id}
+                className={`sankeyNode${dimmed ? ' is-dimmed' : ''}${related ? ' is-related' : ''}${hoveredId === id ? ' is-hovered' : ''}`}
+                transform={`translate(${node.x}, ${node.y})`}
+                onMouseEnter={() => setHoveredId(id)}
+                onMouseLeave={() => setHoveredId((current) => (current === id ? null : current))}
+                onClick={() => {
+                  if (node.lane === 'left') onFocus({ search: node.key, eventIds: events.filter((event) => (mode === 'tool_rule_outcome' ? event.tool : event.agent_name) === node.key).map((event) => event.id), label: `${leftLabel} focus · ${node.key}` });
+                  if (node.lane === 'mid') onFocus({ search: node.key, eventIds: events.filter((event) => { const outcome = event.outcome || eventOutcomeStatus(event); return (mode === 'agent_tool_outcome' ? event.tool : (((event as any).matched_rule_label || deriveMatchedRuleLabel(event) || (outcome === 'allowed' ? 'no rule hit' : `${outcome} decision`)))) === node.key; }).map((event) => event.id), label: `${midLabel} focus · ${node.key}` });
+                  if (node.lane === 'right') {
+                    const status = node.key.startsWith('blocked') ? 'blocked' : node.key.startsWith('warned') ? 'warned' : node.key.startsWith('monitor') ? 'monitor' : 'allowed';
+                    onFocus({ status, eventIds: events.filter((event) => (event.outcome || eventOutcomeStatus(event)) === status).map((event) => event.id), label: `Outcome focus · ${node.key}` });
+                  }
+                }}
+              >
+                <rect width={nodeWidth} height={laneHeight} rx="18" className={`sankeyNode__card sankeyNode__card--${node.lane === 'right' ? outcomeTone(node.key) : 'neutral'}`} />
+                <text x="16" y="24" className="sankeyNode__title">{String(node.key).slice(0, 28)}</text>
+                <text x="16" y="42" className="sankeyNode__meta">{node.value} events</text>
+              </g>
+            );
+          })}
         </svg>
       </div>
     </div>

@@ -56,3 +56,4 @@ frontend/package-lock.json
 TODO-OSS.md
 
 .pypirc
+.tmp/

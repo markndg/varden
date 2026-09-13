@@ -53,6 +53,9 @@ test = [
   "mcp[cli]>=1.2,<3",
   "hypothesis>=6.100",
   "requests>=2.31",
+  "build>=1.0",
+  "playwright>=1.40",
+  "pytest-playwright>=0.4",
 ]
 all = [
   "psycopg[binary]>=3.1",

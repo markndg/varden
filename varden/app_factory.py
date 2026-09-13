@@ -748,6 +748,8 @@ def create_app(config: AppConfig) -> FastAPI:
         In normal mode this endpoint behaves like the authenticated dashboard bootstrap.
         """
         if config.enable_dev_bootstrap and not x_api_key and not authorization:
+            # Dev/demo only — AppConfig.validate() refuses enable_dev_bootstrap
+            # when env != "dev". Production must not expose bootstrap credentials.
             payload = dashboard_bootstrap_payload(OSS_TENANT_ID)
             return {
                 "auth": {
@@ -756,6 +758,8 @@ def create_app(config: AppConfig) -> FastAPI:
                     "token_type": "api_key",
                     "tenant_id": OSS_TENANT_ID,
                     "role": bootstrap_key.get("role", "admin"),
+                    "ephemeral": True,
+                    "warning": "Development bootstrap credential — disable VARDEN_ENABLE_DEV_BOOTSTRAP outside env=dev.",
                 },
                 "dashboard": payload,
             }

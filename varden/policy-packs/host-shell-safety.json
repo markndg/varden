@@ -1,0 +1,63 @@
+{
+  "name": "host-shell-safety",
+  "description": "Rules for Varden Monitor shell.execute: destructive shell patterns, infrastructure CLIs (Railway/Heroku-style), and broad kubectl delete usage.",
+  "template": {
+    "block": [
+      {
+        "title": "Block recursive delete via host monitor",
+        "name": "host_block_rm_rf",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": { "contains": "rm -rf" },
+        "description": "Blocks rm -rf style invocations launched through Varden Monitor."
+      },
+      {
+        "title": "Block Terraform destroy via host",
+        "name": "host_block_terraform_destroy",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": { "contains": "terraform destroy" },
+        "description": "Blocks terraform destroy from monitored shells."
+      },
+      {
+        "title": "Block kubectl delete with all-namespaces",
+        "name": "host_block_kubectl_delete_all_namespaces",
+        "enabled": true,
+        "priority": 95,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": { "contains": "kubectl delete" },
+        "field:args.argv": { "contains": "--all-namespaces" },
+        "description": "Blocks kubectl delete when --all-namespaces appears in argv."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn on Railway CLI via monitor",
+        "name": "host_warn_railway_cli",
+        "enabled": true,
+        "priority": 60,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": { "contains": "railway" },
+        "description": "Warns when Railway CLI is invoked under monitor (review tokens and targets)."
+      },
+      {
+        "title": "Warn on curl from monitored shell",
+        "name": "host_warn_curl",
+        "enabled": true,
+        "priority": 45,
+        "type": "tool_call",
+        "tool": "shell.execute",
+        "field:args.argv_join": { "contains": "curl " },
+        "description": "Warns on outbound curl from monitored shells."
+      }
+    ],
+    "monitor": [],
+    "allow": []
+  }
+}

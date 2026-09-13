@@ -1,0 +1,112 @@
+{
+  "name": "runtime-boundary-enforcement",
+  "description": "Safe defaults for the enforced runtime boundary: fail closed on uncovered sensitive actions, workspace supply-chain mutations, approval without token, and control-plane gaps.",
+  "template": {
+    "block": [
+      {
+        "title": "Block untrusted CI workflow writes",
+        "name": "runtime_block_untrusted_write_ci",
+        "enabled": true,
+        "priority": 130,
+        "type": "filesystem",
+        "field:metadata.filesystem.mutation": "WRITE_CI",
+        "classifier:provenance_untrusted": true,
+        "description": "Untrusted provenance must not write CI workflows."
+      },
+      {
+        "title": "Block untrusted CI via authority class",
+        "name": "runtime_block_untrusted_write_ci_auth",
+        "enabled": true,
+        "priority": 129,
+        "type": "filesystem",
+        "field:metadata.authority.required": {"contains": "WRITE_CI"},
+        "classifier:untrusted_to_privileged": true,
+        "description": "Untrusted → WRITE_CI is blocked."
+      },
+      {
+        "title": "Block strict uncovered sensitive filesystem",
+        "name": "runtime_strict_uncovered_sensitive_fs",
+        "enabled": true,
+        "priority": 120,
+        "type": "filesystem",
+        "field:metadata.runtime.mode": "strict",
+        "field:metadata.filesystem.classification": {"in": ["secrets", "system"]},
+        "description": "In strict mode, sensitive filesystem access is blocked when matched."
+      },
+      {
+        "title": "Block elevated shell under untrusted provenance",
+        "name": "runtime_block_elevated_shell_untrusted",
+        "enabled": true,
+        "priority": 115,
+        "type": "tool_call",
+        "field:metadata.subprocess.elevated_uncertainty": true,
+        "field:metadata.provenance.trust_floor": "untrusted",
+        "description": "Blocks bash/sh/python -c style execution when provenance trust floor is untrusted."
+      },
+      {
+        "title": "Block MCP privileged call without gateway boundary",
+        "name": "runtime_block_mcp_without_boundary",
+        "enabled": true,
+        "priority": 110,
+        "type": "mcp_call",
+        "field:metadata.runtime.gateway": {"exists": false},
+        "field:metadata.runtime.mode": "strict",
+        "description": "In strict mode, MCP calls that did not arrive via the Varden gateway are blocked."
+      }
+    ],
+    "require_approval": [
+      {
+        "title": "Require approval for untrusted config writes",
+        "name": "runtime_approval_untrusted_write_config",
+        "enabled": true,
+        "priority": 95,
+        "type": "filesystem",
+        "field:metadata.filesystem.mutation": "WRITE_CONFIG",
+        "classifier:provenance_untrusted": true,
+        "description": "Untrusted provenance writing config requires scoped approval."
+      },
+      {
+        "title": "Require approval for untrusted code writes",
+        "name": "runtime_approval_untrusted_write_code",
+        "enabled": true,
+        "priority": 94,
+        "type": "filesystem",
+        "field:metadata.filesystem.mutation": "WRITE_CODE",
+        "classifier:provenance_untrusted": true,
+        "description": "Untrusted provenance writing code requires scoped approval."
+      },
+      {
+        "title": "Require approval for secret filesystem writes",
+        "name": "runtime_approval_secret_write",
+        "enabled": true,
+        "priority": 90,
+        "type": "filesystem",
+        "field:metadata.filesystem.classification": "secrets",
+        "field:args.mode": {"contains": "w"},
+        "description": "Secret path writes require a scoped approval token."
+      }
+    ],
+    "warn": [
+      {
+        "title": "Warn when runtime coverage is partial for destructive tools",
+        "name": "runtime_warn_partial_coverage",
+        "enabled": true,
+        "priority": 40,
+        "type": "tool_call",
+        "field:metadata.runtime.coverage": "PARTIAL",
+        "description": "Warns when an action proceeds with only partial coverage."
+      }
+    ],
+    "monitor": [
+      {
+        "title": "Monitor runtime boundary decisions",
+        "name": "runtime_monitor_boundary",
+        "enabled": true,
+        "priority": 10,
+        "field:metadata.runtime.boundary": true,
+        "description": "Ensures boundary-tagged actions appear in the monitor stream."
+      }
+    ],
+    "allow": []
+  }
+}

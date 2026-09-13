@@ -51,13 +51,67 @@ def print_coverage(data: dict[str, Any]) -> None:
             print(f"- {s.get('name')}: {s.get('status')}")
 
 
-def run_self_test(*, base_url: str | None = None, api_key: str | None = None) -> int:
-    """Harmless local checks that interceptors are active after protect()."""
+def _print_readiness_human(data: dict[str, Any]) -> None:
+    print("STRICT MODE READINESS:", data.get("status") or "UNKNOWN")
+    print("")
+    blocking = data.get("discovered_blocking") or []
+    if blocking:
+        print("Discovered relevant surfaces:")
+        for item in blocking:
+            print(f"\n{item.get('surface')}")
+            print(f"  state: {item.get('state')}")
+            print(f"  reason: {item.get('reason')}")
+    missing = data.get("required_coverage_missing") or []
+    if missing:
+        print("Required coverage missing:")
+        for item in missing:
+            print(f"- {item}")
+    accepted = data.get("accepted_exceptions") or []
+    if accepted:
+        print("")
+        print("Accepted exceptions:")
+        for item in accepted:
+            print(f"- {item}")
+
+
+_FAIL_VERDICTS = frozenset({
+    "tamper",
+    "unknown",
+    "error",
+    "not_invoked",
+    "unexpected_bypass",
+    "fail",
+})
+
+
+def _probe_result(
+    *,
+    surface: str,
+    probe_executed: bool,
+    interceptor_invoked: bool,
+    guard_invoked: bool,
+    decision: str,
+    verification: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "surface": surface,
+        "probe_executed": probe_executed,
+        "interceptor_invoked": interceptor_invoked,
+        "guard_invoked": guard_invoked,
+        "decision": decision,
+        "verification": verification,
+        "reason": reason,
+    }
+
+
+def _execute_self_test(*, base_url: str | None = None, api_key: str | None = None) -> tuple[int, dict[str, Any]]:
+    """Internal: return (exit_code, payload) without printing."""
     import varden
-    from varden.runtime.coverage import get_coverage_registry
+    from varden.runtime.coverage import ENFORCED, PARTIAL, get_coverage_registry
     from varden.runtime.modes import is_enforcing
 
-    results: list[tuple[str, str]] = []
+    probes: list[dict[str, Any]] = []
     guard = varden.protect(
         base_url=base_url or os.environ.get("VARDEN_BASE_URL", "http://127.0.0.1:8000"),
         api_key=api_key or os.environ.get("VARDEN_API_KEY"),
@@ -65,97 +119,294 @@ def run_self_test(*, base_url: str | None = None, api_key: str | None = None) ->
         auto_instrument=True,
         emit_attestation=False,
     )
+
+    guard_calls: list[dict[str, Any]] = []
+    original_guarded = guard.guarded_action
+
+    def _spy_guarded_action(*args: Any, **kwargs: Any):
+        meta = {
+            "type": kwargs.get("type"),
+            "tool": kwargs.get("tool"),
+            "url": kwargs.get("url"),
+        }
+        if meta["type"] is None and args:
+            meta["type"] = args[0]
+        guard_calls.append({k: (str(v) if v is not None else None) for k, v in meta.items()})
+        return original_guarded(*args, **kwargs)
+
+    guard.guarded_action = _spy_guarded_action  # type: ignore[method-assign]
+
     try:
         reg = get_coverage_registry()
         verify = reg.verify()
-        results.append(("Coverage verify", "ok" if verify.get("ok") else f"tamper:{verify.get('changes')}"))
-        att = reg.attestation()
-        for cat in att.get("categories") or []:
-            results.append((str(cat["label"]), str(cat["status"])))
+        if verify.get("ok"):
+            probes.append(
+                _probe_result(
+                    surface="coverage.verify",
+                    probe_executed=True,
+                    interceptor_invoked=True,
+                    guard_invoked=False,
+                    decision="ok",
+                    verification="pass",
+                    reason="Interceptor live-checks reported no tamper",
+                )
+            )
+        else:
+            probes.append(
+                _probe_result(
+                    surface="coverage.verify",
+                    probe_executed=True,
+                    interceptor_invoked=False,
+                    guard_invoked=False,
+                    decision="tamper",
+                    verification="tamper",
+                    reason=f"Interceptor tamper detected: {verify.get('changes')}",
+                )
+            )
 
-        # HTTP intercept probe — control-plane URL is excluded; use example.invalid
-        intercepted = False
+        before_http = len(guard_calls)
+        http_decision = "error"
+        http_exc: BaseException | None = None
         try:
-            import requests
+            # Prefer stdlib urllib — patched at protect() time without importing
+            # optional clients. requests may not be present until first import.
+            import urllib.request
 
-            requests.get("http://127.0.0.1:9/", timeout=0.2)
+            urllib.request.urlopen("http://127.0.0.1:9/", timeout=0.2)
+            http_decision = "allowed_completed"
         except varden.VardenBlockedError:
-            intercepted = True
-            results.append(("HTTP block path", "enforced"))
-        except Exception:
-            # Connection errors mean request was attempted — check if guard ran via coverage
-            http_surf = reg.get("http.requests")
-            if http_surf and http_surf.active:
-                results.append(("HTTP interceptor", "active"))
-            else:
-                results.append(("HTTP interceptor", "unknown"))
-        if intercepted:
-            pass
+            http_decision = "blocked"
+        except Exception as exc:
+            http_exc = exc
+            http_decision = "network_error_after_guard"
+        http_calls = guard_calls[before_http:]
+        http_guard = any(str(c.get("type") or "").lower() in {"http_request", "http"} for c in http_calls)
+        http_surf = reg.get("http.urllib") or reg.get("http.httpx") or reg.get("http.requests")
+        interceptor_on = bool(http_surf and http_surf.active and http_surf.status == ENFORCED)
+        http_surface_name = http_surf.name if http_surf else "http.urllib"
+        if http_guard and interceptor_on:
+            probes.append(
+                _probe_result(
+                    surface=http_surface_name,
+                    probe_executed=True,
+                    interceptor_invoked=True,
+                    guard_invoked=True,
+                    decision=http_decision,
+                    verification="pass",
+                    reason=(
+                        "Pre-execution guard invoked for local HTTP probe"
+                        + (f" ({type(http_exc).__name__})" if http_exc else "")
+                    ),
+                )
+            )
+        elif not interceptor_on:
+            probes.append(
+                _probe_result(
+                    surface=http_surface_name,
+                    probe_executed=True,
+                    interceptor_invoked=False,
+                    guard_invoked=http_guard,
+                    decision=http_decision,
+                    verification="not_invoked",
+                    reason="HTTP interceptor not active/ENFORCED after protect()",
+                )
+            )
+        else:
+            probes.append(
+                _probe_result(
+                    surface=http_surface_name,
+                    probe_executed=True,
+                    interceptor_invoked=True,
+                    guard_invoked=False,
+                    decision=http_decision,
+                    verification="not_invoked",
+                    reason="HTTP probe completed without traversing guarded_action",
+                )
+            )
 
-        # Subprocess intercept
+        before_sub = len(guard_calls)
+        sub_decision = "error"
         try:
             import subprocess
 
-            subprocess.run(["/usr/bin/true"], check=False, capture_output=True)
-            sub = reg.get("subprocess")
-            results.append(("Subprocess interceptor", "active" if sub and sub.active else "unknown"))
+            subprocess.run([sys.executable, "-c", "pass"], check=False, capture_output=True)
+            sub_decision = "allowed_completed"
         except varden.VardenBlockedError:
-            results.append(("Subprocess interceptor", "enforced"))
+            sub_decision = "blocked"
         except Exception as exc:
-            results.append(("Subprocess interceptor", f"error:{exc}"))
+            sub_decision = f"error:{type(exc).__name__}"
+        sub_calls = guard_calls[before_sub:]
+        sub_surf = reg.get("subprocess")
+        sub_active = bool(sub_surf and sub_surf.active and sub_surf.status == ENFORCED)
+        sub_guard = any(
+            "subprocess" in str(c.get("type") or "").lower()
+            or "subprocess" in str(c.get("tool") or "").lower()
+            for c in sub_calls
+        )
+        if not sub_guard and sub_active and sub_calls:
+            sub_guard = True
+        if sub_guard and sub_active:
+            probes.append(
+                _probe_result(
+                    surface="subprocess",
+                    probe_executed=True,
+                    interceptor_invoked=True,
+                    guard_invoked=True,
+                    decision=sub_decision,
+                    verification="pass",
+                    reason="Subprocess interceptor invoked guarded_action for local interpreter probe",
+                )
+            )
+        elif not sub_active:
+            probes.append(
+                _probe_result(
+                    surface="subprocess",
+                    probe_executed=True,
+                    interceptor_invoked=False,
+                    guard_invoked=sub_guard,
+                    decision=sub_decision,
+                    verification="not_invoked",
+                    reason="Subprocess interceptor not active/ENFORCED after protect()",
+                )
+            )
+        else:
+            probes.append(
+                _probe_result(
+                    surface="subprocess",
+                    probe_executed=True,
+                    interceptor_invoked=True,
+                    guard_invoked=False,
+                    decision=sub_decision,
+                    verification="not_invoked",
+                    reason="Subprocess probe completed without traversing guarded_action",
+                )
+            )
 
-        # Filesystem intercept
+        before_fs = len(guard_calls)
+        fs_decision = "error"
         try:
-            with tempfile.NamedTemporaryFile(mode="w", delete=True) as fh:
-                fh.write("varden-self-test")
-            fs = reg.get("filesystem")
-            results.append(("Filesystem interceptor", "active" if fs and fs.active else "partial/unknown"))
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "varden-self-test.txt"
+                # builtins.open is the patched entrypoint (pathlib may not always wrap).
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("varden-self-test")
+            fs_decision = "allowed_completed"
         except varden.VardenBlockedError:
-            results.append(("Filesystem interceptor", "enforced"))
+            fs_decision = "blocked"
         except Exception as exc:
-            results.append(("Filesystem interceptor", f"error:{exc}"))
+            fs_decision = f"error:{type(exc).__name__}"
+        fs_calls = guard_calls[before_fs:]
+        fs_guard = any(
+            str(c.get("type") or "").lower() in {"filesystem", "file_write", "file_read", "file"}
+            or "open" in str(c.get("tool") or "").lower()
+            or "pathlib" in str(c.get("tool") or "").lower()
+            for c in fs_calls
+        )
+        if not fs_guard and fs_calls:
+            fs_guard = True
+        fs_surf = reg.get("filesystem")
+        fs_status = fs_surf.status if fs_surf else "unknown"
+        fs_active = bool(fs_surf and fs_surf.active)
+        if fs_decision.startswith("error:"):
+            verification = "error"
+            reason = f"Filesystem probe failed: {fs_decision}"
+        elif not fs_active:
+            verification = "not_invoked"
+            reason = "Filesystem interceptor not active after protect()"
+        elif fs_status == ENFORCED and fs_guard:
+            verification = "pass"
+            reason = "Filesystem interceptor ENFORCED and guard invoked"
+        elif fs_status == PARTIAL and fs_guard:
+            verification = "partial"
+            reason = "Filesystem coverage is PARTIAL (Python APIs only); not claimed as ENFORCED"
+        elif fs_status == PARTIAL and fs_active and not fs_guard:
+            verification = "partial"
+            reason = (
+                "Filesystem coverage is PARTIAL; interceptor active but this write path "
+                "did not traverse guarded_action (honest non-ENFORCED)"
+            )
+        elif fs_active and not fs_guard:
+            verification = "unknown"
+            reason = "Filesystem marked active but probe did not traverse guarded_action"
+        else:
+            verification = "unknown"
+            reason = f"Filesystem status={fs_status}"
+        probes.append(
+            _probe_result(
+                surface="filesystem",
+                probe_executed=True,
+                interceptor_invoked=fs_active,
+                guard_invoked=fs_guard,
+                decision=fs_decision,
+                verification=verification,
+                reason=reason,
+            )
+        )
 
-        results.append(("Mode enforcing", "yes" if is_enforcing(guard.product_mode) else "no"))
+        mode_ok = is_enforcing(guard.product_mode)
+        probes.append(
+            _probe_result(
+                surface="mode",
+                probe_executed=True,
+                interceptor_invoked=True,
+                guard_invoked=False,
+                decision=str(guard.product_mode),
+                verification="pass" if mode_ok else "fail",
+                reason="Mode is enforcing" if mode_ok else "Mode is not enforcing",
+            )
+        )
     finally:
+        try:
+            guard.guarded_action = original_guarded  # type: ignore[method-assign]
+        except Exception:
+            pass
         varden.unpatch_runtime()
 
+    failed = [p for p in probes if str(p.get("verification") or "").lower() in _FAIL_VERDICTS]
+    payload = {
+        "ok": not failed,
+        "probes": probes,
+        "failed": [p["surface"] for p in failed],
+    }
+    return (0 if payload["ok"] else 1), payload
+
+
+def run_self_test(*, base_url: str | None = None, api_key: str | None = None, as_json: bool = False) -> int:
+    """Harmless local checks that interceptors traverse the pre-execution guard."""
+    code, payload = _execute_self_test(base_url=base_url, api_key=api_key)
+    if as_json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return code
     print("Varden runtime self-test")
     print("")
-    for name, status in results:
-        print(f"{name:<28} {status}")
-    return 0
+    for probe in payload["probes"]:
+        ver = str(probe.get("verification") or "")
+        if ver in _FAIL_VERDICTS:
+            mark = "FAIL"
+        elif ver == "partial":
+            mark = "PARTIAL"
+        else:
+            mark = "PASS"
+        print(f"{probe['surface']:<28} {mark:<8} {ver} — {probe['reason']}")
+    print("")
+    print("Overall:", "PASS" if payload["ok"] else "FAIL")
+    return code
 
 
 def runtime_argv(args: argparse.Namespace) -> int:
     cmd = getattr(args, "runtime_command", None)
+    as_json = bool(getattr(args, "json", False))
     if cmd == "status":
         data = _api("GET", "/runtime/status")
         print(json.dumps(data, indent=2))
         return 0
     if cmd == "readiness":
         data = _api("GET", "/runtime/readiness")
-        print("STRICT MODE READINESS:", data.get("status") or "UNKNOWN")
-        print("")
-        blocking = data.get("discovered_blocking") or []
-        if blocking:
-            print("Discovered relevant surfaces:")
-            for item in blocking:
-                print(f"\n{item.get('surface')}")
-                print(f"  state: {item.get('state')}")
-                print(f"  reason: {item.get('reason')}")
-        missing = data.get("required_coverage_missing") or []
-        if missing:
-            print("Required coverage missing:")
-            for item in missing:
-                print(f"- {item}")
-        accepted = data.get("accepted_exceptions") or []
-        if accepted:
-            print("")
-            print("Accepted exceptions:")
-            for item in accepted:
-                print(f"- {item}")
-        if getattr(args, "json", False):
-            print(json.dumps(data, indent=2))
+        if as_json:
+            # Machine-readable: exactly one JSON document on stdout.
+            print(json.dumps(data, indent=2, sort_keys=True))
+        else:
+            _print_readiness_human(data)
         return 0
     if cmd == "explain":
         event_id = args.event_id
@@ -163,7 +414,7 @@ def runtime_argv(args: argparse.Namespace) -> int:
         print(json.dumps(data, indent=2))
         return 0
     if cmd == "self-test":
-        return run_self_test()
+        return run_self_test(as_json=as_json)
     print("usage: varden runtime [status|readiness|explain|self-test]", file=sys.stderr)
     return 2
 
@@ -272,14 +523,15 @@ def mcp_argv(args: argparse.Namespace) -> int:
         cfg = load_mcp_config(src)
         wrapped, changes = wrap_mcp_config(cfg)
         out_path = Path(args.output) if getattr(args, "output", None) else None
-        print("MCP config wrap changes:")
+        # Decorative copy on stderr so stdout can stay machine-readable when
+        # writing the wrapped document to stdout.
+        print("MCP config wrap changes:", file=sys.stderr)
         for change in changes:
-            print(json.dumps(change, indent=2))
+            print(json.dumps(change, indent=2), file=sys.stderr)
         if out_path:
             out_path.write_text(json.dumps(wrapped, indent=2) + "\n", encoding="utf-8")
-            print(f"Wrote {out_path}")
+            print(f"Wrote {out_path}", file=sys.stderr)
         else:
-            print("")
             print(json.dumps(wrapped, indent=2))
         return 0
     if cmd == "gateway":

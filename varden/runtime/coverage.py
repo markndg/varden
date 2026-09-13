@@ -17,6 +17,19 @@ NOT_ROUTED = "NOT_ROUTED"
 
 VALID_STATUSES = frozenset({ENFORCED, PARTIAL, OBSERVATIONAL, UNCOVERED, UNSUPPORTED, NOT_ROUTED})
 
+# Stale SDK / docs names → catalogue canonical surfaces.
+# ``llm.openai`` / ``llm.anthropic`` are transport aliases only — never cognition coverage.
+SURFACE_ALIASES: dict[str, str] = {
+    "llm.openai": "llm.openai_transport",
+    "llm.anthropic": "llm.anthropic_transport",
+}
+
+
+def canonical_surface_name(name: str) -> str:
+    """Resolve a coverage surface name (or documented alias) to the catalogue name."""
+    key = str(name or "").strip().lower()
+    return SURFACE_ALIASES.get(key, key)
+
 
 @dataclass
 class CoverageSurface:
@@ -161,6 +174,22 @@ _CATALOG: list[dict[str, Any]] = [
 ]
 
 
+def catalogue_surface_names() -> frozenset[str]:
+    return frozenset(str(item["name"]) for item in _CATALOG)
+
+
+# Category → primary surfaces used when ``require_coverage`` lists a category key.
+REQUIREMENT_CATEGORY_SURFACES: dict[str, tuple[str, ...]] = {
+    "http": ("http.requests", "http.httpx", "http.urllib"),
+    "network": ("http.requests", "http.httpx", "http.urllib"),
+    "subprocess": ("subprocess",),
+    "filesystem": ("filesystem",),
+    "tools": ("tools.python",),
+    "mcp": ("mcp",),
+    "llm": ("llm.openai_transport", "llm.anthropic_transport"),
+}
+
+
 class CoverageRegistry:
     """Process-local registry of *active* instrumentation (not static marketing claims)."""
 
@@ -179,6 +208,13 @@ class CoverageRegistry:
         self.reset()
 
     def reset(self) -> None:
+        """Full process-local teardown after runtime unpatch / session end.
+
+        Clears surfaces, discovery, interceptor checks, *and* the security
+        contract (mode, fail mode, session id, require_coverage, exceptions,
+        attestation timestamp, mode lock). A subsequent ``protect()`` must not
+        inherit stale readiness state from a prior activation.
+        """
         with self._lock:
             self._surfaces = {}
             for item in _CATALOG:
@@ -194,6 +230,11 @@ class CoverageRegistry:
             self._discovered = {}
             self._mode_locked = False
             self._interceptor_checks = {}
+            self._require_coverage = []
+            self._mode = "guarded"
+            self._fail_mode = "closed"
+            self._session_id = None
+            self._attested_at = None
 
     def set_session(
         self,
@@ -222,17 +263,9 @@ class CoverageRegistry:
 
     def _apply_requirement_applicability(self) -> None:
         """Surfaces explicitly required by the coverage contract become applicable."""
-        primary_for_category = {
-            "http": ("http.requests", "http.httpx", "http.urllib"),
-            "network": ("http.requests", "http.httpx", "http.urllib"),
-            "subprocess": ("subprocess",),
-            "filesystem": ("filesystem",),
-            "tools": ("tools.python",),
-            "mcp": ("mcp",),
-            "llm": ("llm.openai", "llm.anthropic", "llm.openai_transport", "llm.anthropic_transport"),
-        }
+        primary_for_category = REQUIREMENT_CATEGORY_SURFACES
         for item in self._require_coverage:
-            key = str(item).strip().lower()
+            key = canonical_surface_name(item)
             if key in primary_for_category:
                 for name in primary_for_category[key]:
                     surface = self._surfaces.get(name)
@@ -270,12 +303,13 @@ class CoverageRegistry:
     ) -> CoverageSurface:
         if status not in VALID_STATUSES:
             raise ValueError(f"invalid coverage status: {status}")
+        resolved = canonical_surface_name(name)
         with self._lock:
-            surface = self._surfaces.get(name)
+            surface = self._surfaces.get(resolved)
             if surface is None:
-                category = name.split(".", 1)[0]
-                surface = CoverageSurface(name=name, category=category, status=status)
-                self._surfaces[name] = surface
+                category = resolved.split(".", 1)[0]
+                surface = CoverageSurface(name=resolved, category=category, status=status)
+                self._surfaces[resolved] = surface
             surface.status = status
             surface.active = active
             surface.interceptor = interceptor or surface.interceptor
@@ -319,7 +353,7 @@ class CoverageRegistry:
 
     def get(self, name: str) -> CoverageSurface | None:
         with self._lock:
-            return self._surfaces.get(name)
+            return self._surfaces.get(canonical_surface_name(name))
 
     def list_surfaces(self) -> list[CoverageSurface]:
         with self._lock:
@@ -376,7 +410,7 @@ class CoverageRegistry:
                 transports = [
                     s
                     for s in surfaces
-                    if s.name in {"llm.openai_transport", "llm.anthropic_transport", "llm.openai", "llm.anthropic"}
+                    if s.name in {"llm.openai_transport", "llm.anthropic_transport"}
                     and s.active
                 ]
                 if transports and all(s.status == ENFORCED for s in transports):
@@ -401,24 +435,32 @@ class CoverageRegistry:
         return rows
 
     def missing_required(self, require: list[str] | None = None) -> list[str]:
+        """Surfaces listed in ``require_coverage`` that are not actively ENFORCED.
+
+        ``PARTIAL``, ``OBSERVATIONAL``, ``NOT_ROUTED``, ``UNCOVERED``, and
+        ``UNSUPPORTED`` never satisfy an explicit requirement. Operators who
+        intentionally accept incomplete coverage must list the surface (or its
+        category) in ``allow_uncovered`` — those appear as accepted exceptions,
+        never as ENFORCED.
+        """
         needed = list(require if require is not None else self._require_coverage)
         missing = []
         with self._lock:
             for item in needed:
-                key = item.strip().lower()
+                key = canonical_surface_name(item)
                 if key in self._allow_uncovered or key.split(".", 1)[0] in self._allow_uncovered:
                     continue
-                matches = [
-                    s
-                    for s in self._surfaces.values()
-                    if s.name == key or s.category == key or s.name.startswith(f"{key}.")
-                ]
-                if not matches:
-                    missing.append(item)
-                    continue
-                ok = any(s.status in {ENFORCED, PARTIAL} and s.active for s in matches)
-                if key == "mcp":
-                    ok = any(s.name == "mcp" and s.status == ENFORCED and s.active for s in matches)
+                if key in REQUIREMENT_CATEGORY_SURFACES:
+                    names = REQUIREMENT_CATEGORY_SURFACES[key]
+                    ok = any(
+                        (surf := self._surfaces.get(name)) is not None
+                        and surf.status == ENFORCED
+                        and surf.active
+                        for name in names
+                    )
+                else:
+                    surf = self._surfaces.get(key)
+                    ok = bool(surf is not None and surf.status == ENFORCED and surf.active)
                 if not ok:
                     missing.append(item)
         return missing

@@ -678,7 +678,12 @@ button { cursor: pointer; }
 .sankeyEdge--warn { stroke: rgba(255,191,90,.85); }
 .sankeyEdge--monitor { stroke: rgba(77,163,255,.88); }
 .sankeyEdge--ok { stroke: rgba(93,225,164,.85); }
-.sankeyNode { cursor:pointer; }
+.sankeyNode { cursor:pointer; transition: opacity .18s ease; }
+.sankeySvg--highlighting .sankeyNode.is-dimmed,
+.sankeySvg--highlighting .sankeyEdge.is-dimmed { opacity: .28; }
+.sankeySvg--highlighting .sankeyNode.is-related,
+.sankeySvg--highlighting .sankeyEdge.is-related { opacity: 1; }
+.sankeySvg--highlighting .sankeyNode.is-hovered .sankeyNode__card { filter: brightness(1.08); }
 .sankeyNode__card { fill: rgba(8, 18, 32, .98); stroke: rgba(163, 184, 255, 0.16); stroke-width:1.5; }
 .sankeyNode__card--danger { stroke: rgba(255,107,122,.62); }
 .sankeyNode__card--warn { stroke: rgba(255,191,90,.62); }
@@ -1720,6 +1725,11 @@ button { cursor: pointer; }
 .sankeyNode__card--neutral { stroke: rgba(123,97,255,.42); }
 .sankeyNode__title { fill: var(--text); font-size: 14px; font-weight: 700; }
 .sankeyNode__meta { fill: #b9c9ea; font-size: 12px; }
+
+.sankeySvg--highlighting .sankeyNode.is-dimmed,
+.sankeySvg--highlighting .sankeyEdge.is-dimmed { opacity: .28; }
+.sankeySvg--highlighting .sankeyNode.is-related,
+.sankeySvg--highlighting .sankeyEdge.is-related { opacity: 1; }
 .traceRuleLane { fill: rgba(123,97,255,.04); stroke: rgba(123,97,255,.2); }
 .traceEdge--triggered { stroke-dasharray: 6 6; }
 .traceRuleNode__card { fill: rgba(16, 20, 32, .98); stroke-width:1.5; }

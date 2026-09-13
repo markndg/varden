@@ -13,6 +13,7 @@ import { ADVANCED_FIELDS, BUDGET_RULES_BUCKET, CLASSIFIER_KEYS, DashboardPayload
 import { detailIdFromLocation, eventIdFromSearch, pageFromLocation, predictiveDeepLink, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
 import { averageLatencyFromPoints, classNames, fmtNum, fmtTs, fromDateTimeLocalValue, latencyValueFromPoint, toDateTimeLocalValue } from './lib/format';
 import { coerceRuleInput, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, getBucketRules, getRuleOperator, getRuleValue, isBudgetRulesBucket, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, ruleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, safeParsePolicy, semanticRuleFingerprint, setRuleOperatorValue, setRuleSimpleValue, summarizeBudgetRule, summarizeRule, summarizeRuleConditions, withBucketRules } from './lib/policy';
+import { clearAuthToken, loadAuthTokenState, persistAuthTokenState } from './lib/authToken';
 
 
 async function api<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
@@ -47,6 +48,21 @@ function usePersistentState<T>(key: string, fallback: T) {
     try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
   }, [key, value]);
   return [value, setValue] as const;
+}
+
+/** Session-scoped (or explicitly remembered) control-plane credential. */
+function useAuthTokenState() {
+  const [state, setState] = useState(() => loadAuthTokenState());
+  useEffect(() => {
+    persistAuthTokenState(state);
+  }, [state]);
+  const setToken = (token: string) => setState((prev) => ({ ...prev, token }));
+  const setRemember = (remember: boolean) => setState((prev) => ({ ...prev, remember }));
+  const clear = () => {
+    clearAuthToken();
+    setState({ token: '', remember: false });
+  };
+  return { token: state.token, remember: state.remember, setToken, setRemember, clear };
 }
 
 function normalizeAgentKey(name?: string | null) {
@@ -411,7 +427,7 @@ function bucketTone(bucket?: string) {
 }
 
 function Shell() {
-  const [token, setToken] = usePersistentState<string>('varden.token', '');
+  const { token, remember, setToken, setRemember, clear: clearToken } = useAuthTokenState();
   const [page, setPage] = useState<string>(pageFromLocation(location.pathname));
   const [detailId, setDetailId] = useState<number | null>(detailIdFromLocation(location.pathname));
   const [predictiveEventId, setPredictiveEventId] = useState<number | null>(eventIdFromSearch(location.search));
@@ -836,8 +852,33 @@ function Shell() {
         </div>
         )}
         <div className="sidebar__footer">
-          <input className="input" value={token} onChange={(e) => setToken(e.target.value)} placeholder="API key or bearer token" />
-          <button className="button button--ghost" onClick={() => refreshOverview().catch((e:any)=>setError(e?.message||'Refresh failed'))}>Refresh snapshot</button>
+          <input
+            className="input"
+            type="password"
+            autoComplete="off"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="API key or bearer token"
+            aria-label="Control-plane API key or bearer token"
+          />
+          <label className="muted" style={{ display: 'flex', gap: 8, alignItems: 'flex-start', fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(e) => setRemember(e.target.checked)}
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              Remember on this device
+              <span className="muted" style={{ display: 'block' }}>
+                Stores the credential in durable browser storage. Prefer session-only on shared machines.
+              </span>
+            </span>
+          </label>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button className="button button--ghost" onClick={() => refreshOverview().catch((e:any)=>setError(e?.message||'Refresh failed'))}>Refresh snapshot</button>
+            <button className="button button--ghost" onClick={() => { clearToken(); setNotice('Credential cleared from this browser session'); }}>Clear credential</button>
+          </div>
         </div>
       </aside>
 
