@@ -24,7 +24,8 @@ Nobody has a complete inventory of what those agents can touch.
 Nobody sees it when one does something unexpected.
 Nobody knows when a new capability quietly appears.
 
-A runtime governance layer for AI agents, tools and MCP servers.
+Varden is a self-hosted runtime security and governance layer for AI agents — enforcing policy across tools, HTTP, files, subprocesses, MCP and browser 
+interactions, with verifiable security posture and provenance-aware authority controls.
 
 **Varden observes, governs, and audits agent activity in real time.**
 
