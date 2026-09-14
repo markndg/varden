@@ -132,7 +132,7 @@ jobs:
           VARDEN_ENABLE_DEV_BOOTSTRAP: "true"
       - name: Upload Playwright failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: browser-ui-artifacts
           path: |
