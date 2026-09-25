@@ -4,14 +4,46 @@ import base64, hashlib, hmac, json, secrets, time, uuid
 OSS_TENANT_ID = "default"
 from .db import connect, init_db
 
-ROLES = {"viewer": 1, "analyst": 2, "admin": 3}
+# "agent" is an ingest-only role for protected processes (SDK, MCP gateway,
+# session shims, browser extension). It can submit actions for a decision and
+# log results, and nothing else: it cannot read events, change policy or
+# approve anything. Give agents this role, never a human role.
+ROLES = {"agent": 0, "viewer": 1, "analyst": 2, "admin": 3}
+
+# Well-known development credentials. These strings are public (they are in the
+# README), so they are only ever valid while dev bootstrap is enabled. Starting
+# with dev bootstrap disabled actively revokes them.
+DEV_ADMIN_API_KEY = "admin-demo-key"
+DEV_AGENT_API_KEY = "agent-demo-key"
+DEV_API_KEYS = (DEV_ADMIN_API_KEY, DEV_AGENT_API_KEY)
 
 class LocalAuth:
-    def __init__(self, db_path: str, signing_secret: str):
+    def __init__(self, db_path: str, signing_secret: str | None, *, manage_signing_keys: bool = True):
         self.db_path = db_path
         self.signing_secret = signing_secret
         init_db(db_path)
-        if not self.list_signing_keys():
+        # Offline tools (`varden keys`) pass manage_signing_keys=False so they
+        # never rotate the server's signing key to whatever their env holds.
+        if manage_signing_keys and signing_secret:
+            self._ensure_active_signing_key(signing_secret)
+
+    def _ensure_active_signing_key(self, signing_secret: str) -> None:
+        """Make the configured secret the only active signing key.
+
+        Previously the configured secret was only used when the auth DB was first
+        created, so a DB initialised in dev kept signing (and verifying) bearer
+        tokens with ``change-me`` forever, and changing VARDEN_SIGNING_SECRET had
+        no effect. Now the configured secret always wins; older keys are
+        deactivated and are no longer accepted for verification.
+        """
+        keys = self.list_signing_keys()
+        current = next((k for k in keys if hmac.compare_digest(str(k["secret"]), str(signing_secret))), None)
+        with connect(self.db_path) as conn:
+            conn.execute("UPDATE signing_keys SET active = 0")
+            if current is not None:
+                conn.execute("UPDATE signing_keys SET active = 1 WHERE key_id = ?", (current["key_id"],))
+            conn.commit()
+        if current is None:
             self.add_signing_key(signing_secret, active=True)
 
     def create_tenant(self, name: str):
@@ -91,7 +123,9 @@ class LocalAuth:
         return {"user": user, "api_key": key["api_key"]}
 
     def create_api_key(self, key: str | None = None, tenant_id: str | None = None, role: str = "viewer"):
-        raw = key or secrets.token_urlsafe(24)
+        if role not in ROLES:
+            raise ValueError(f"unknown role {role!r}; expected one of {sorted(ROLES)}")
+        raw = key or secrets.token_urlsafe(32)
         key_hash = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         with connect(self.db_path) as conn:
             conn.execute("INSERT OR REPLACE INTO api_keys(key_hash,tenant_id,role,created_at,revoked,revoked_at) VALUES (?,?,?,?,0,NULL)",
@@ -140,6 +174,8 @@ class LocalAuth:
             if payload.get("exp", 0) < int(time.time()):
                 return None
             for key in self.list_signing_keys():
+                if not key.get("active"):
+                    continue
                 if key["key_id"] != payload.get("kid"):
                     continue
                 expected = hmac.new(key["secret"].encode("utf-8"), body.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -161,6 +197,6 @@ class LocalAuth:
             return False, "invalid credentials", None
         record = dict(record)
         record["tenant_id"] = OSS_TENANT_ID
-        if ROLES[record["role"]] < ROLES[min_role]:
+        if ROLES.get(record.get("role"), -1) < ROLES[min_role]:
             return False, "insufficient role", record
         return True, "ok", record

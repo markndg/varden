@@ -315,6 +315,9 @@ def main(argv: list[str] | None = None) -> int:
     audit_verify.add_argument('--db', default=None, help='Path to Varden SQLite database (default: ./varden.db or VARDEN_DB_PATH)')
     audit_verify.add_argument('--json', action='store_true')
 
+    from .keys_cli import add_keys_parser
+    add_keys_parser(sub)
+
     monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
     monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
     session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
@@ -363,6 +366,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'skill':
         from .skills.cli import skill_argv
         return skill_argv(args)
+    if args.command == 'keys':
+        from .keys_cli import keys_argv
+        return keys_argv(args)
     if args.command == 'audit':
         from .audit_cli import audit_argv
         return audit_argv(args)

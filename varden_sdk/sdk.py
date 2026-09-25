@@ -135,6 +135,18 @@ class VardenClient:
         self.api_key = bootstrap.get('bootstrap_api_key') or self.api_key
         self.base_url = str(bootstrap.get('base_url') or self.base_url).rstrip('/')
 
+    def whoami(self) -> dict[str, Any] | None:
+        """Return the credential's role, or None if the server can't say."""
+        self.ensure_credentials()
+        try:
+            resp = self._client.get(f'{self.base_url}/auth/whoami', headers=self.headers())
+        except Exception:
+            return None
+        if resp.status_code != 200:
+            return None
+        data = _parse_json(resp)
+        return data if isinstance(data, dict) else None
+
     def guard(self, payload: dict[str, Any]) -> GuardResult:
         self.ensure_credentials()
         resp = self._client.post(f'{self.base_url}/sdk/guard', headers=self.headers(), json=payload)
@@ -170,6 +182,7 @@ class VardenGuard:
         emit_attestation: bool = True,
         allow_uncovered: list[str] | None = None,
         mcp_config: str | None = None,
+        allow_privileged_key: bool = False,
     ):
         self.client = VardenClient(base_url=base_url, api_key=api_key, bearer_token=bearer_token, timeout=timeout)
         self.app_name = app_name
@@ -185,6 +198,8 @@ class VardenGuard:
         self.allow_uncovered = list(allow_uncovered or [])
         self.mcp_config = mcp_config or os.getenv('VARDEN_MCP_CONFIG')
         self.emit_attestation = emit_attestation
+        self.allow_privileged_key = bool(allow_privileged_key)
+        self.credential_role: str | None = None
         self._tool_registry: dict[str, dict[str, Any]] = {}
         self._mode_locked = False
         if self.product_mode == 'strict' and self.fail_mode != 'closed':
@@ -200,8 +215,36 @@ class VardenGuard:
             warnings.warn(msg, UserWarning, stacklevel=2)
             logging.getLogger('varden_sdk').warning(msg)
 
+    def _check_credential_privilege(self) -> None:
+        """Refuse (strict) or warn (guarded) when the agent holds a human role.
+
+        The protected process can always reach the control plane (those calls
+        are exempt from guarding so Varden can talk to itself). If its key can
+        also change policy or approve actions, a prompt-injected agent can turn
+        its own firewall off. Agents should run with an ``agent``-role key.
+        """
+        info = self.client.whoami()
+        role = (info or {}).get('role')
+        self.credential_role = role
+        if role is None or role == 'agent':
+            return
+        msg = (
+            f"Varden credential for this process has role '{role}'. The protected agent can use it "
+            "to read events or change policy. Use an ingest-only 'agent' key "
+            "(`varden keys create --role agent`, or agent-demo-key in dev)."
+        )
+        if self.product_mode == 'strict' and not self.allow_privileged_key:
+            raise RuntimeError('strict mode refuses a privileged agent credential: ' + msg
+                               + ' Pass allow_privileged_key=True to override.')
+        if is_enforcing(self.product_mode):
+            import logging
+            import warnings
+            warnings.warn(msg, UserWarning, stacklevel=3)
+            logging.getLogger('varden_sdk').warning(msg)
+
     def activate(self) -> 'VardenGuard':
         self.client.ensure_credentials()
+        self._check_credential_privilege()
         _current_guard.set(self)
         if self.auto_instrument:
             patch_runtime(self)
@@ -712,14 +755,44 @@ def _patch_module_for_name(fullname: str, guard: VardenGuard) -> None:
 
 
 
+_DEFAULT_PORTS = {'http': 80, 'https': 443}
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """Return (scheme, host, port) for a URL, or None if it is unusable.
+
+    URLs carrying userinfo are rejected outright: ``http://127.0.0.1:8000@evil``
+    has host ``evil`` and must never be mistaken for the control plane.
+    """
+    parsed = urlparse(str(url))
+    scheme = (parsed.scheme or '').lower()
+    if scheme not in _DEFAULT_PORTS or not parsed.hostname:
+        return None
+    if parsed.username is not None or parsed.password is not None or '@' in (parsed.netloc or ''):
+        return None
+    try:
+        port = parsed.port or _DEFAULT_PORTS[scheme]
+    except ValueError:
+        return None
+    return scheme, parsed.hostname.lower().rstrip('.'), port
+
+
 def _is_control_plane_request(url: str | None, guard: VardenGuard) -> bool:
+    """True only for requests to exactly the configured control-plane origin.
+
+    These requests skip guarding (Varden must be able to reach itself), so the
+    comparison is on parsed scheme/host/port, never a string prefix.
+    """
     if not url:
         return False
     try:
-        parsed = urlparse(str(url))
-        if parsed.hostname in {"testserver", "test"}:
-            return True
-        return str(url).startswith(guard.client.base_url.rstrip('/'))
+        target = _origin(str(url))
+        base = _origin(guard.client.base_url)
+        if target is None or base is None or target != base:
+            return False
+        base_path = urlparse(guard.client.base_url).path.rstrip('/')
+        target_path = urlparse(str(url)).path or '/'
+        return not base_path or target_path == base_path or target_path.startswith(base_path + '/')
     except Exception:
         return False
 def _patch_requests(guard: VardenGuard) -> None:
@@ -958,6 +1031,7 @@ def protect_from_env(**overrides: Any) -> VardenGuard:
         'auto_instrument': os.getenv('VARDEN_AUTO_INSTRUMENT', 'true').lower() == 'true',
         'fail_mode': resolved_fail,
         'timeout': float(os.getenv('VARDEN_TIMEOUT', '5.0')),
+        'allow_privileged_key': os.getenv('VARDEN_ALLOW_PRIVILEGED_KEY', 'false').lower() in {'1', 'true', 'yes'},
     }
     cfg.update({k: v for k, v in overrides.items() if v is not None})
     return protect(**cfg)

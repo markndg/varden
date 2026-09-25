@@ -170,7 +170,7 @@ Or env-based: `varden.protect_from_env()`.
 
 ```bash
 export VARDEN_BASE_URL=http://127.0.0.1:8000
-export VARDEN_API_KEY=admin-demo-key   # or real key
+export VARDEN_API_KEY=agent-demo-key   # ingest-only; in prod: `varden keys create --role agent`
 varden session . -- cursor .
 # or: varden session --strict -- <agent-command>
 # observe-only: varden session --passive

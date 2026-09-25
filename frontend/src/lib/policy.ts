@@ -31,7 +31,9 @@ function describeMatchedField(row: any): string {
 }
 
 export function ensurePolicyDoc(doc: any): PolicyDoc {
+  const extra = doc && typeof doc === 'object' && !Array.isArray(doc) ? doc : {};
   return {
+    ...extra,
     block: Array.isArray(doc?.block) ? doc.block : [],
     warn: Array.isArray(doc?.warn) ? doc.warn : [],
     monitor: Array.isArray(doc?.monitor) ? doc.monitor : [],
@@ -64,7 +66,13 @@ export function dedupeRules(rules: any[]) {
 }
 
 export function dedupePolicyDoc(doc: PolicyDoc): PolicyDoc {
+  const extraBuckets: Record<string, any[]> = {};
+  for (const bucket of ['require_approval', 'sanitise']) {
+    if (Array.isArray(doc[bucket])) extraBuckets[bucket] = dedupeRules(doc[bucket]);
+  }
   return {
+    ...doc,
+    ...extraBuckets,
     block: dedupeRules(doc.block),
     warn: dedupeRules(doc.warn),
     monitor: dedupeRules(doc.monitor),
@@ -74,7 +82,15 @@ export function dedupePolicyDoc(doc: PolicyDoc): PolicyDoc {
 }
 
 export function mergePolicyWithoutDuplicates(baseDoc: PolicyDoc, templateDoc: PolicyDoc): PolicyDoc {
+  const extraBuckets: Record<string, any[]> = {};
+  for (const bucket of ['require_approval', 'sanitise']) {
+    const merged = [...(baseDoc[bucket] || []), ...(templateDoc[bucket] || [])];
+    if (merged.length) extraBuckets[bucket] = merged;
+  }
   return dedupePolicyDoc({
+    // The live document's settings (default, defaults, ...) win over a template's.
+    ...baseDoc,
+    ...extraBuckets,
     block: [...baseDoc.block, ...templateDoc.block],
     warn: [...baseDoc.warn, ...templateDoc.warn],
     monitor: [...baseDoc.monitor, ...templateDoc.monitor],

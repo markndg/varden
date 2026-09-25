@@ -89,6 +89,109 @@
         "field:args.argv": {
           "contains": "-f"
         }
+      },
+      {
+        "title": "Block Vercel project removal (argv-aware)",
+        "name": "block_vercel_remove_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "vercel",
+          "subcommand": [
+            "remove",
+            "rm"
+          ]
+        },
+        "description": "Blocks vercel remove/rm. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block Fly app destruction (argv-aware)",
+        "name": "block_fly_apps_destroy_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "fly",
+            "flyctl"
+          ],
+          "subcommand": [
+            "apps destroy",
+            "apps delete",
+            "destroy"
+          ]
+        },
+        "description": "Blocks fly apps destroy. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block Supabase database reset (argv-aware)",
+        "name": "block_supabase_db_reset_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "supabase",
+          "subcommand": "db reset"
+        },
+        "description": "Blocks supabase db reset. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block Render service deletion (argv-aware)",
+        "name": "block_render_services_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "render",
+          "subcommand": "services delete"
+        },
+        "description": "Blocks render services delete. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block Railway environment deletion (argv-aware)",
+        "name": "block_railway_environment_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "railway",
+          "subcommand": [
+            "environment delete",
+            "environment rm"
+          ]
+        },
+        "description": "Blocks railway environment delete. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block kubectl namespace deletion (argv-aware)",
+        "name": "block_kubectl_delete_namespace_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "kubectl",
+            "oc"
+          ],
+          "subcommand": [
+            "delete namespace",
+            "delete ns"
+          ]
+        },
+        "description": "Blocks namespace deletion. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block docker system prune (argv-aware)",
+        "name": "block_docker_system_prune_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "docker",
+          "subcommand": "system prune"
+        },
+        "description": "Blocks docker system prune. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
       }
     ],
     "warn": [

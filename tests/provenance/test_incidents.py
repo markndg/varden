@@ -358,7 +358,7 @@ def test_sanitised_display_decision():
 
 def test_authority_map_reachability_and_exposure_labels(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     _guard_secret(client, key)
     client.post(
         "/mcp/security/fingerprint",
@@ -390,7 +390,7 @@ def test_authority_map_reachability_and_exposure_labels(tmp_path):
 
 def test_authority_map_endpoint(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     _guard_secret(client, key)
     client.post(
         "/mcp/security/fingerprint",
@@ -411,7 +411,7 @@ def test_authority_map_endpoint(tmp_path):
 
 def test_observational_log_does_not_claim_prevention(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     resp = client.post(
         "/sdk/log",
         headers={"x-api-key": key},
@@ -431,7 +431,7 @@ def test_observational_log_does_not_claim_prevention(tmp_path):
 
 def test_incidents_api_groups_findings(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     body = _guard_secret(client, key, trace_id="api-inc-1")
     enf = ((body.get("action") or {}).get("metadata") or {}).get("enforcement") or {}
     assert enf.get("side_effect_prevented") is True
@@ -455,7 +455,7 @@ def test_incidents_api_groups_findings(tmp_path):
 
 def test_allowed_workspace_title_and_explanation(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     workspace = "/tmp/varden-workspace"
     client.post(
         "/sdk/guard",

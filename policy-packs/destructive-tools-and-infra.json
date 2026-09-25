@@ -236,6 +236,154 @@
         "field:args.argv_join": {
           "contains": "npm unpublish"
         }
+      },
+      {
+        "title": "Block recursive forced deletion (argv-aware)",
+        "name": "block_recursive_force_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "rm",
+          "flags_all": [
+            [
+              "r",
+              "R",
+              "recursive"
+            ],
+            [
+              "f",
+              "force"
+            ]
+          ]
+        },
+        "description": "Blocks rm with recursive and force flags in any order or spelling. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block terraform destroy (argv-aware)",
+        "name": "block_terraform_destroy_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "terraform",
+            "tofu"
+          ],
+          "subcommand": "destroy"
+        },
+        "description": "Blocks terraform/tofu destroy. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block terraform apply -destroy (argv-aware)",
+        "name": "block_terraform_apply_destroy_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "terraform",
+            "tofu"
+          ],
+          "subcommand": "apply",
+          "flags_any": [
+            "destroy"
+          ]
+        },
+        "description": "Blocks terraform apply -destroy. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block kubectl delete (argv-aware)",
+        "name": "block_kubectl_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "kubectl",
+            "oc"
+          ],
+          "subcommand": "delete"
+        },
+        "description": "Blocks kubectl/oc delete. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block helm uninstall (argv-aware)",
+        "name": "block_helm_uninstall_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "helm",
+          "subcommand": [
+            "uninstall",
+            "delete",
+            "del",
+            "un"
+          ]
+        },
+        "description": "Blocks helm uninstall and its aliases. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block EC2 instance termination (argv-aware)",
+        "name": "block_aws_terminate_instances_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "aws",
+          "subcommand": "ec2 terminate-instances"
+        },
+        "description": "Blocks aws ec2 terminate-instances. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block S3 object/bucket deletion (argv-aware)",
+        "name": "block_aws_s3_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "aws",
+          "subcommand": [
+            "s3 rm",
+            "s3 rb"
+          ]
+        },
+        "description": "Blocks aws s3 rm and rb. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block git force push (argv-aware)",
+        "name": "block_git_force_push_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "git",
+          "subcommand": "push",
+          "flags_any": [
+            "force",
+            "f",
+            "force-with-lease",
+            "force-if-includes"
+          ]
+        },
+        "description": "Blocks git push --force, -f and --force-with-lease. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block package unpublish (argv-aware)",
+        "name": "block_npm_unpublish_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "npm",
+            "pnpm",
+            "yarn"
+          ],
+          "subcommand": "unpublish"
+        },
+        "description": "Blocks npm/pnpm/yarn unpublish. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
       }
     ],
     "warn": [

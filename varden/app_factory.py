@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 import asyncio
 import json
@@ -15,7 +16,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 
 from .alerts import AlertEngine, BackgroundWorker, ConsoleSink, FileSink
-from .auth import LocalAuth, OSS_TENANT_ID
+from .auth import LocalAuth, OSS_TENANT_ID, DEV_ADMIN_API_KEY, DEV_AGENT_API_KEY, DEV_API_KEYS
 from .blaze import BlazeRuntime
 from .classification import ClassifierEngine
 from .config import AppConfig
@@ -78,6 +79,12 @@ def create_app(config: AppConfig) -> FastAPI:
     auth = LocalAuth(config.auth_db_path, config.signing_secret)
     initial_policy = json.loads(Path(config.policy_file).read_text(encoding="utf-8")) if Path(config.policy_file).exists() else None
     policy = PolicyEngine(config.db_path, initial_policy)
+    if initial_policy is not None:
+        _startup_validation = policy.validate(initial_policy)
+        for _msg in _startup_validation.get("errors", []):
+            logging.getLogger("varden").warning("policy %s: %s (rule will not behave as written)", config.policy_file, _msg)
+        for _msg in _startup_validation.get("warnings", []):
+            logging.getLogger("varden").info("policy %s: %s", config.policy_file, _msg)
     token_budget_store = TokenBudgetStore(config.db_path)
     mcp_inventory_store = McpInventoryStore(config.db_path)
     idem = IdempotencyStore(config.db_path)
@@ -132,8 +139,24 @@ def create_app(config: AppConfig) -> FastAPI:
 
     tenant = auth.ensure_tenant(OSS_TENANT_ID)
     user = auth.ensure_user("admin", OSS_TENANT_ID, role="admin")
-    bootstrap_token = auth.issue_bearer_token(user["user_id"], OSS_TENANT_ID, "admin")
-    bootstrap_key = auth.create_api_key("admin-demo-key", tenant_id=OSS_TENANT_ID, role="admin")
+    if config.enable_dev_bootstrap:
+        # Dev only: well-known credentials so `varden demo` works with zero setup.
+        bootstrap_token = auth.issue_bearer_token(user["user_id"], OSS_TENANT_ID, "admin")
+        bootstrap_key = auth.create_api_key(DEV_ADMIN_API_KEY, tenant_id=OSS_TENANT_ID, role="admin")
+        # Least-privilege key handed to protected processes (SDK auto-bootstrap,
+        # `varden session`). It can only submit actions for a decision.
+        bootstrap_agent_key = auth.create_api_key(DEV_AGENT_API_KEY, tenant_id=OSS_TENANT_ID, role="agent")
+    else:
+        # The demo keys are public. Never mint them outside dev, and revoke them
+        # if this auth DB was ever used with dev bootstrap enabled.
+        bootstrap_token = None
+        bootstrap_key = {"api_key": None, "role": None}
+        bootstrap_agent_key = {"api_key": None, "role": None}
+        for _dev_key in DEV_API_KEYS:
+            auth.revoke_api_key(_dev_key)
+    if config.bootstrap_admin_api_key and config.bootstrap_admin_api_key not in DEV_API_KEYS:
+        if auth.authenticate_api_key(config.bootstrap_admin_api_key) is None:
+            auth.create_api_key(config.bootstrap_admin_api_key, tenant_id=OSS_TENANT_ID, role="admin")
 
     current_scan_mode = {"value": config.scan_mode}
     active_workflow_by_tenant: dict[str, str | None] = {}
@@ -646,6 +669,7 @@ def create_app(config: AppConfig) -> FastAPI:
             "status": "ok",
             "bootstrap_api_key": bootstrap_key["api_key"] if config.enable_dev_bootstrap else None,
             "bootstrap_bearer_token": bootstrap_token if config.enable_dev_bootstrap else None,
+            "bootstrap_agent_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
             "tenant_id": OSS_TENANT_ID,
             "metrics": event_store.metrics(OSS_TENANT_ID),
             "public_base_url": config.public_base_url,
@@ -658,10 +682,22 @@ def create_app(config: AppConfig) -> FastAPI:
     def sdk_bootstrap():
         return {
             "base_url": config.public_base_url,
-            "bootstrap_api_key": bootstrap_key["api_key"] if config.enable_dev_bootstrap else None,
+            # Protected processes get the ingest-only agent key, never an admin key.
+            "bootstrap_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
+            "bootstrap_role": "agent" if config.enable_dev_bootstrap else None,
             "tenant_id": OSS_TENANT_ID,
             "default_policy": policy.get_policy(),
             "scan_mode": current_scan_mode["value"],
+        }
+
+    @app.get("/auth/whoami")
+    def auth_whoami(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        """Report the caller's role so SDKs can refuse over-privileged agent keys."""
+        record = require(x_api_key, authorization, "agent", scope="read")
+        return {
+            "role": record.get("role"),
+            "tenant_id": record.get("tenant_id"),
+            "dev_bootstrap": bool(config.enable_dev_bootstrap),
         }
 
     @app.get("/health/live")
@@ -853,7 +889,7 @@ def create_app(config: AppConfig) -> FastAPI:
     @app.post("/sdk/guard")
     @app.post("/v1/actions/guard")
     def sdk_guard(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         action_payload = payload.get("action") or {}
         raw_payload = payload.get("payload") or action_payload.get("args") or {}
         # Client-asserted "approved=true" / coverage claims are ignored.
@@ -1029,7 +1065,7 @@ def create_app(config: AppConfig) -> FastAPI:
         side effects must be pre-checked via ``POST /sdk/guard``. Calling
         ``/sdk/log`` alone never authorises an action.
         """
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         action_payload = payload.get("action") or {}
         decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log (audit-only; not an enforcement decision)"}
         action = normalize_action(action_payload, record["tenant_id"])

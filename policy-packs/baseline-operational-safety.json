@@ -399,6 +399,58 @@
           "contains": "disregard all prior"
         },
         "description": "Blocks instruction discard override language."
+      },
+      {
+        "title": "Block recursive forced deletion (argv-aware)",
+        "name": "block_recursive_force_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "rm",
+          "flags_all": [
+            [
+              "r",
+              "R",
+              "recursive"
+            ],
+            [
+              "f",
+              "force"
+            ]
+          ]
+        },
+        "description": "Blocks rm with recursive and force flags in any order or spelling. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block terraform destroy (argv-aware)",
+        "name": "block_terraform_destroy_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "terraform",
+            "tofu"
+          ],
+          "subcommand": "destroy"
+        },
+        "description": "Blocks terraform/tofu destroy. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block kubectl delete (argv-aware)",
+        "name": "block_kubectl_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "kubectl",
+            "oc"
+          ],
+          "subcommand": "delete"
+        },
+        "description": "Blocks kubectl/oc delete. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
       }
     ],
     "warn": [

@@ -1,5 +1,6 @@
 from __future__ import annotations
-import json, time
+import difflib, json, time
+from .command_match import action_matches_command, validate_command_spec
 from .db import connect
 
 # Evaluation precedence, strongest to weakest. "require_approval" and
@@ -7,6 +8,67 @@ from .db import connect
 # existing policies that never populate these buckets behave identically to
 # before, since an empty/missing bucket is simply skipped.
 MODES = ("block", "require_approval", "sanitise", "warn", "monitor", "allow")
+
+# Decisions usable as a fallback when no rule matches (see docs/policy-engine.md).
+DEFAULT_DECISIONS = ("block", "require_approval", "warn", "monitor", "allow")
+
+# Rule keys that describe a rule rather than constrain it.
+RULE_META_KEYS = frozenset({"enabled", "priority", "description", "reason", "title", "name", "id", "tags"})
+
+# Action attributes a rule may reference directly or as ``field:<name>``.
+ACTION_FIELDS = frozenset({
+    "type", "tool", "method", "url", "domain", "args", "metadata", "classifiers",
+    "risk_score", "risk_reasons", "agent_name", "workflow_id", "parent_event_id",
+    "trace_id", "route_target", "tenant_id",
+})
+
+# Free-form nested paths (anything below these is caller-defined).
+NESTED_PREFIXES = ("args.", "metadata.")
+
+KNOWN_CLASSIFIERS = frozenset({
+    # varden.classification.ClassifierEngine
+    "pii", "credit_card", "financial", "secrets", "internal", "unsafe_keywords",
+    "source_internal", "sensitive", "sql_query", "sql_dangerous", "sql_write",
+    "sql_unbounded_write", "sql_privilege_change", "sql_schema_enumeration",
+    "sql_select_star", "sql_missing_limit", "sql_union_access",
+    "sql_comment_obfuscation", "sql_multi_statement", "sql_sensitive_table",
+    "sql_suspect",
+    # varden.provenance.engine
+    "provenance_untrusted", "provenance_unknown", "authority_violation",
+    "authority_escalation", "confused_deputy", "exfiltration_chain",
+    "cross_server_flow", "untrusted_to_privileged",
+})
+
+OPERATORS = frozenset({"exists", "eq", "contains", "startswith", "endswith", "in", "gte", "lte"})
+
+KNOWN_ACTION_TYPES = frozenset({
+    "tool_call", "http_request", "llm_call", "filesystem", "mcp_call",
+    "webmcp.tool_registered", "webmcp.tool_invocation_requested", "webmcp.tool_output_scanned",
+    "webmcp.extension_tamper_detected", "webmcp.tool_registration_changed",
+    "webmcp.context_replaced", "webmcp.surface_changed", "webmcp.cross_origin_flow",
+})
+
+POLICY_TOP_LEVEL_KEYS = frozenset(MODES) | frozenset({
+    "budget_rules", "default", "defaults", "version", "name", "description",
+    "pack_name", "metadata", "id", "updated_at",
+})
+
+
+def _suggest(word: str, choices) -> str:
+    match = difflib.get_close_matches(word, sorted(choices), n=1, cutoff=0.75)
+    return f" (did you mean {match[0]!r}?)" if match else ""
+
+
+def action_surface(action) -> str | None:
+    """The runtime surface an action belongs to (subprocess, http, filesystem, ...)."""
+    meta = getattr(action, "metadata", None) or {}
+    if isinstance(meta, dict):
+        runtime = meta.get("runtime")
+        if isinstance(runtime, dict) and runtime.get("surface"):
+            return str(runtime["surface"])
+        if meta.get("execution_surface"):
+            return str(meta["execution_surface"])
+    return None
 
 
 class PolicyEngine:
@@ -18,33 +80,127 @@ class PolicyEngine:
     def update_policy(self, policy): self.policy = policy
 
     def validate(self, policy):
-        errors = []
+        """Validate a policy document.
+
+        Errors make the policy unpublishable. The main job is to catch rules
+        that would silently never fire: misspelled fields, unknown classifiers,
+        unknown operators and misspelled bucket names all used to be accepted
+        and then matched nothing.
+        """
+        errors: list[str] = []
+        warnings: list[str] = []
         if not isinstance(policy, dict):
-            return {"valid": False, "errors": ["policy must be an object"]}
+            return {"valid": False, "errors": ["policy must be an object"], "warnings": []}
+        for key in policy:
+            if key in POLICY_TOP_LEVEL_KEYS:
+                continue
+            hint = _suggest(str(key), POLICY_TOP_LEVEL_KEYS)
+            if hint:
+                errors.append(f"unknown top-level key {key!r}{hint}")
+            else:
+                warnings.append(f"unknown top-level key {key!r} is ignored")
         for mode in MODES:
             rules = policy.get(mode, [])
             if not isinstance(rules, list):
                 errors.append(f"{mode} must be a list")
                 continue
             for idx, rule in enumerate(rules):
+                where = f"{mode}[{idx}]"
                 if not isinstance(rule, dict):
-                    errors.append(f"{mode}[{idx}] must be an object")
+                    errors.append(f"{where} must be an object")
                     continue
                 if not rule:
-                    errors.append(f"{mode}[{idx}] cannot be empty")
+                    errors.append(f"{where} cannot be empty")
                     continue
                 predicate_keys = [
                     key for key, expected in rule.items()
-                    if key not in {"enabled", "priority", "description", "reason", "title", "name"}
+                    if key not in RULE_META_KEYS
                     and expected is not None
                     and expected != ""
                 ]
                 if not predicate_keys:
-                    errors.append(f"{mode}[{idx}] must include at least one match condition")
+                    errors.append(f"{where} must include at least one match condition")
+                    continue
+                for key in predicate_keys:
+                    errors.extend(self._validate_predicate(where, key, rule[key], warnings))
+        errors.extend(self._validate_defaults(policy))
         from .rules.registry import validate_budget_rules
 
         errors.extend(validate_budget_rules(policy))
-        return {"valid": len(errors) == 0, "errors": errors}
+        return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+    @staticmethod
+    def _field_problem(key: str) -> str | None:
+        """Return an error message if ``key`` can never resolve on an Action."""
+        if key in ("min_risk_score", "command"):
+            return None
+        if key.startswith("classifier:"):
+            name = key.split(":", 1)[1]
+            if name in KNOWN_CLASSIFIERS:
+                return None
+            return f"unknown classifier {name!r}{_suggest(name, KNOWN_CLASSIFIERS)}"
+        path = key.split("field:", 1)[1] if key.startswith("field:") else key
+        if path in ACTION_FIELDS:
+            return None
+        if any(path.startswith(prefix) and len(path) > len(prefix) for prefix in NESTED_PREFIXES):
+            return None
+        candidates = set(ACTION_FIELDS) | {"min_risk_score", "command"} | {f"classifier:{c}" for c in KNOWN_CLASSIFIERS}
+        return f"unknown field {key!r}{_suggest(path, candidates)}; use an action field, 'args.<path>', 'metadata.<path>', 'classifier:<name>' or 'command'"
+
+    def _validate_predicate(self, where: str, key: str, expected, warnings: list[str]) -> list[str]:
+        errors: list[str] = []
+        problem = self._field_problem(str(key))
+        if problem:
+            return [f"{where}: {problem}"]
+        if key == "command":
+            return validate_command_spec(expected, where)
+        if key == "min_risk_score":
+            try:
+                float(expected)
+            except (TypeError, ValueError):
+                errors.append(f"{where}: min_risk_score must be a number")
+            return errors
+        if key in ("type", "field:type") and isinstance(expected, str) and expected not in KNOWN_ACTION_TYPES:
+            warnings.append(f"{where}: action type {expected!r} is not one Varden emits{_suggest(expected, KNOWN_ACTION_TYPES)}")
+        if isinstance(expected, dict):
+            if not expected:
+                errors.append(f"{where}.{key}: operator object cannot be empty")
+            for op, value in expected.items():
+                if op not in OPERATORS:
+                    errors.append(f"{where}.{key}: unknown operator {op!r}{_suggest(str(op), OPERATORS)}; allowed {sorted(OPERATORS)}")
+                    continue
+                if op in ("gte", "lte"):
+                    try:
+                        float(value)
+                    except (TypeError, ValueError):
+                        errors.append(f"{where}.{key}: {op} needs a number")
+                elif op == "exists":
+                    if not isinstance(value, bool):
+                        errors.append(f"{where}.{key}: exists needs true or false")
+                elif op == "in":
+                    values = value if isinstance(value, (list, tuple)) else [value]
+                    if not [v for v in values if v not in (None, "")]:
+                        errors.append(f"{where}.{key}: in needs at least one value")
+                elif value in (None, ""):
+                    errors.append(f"{where}.{key}: {op} needs a non-empty value")
+        elif isinstance(expected, list):
+            errors.append(f"{where}.{key}: lists are not matched directly; use {{\"in\": [...]}}")
+        return errors
+
+    @staticmethod
+    def _validate_defaults(policy) -> list[str]:
+        errors: list[str] = []
+        if "default" in policy and policy["default"] not in DEFAULT_DECISIONS:
+            errors.append(f"default must be one of {list(DEFAULT_DECISIONS)}")
+        if "defaults" in policy:
+            defaults = policy["defaults"]
+            if not isinstance(defaults, dict):
+                errors.append("defaults must be an object mapping surface or action type to a decision")
+            else:
+                for surface, decision in defaults.items():
+                    if decision not in DEFAULT_DECISIONS:
+                        errors.append(f"defaults.{surface} must be one of {list(DEFAULT_DECISIONS)}")
+        return errors
 
     def templates(self):
         sql_tools = ["sql.query", "sql.execute", "db.query", "db.execute", "database.query", "database.execute", "postgres.query", "mysql.query", "sqlite.query", "psycopg.execute", "cursor.execute", "sqlalchemy.execute"]
@@ -54,7 +210,10 @@ class PolicyEngine:
                 {"type":"tool_call","tool":"subprocess.Popen","field:args.args":{"contains":"delete_database"}},
                 {"type":"tool_call","tool":"subprocess.run","field:args.args":{"contains":"rm -rf"}},
                 {"type":"tool_call","tool":"subprocess.Popen","field:args.args":{"contains":"terraform destroy"}},
-                {"type":"tool_call","tool":"delete_database"}
+                {"type":"tool_call","tool":"delete_database"},
+                # Argv-aware equivalents: survive `rm -fr`, `rm -r -f`, `/bin/rm`, `sudo`, `sh -c`.
+                {"type":"tool_call","command":{"program":"rm","flags_all":[["r","R","recursive"],["f","force"]]}},
+                {"type":"tool_call","command":{"program":["terraform","tofu"],"subcommand":"destroy"}}
             ],"warn":[],"monitor":[],"allow":[]},
             "warn_internal_and_secret_data": {"block":[],"warn":[{"classifier:internal": True},{"classifier:secrets": True},{"classifier:source_internal": True}],"monitor":[],"allow":[]},
             "block_cardholder_data_exfiltration": {"block":[{"type":"http_request","classifier:credit_card": True},{"type":"llm_call","classifier:credit_card": True},{"type":"http_request","classifier:financial": True,"field:domain":{"exists": True}}],"warn":[],"monitor":[],"allow":[]},
@@ -146,22 +305,57 @@ class PolicyEngine:
 
     def evaluate(self, action):
         from .models import Decision
+        policy = self.policy  # single read: safe against concurrent update_policy()
         for mode in MODES:
-            for rule in self.policy.get(mode, []):
-                if isinstance(rule, dict) and rule.get("enabled") is False:
+            for rule in policy.get(mode, []) or []:
+                if not isinstance(rule, dict) or rule.get("enabled") is False:
                     continue
                 if self._matches(action, rule):
                     return Decision(action=mode, reason=f"matched {mode} rule", matched_rule=rule, effective_action=mode)
-        return Decision(action="allow", reason="no matching rule", matched_rule=None, effective_action="allow")
+        fallback, scope = self.default_decision(action, policy)
+        if fallback == "allow" and scope is None:
+            return Decision(action="allow", reason="no matching rule", matched_rule=None, effective_action="allow")
+        return Decision(
+            action=fallback,
+            reason=f"no matching rule; default {fallback} for {scope}",
+            matched_rule=None,
+            effective_action=fallback,
+        )
+
+    @staticmethod
+    def default_decision(action, policy) -> tuple[str, str | None]:
+        """Fallback when no rule matches: defaults[surface] > defaults[type] > default > allow."""
+        defaults = policy.get("defaults") if isinstance(policy.get("defaults"), dict) else {}
+        surface = action_surface(action)
+        if surface and defaults.get(surface) in DEFAULT_DECISIONS:
+            return defaults[surface], f"surface {surface!r}"
+        action_type = getattr(action, "type", None)
+        if action_type and defaults.get(action_type) in DEFAULT_DECISIONS:
+            return defaults[action_type], f"action type {action_type!r}"
+        if policy.get("default") in DEFAULT_DECISIONS:
+            return policy["default"], "policy"
+        return "allow", None
 
     def _matches(self, action, rule):
         has_predicate = False
         for key, expected in rule.items():
-            if key in {"enabled", "priority", "description", "reason", "title", "name"}:
+            if key in RULE_META_KEYS:
                 continue
             if expected is None or expected == "":
                 continue
             has_predicate = True
+            if key == "command":
+                if not isinstance(expected, dict) or not action_matches_command(action, expected):
+                    return False
+                continue
+            if key == "min_risk_score":
+                # Threshold, not equality: {"min_risk_score": 60} matches 60..100.
+                try:
+                    if float(getattr(action, "risk_score", 0) or 0) < float(expected):
+                        return False
+                except (TypeError, ValueError):
+                    return False
+                continue
             actual = self._get_field(action, key)
             if isinstance(expected, dict):
                 if not self._match_operator(actual, expected):
@@ -246,7 +440,20 @@ class PolicyEngine:
     def explain_match(self, action, rule):
         matched = []
         for key, expected in (rule or {}).items():
-            if key in {"enabled", "priority", "description", "reason", "title", "name"}:
+            if key in RULE_META_KEYS:
+                continue
+            if key == "command":
+                if isinstance(expected, dict) and action_matches_command(action, expected):
+                    from .command_match import extract_commands
+                    matched.append({"field": "command", "operator": "command", "expected": expected, "actual": extract_commands(action)})
+                continue
+            if key == "min_risk_score":
+                actual = getattr(action, "risk_score", 0)
+                try:
+                    if float(actual or 0) >= float(expected):
+                        matched.append({"field": key, "operator": "gte", "expected": expected, "actual": actual})
+                except (TypeError, ValueError):
+                    pass
                 continue
             actual = self._get_field(action, key)
             if isinstance(expected, dict):
@@ -261,8 +468,10 @@ class PolicyEngine:
         return matched
 
     def simulate_trace(self, trace_events, candidate_policy):
-        original = self.policy
-        self.policy = candidate_policy
+        # Evaluate on a private engine. Swapping self.policy in place (as this
+        # used to) let live /sdk/guard decisions on other threads run against
+        # the unpublished candidate for the duration of the simulation.
+        sim = PolicyEngine(self.db_path, candidate_policy)
         results = []
         counts = {"block": 0, "warn": 0, "allow": 0, "monitor": 0}
         def _normalize_status(value):
@@ -274,44 +483,41 @@ class PolicyEngine:
             if text == "monitor":
                 return "monitor"
             return "allowed"
-        try:
-            from .models import Action
-            for row in trace_events:
-                action_data = dict(row.get("action") or {})
-                action = Action(
-                    type=action_data.get("type", "tool_call"),
-                    tool=action_data.get("tool"),
-                    method=action_data.get("method"),
-                    url=action_data.get("url"),
-                    domain=action_data.get("domain"),
-                    args=action_data.get("args") or {},
-                    metadata=action_data.get("metadata") or {},
-                    classifiers=action_data.get("classifiers") or {},
-                    risk_score=int(action_data.get("risk_score") or 0),
-                    risk_reasons=list(action_data.get("risk_reasons") or []),
-                    agent_name=action_data.get("agent_name"),
-                    workflow_id=action_data.get("workflow_id"),
-                    parent_event_id=action_data.get("parent_event_id"),
-                    trace_id=action_data.get("trace_id"),
-                    route_target=action_data.get("route_target"),
-                    tenant_id=action_data.get("tenant_id"),
-                )
-                decision = self.evaluate(action)
-                matched_rule = decision.matched_rule
-                counts[decision.action] = counts.get(decision.action, 0) + 1
-                simulated_status = _normalize_status(decision.action)
-                original_status = _normalize_status(row.get("status"))
-                results.append({
-                    "event_id": row.get("id"),
-                    "original_status": original_status,
-                    "simulated_status": simulated_status,
-                    "matched_rule": matched_rule,
-                    "explanations": self.explain_match(action, matched_rule) if matched_rule else [],
-                    "changed": original_status != simulated_status,
-                })
-            return {"results": results, "summary": counts}
-        finally:
-            self.policy = original
+        from .models import Action
+        for row in trace_events:
+            action_data = dict(row.get("action") or {})
+            action = Action(
+                type=action_data.get("type", "tool_call"),
+                tool=action_data.get("tool"),
+                method=action_data.get("method"),
+                url=action_data.get("url"),
+                domain=action_data.get("domain"),
+                args=action_data.get("args") or {},
+                metadata=action_data.get("metadata") or {},
+                classifiers=action_data.get("classifiers") or {},
+                risk_score=int(action_data.get("risk_score") or 0),
+                risk_reasons=list(action_data.get("risk_reasons") or []),
+                agent_name=action_data.get("agent_name"),
+                workflow_id=action_data.get("workflow_id"),
+                parent_event_id=action_data.get("parent_event_id"),
+                trace_id=action_data.get("trace_id"),
+                route_target=action_data.get("route_target"),
+                tenant_id=action_data.get("tenant_id"),
+            )
+            decision = sim.evaluate(action)
+            matched_rule = decision.matched_rule
+            counts[decision.action] = counts.get(decision.action, 0) + 1
+            simulated_status = _normalize_status(decision.action)
+            original_status = _normalize_status(row.get("status"))
+            results.append({
+                "event_id": row.get("id"),
+                "original_status": original_status,
+                "simulated_status": simulated_status,
+                "matched_rule": matched_rule,
+                "explanations": sim.explain_match(action, matched_rule) if matched_rule else [],
+                "changed": original_status != simulated_status,
+            })
+        return {"results": results, "summary": counts}
 
     def _get_field(self, action, key):
         if key.startswith('field:'):

@@ -3,6 +3,9 @@ from dataclasses import dataclass
 from pathlib import Path
 import os
 
+_PLACEHOLDER_SECRETS = {"change-me", "change-this-in-production", "changeme", "secret", ""}
+
+
 @dataclass
 class AppConfig:
     env: str = "dev"
@@ -35,6 +38,10 @@ class AppConfig:
     scan_mode: str = "fast"
     max_request_body_bytes: int = 250_000
     max_output_body_bytes: int = 450_000
+    # Optional operator-supplied admin API key, seeded (hashed) at startup.
+    # This is how a fresh production deployment gets its first credential
+    # without dev bootstrap. `varden keys create` is the alternative.
+    bootstrap_admin_api_key: str | None = None
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -75,6 +82,7 @@ class AppConfig:
             scan_mode=os.getenv("VARDEN_SCAN_MODE", "fast").lower(),
             max_request_body_bytes=int(os.getenv("VARDEN_MAX_REQUEST_BODY_BYTES", "250000")),
             max_output_body_bytes=int(os.getenv("VARDEN_MAX_OUTPUT_BODY_BYTES", "450000")),
+            bootstrap_admin_api_key=(os.getenv("VARDEN_BOOTSTRAP_ADMIN_API_KEY") or None),
         )
 
     @classmethod
@@ -98,8 +106,18 @@ class AppConfig:
             errors.append("jwt auth mode requires VARDEN_OIDC_JWKS_URL")
         if self.auth_mode == "oidc" and not self.oidc_introspection_url and not self.oidc_jwks_url:
             errors.append("oidc auth mode requires introspection or jwks url")
-        if self.signing_secret == "change-me" and self.env != "dev":
-            errors.append("change the signing_secret outside dev")
+        if self.env != "dev":
+            if self.signing_secret.strip().lower() in _PLACEHOLDER_SECRETS:
+                errors.append("change the signing_secret outside dev (placeholder value detected)")
+            elif len(self.signing_secret) < 32:
+                errors.append("signing_secret must be at least 32 characters outside dev")
+        if self.bootstrap_admin_api_key is not None:
+            from .auth import DEV_API_KEYS
+
+            if self.bootstrap_admin_api_key in DEV_API_KEYS:
+                errors.append("VARDEN_BOOTSTRAP_ADMIN_API_KEY must not be a published demo key")
+            elif len(self.bootstrap_admin_api_key) < 32:
+                errors.append("VARDEN_BOOTSTRAP_ADMIN_API_KEY must be at least 32 characters")
         if self.env != "dev" and self.enable_dev_bootstrap:
             errors.append("disable dev bootstrap outside dev")
         if self.scan_mode not in {"fast", "deep"}:

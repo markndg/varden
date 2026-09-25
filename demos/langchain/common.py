@@ -37,7 +37,7 @@ class DemoTool:
 def configure_guard(app_name: str) -> None:
     varden.protect(
         base_url=os.getenv('VARDEN_BASE_URL', 'http://127.0.0.1:8000'),
-        api_key=os.getenv('VARDEN_API_KEY', 'admin-demo-key'),
+        api_key=os.getenv('VARDEN_API_KEY', 'agent-demo-key'),
         app_name=app_name,
     )
 

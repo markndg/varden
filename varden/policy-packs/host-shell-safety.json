@@ -10,7 +10,9 @@
         "priority": 100,
         "type": "tool_call",
         "tool": "shell.execute",
-        "field:args.argv_join": { "contains": "rm -rf" },
+        "field:args.argv_join": {
+          "contains": "rm -rf"
+        },
         "description": "Blocks rm -rf style invocations launched through Varden Monitor."
       },
       {
@@ -20,7 +22,9 @@
         "priority": 100,
         "type": "tool_call",
         "tool": "shell.execute",
-        "field:args.argv_join": { "contains": "terraform destroy" },
+        "field:args.argv_join": {
+          "contains": "terraform destroy"
+        },
         "description": "Blocks terraform destroy from monitored shells."
       },
       {
@@ -30,9 +34,65 @@
         "priority": 95,
         "type": "tool_call",
         "tool": "shell.execute",
-        "field:args.argv_join": { "contains": "kubectl delete" },
-        "field:args.argv": { "contains": "--all-namespaces" },
+        "field:args.argv_join": {
+          "contains": "kubectl delete"
+        },
+        "field:args.argv": {
+          "contains": "--all-namespaces"
+        },
         "description": "Blocks kubectl delete when --all-namespaces appears in argv."
+      },
+      {
+        "title": "Block recursive forced deletion (argv-aware)",
+        "name": "block_recursive_force_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": "rm",
+          "flags_all": [
+            [
+              "r",
+              "R",
+              "recursive"
+            ],
+            [
+              "f",
+              "force"
+            ]
+          ]
+        },
+        "description": "Blocks rm with recursive and force flags in any order or spelling. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block terraform destroy (argv-aware)",
+        "name": "block_terraform_destroy_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "terraform",
+            "tofu"
+          ],
+          "subcommand": "destroy"
+        },
+        "description": "Blocks terraform/tofu destroy. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
+      },
+      {
+        "title": "Block kubectl delete (argv-aware)",
+        "name": "block_kubectl_delete_argv",
+        "enabled": true,
+        "priority": 100,
+        "type": "tool_call",
+        "command": {
+          "program": [
+            "kubectl",
+            "oc"
+          ],
+          "subcommand": "delete"
+        },
+        "description": "Blocks kubectl/oc delete. Argv-aware: survives flag reordering, absolute paths, sudo/env wrappers and sh -c."
       }
     ],
     "warn": [
@@ -43,7 +103,9 @@
         "priority": 60,
         "type": "tool_call",
         "tool": "shell.execute",
-        "field:args.argv_join": { "contains": "railway" },
+        "field:args.argv_join": {
+          "contains": "railway"
+        },
         "description": "Warns when Railway CLI is invoked under monitor (review tokens and targets)."
       },
       {
@@ -53,7 +115,9 @@
         "priority": 45,
         "type": "tool_call",
         "tool": "shell.execute",
-        "field:args.argv_join": { "contains": "curl " },
+        "field:args.argv_join": {
+          "contains": "curl "
+        },
         "description": "Warns on outbound curl from monitored shells."
       }
     ],
