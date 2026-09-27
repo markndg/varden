@@ -99,8 +99,11 @@ class PredictiveResult:
 
 
 class PredictiveAuthorityEngine:
-    def __init__(self, config: PredictiveAuthorityConfig | None = None) -> None:
+    def __init__(self, config: PredictiveAuthorityConfig | None = None, *, registry=None) -> None:
         self.config = config or PredictiveAuthorityConfig()
+        # None → the process-wide live registry (resolved per call so tests
+        # that reset the global keep working).
+        self._registry = registry
 
     def evaluate(
         self,
@@ -123,7 +126,7 @@ class PredictiveAuthorityEngine:
             result.elapsed_ms = (time.perf_counter() - start) * 1000.0
             return existing, result
 
-        registry = get_authority_registry()
+        registry = self._registry if self._registry is not None else get_authority_registry()
         key = registry.session_key(
             tenant_id=action.tenant_id,
             trace_id=action.trace_id,
@@ -371,13 +374,20 @@ def resolve_config(
     explicit: PredictiveAuthorityConfig | None = None,
     env: dict[str, str] | None = None,
 ) -> PredictiveAuthorityConfig:
+    """Resolve PA configuration from operator-controlled sources only.
+
+    Sources, in order: an explicit config object, the policy document's
+    ``predictive_authority`` section, then environment variables.
+
+    ``action`` is accepted for backwards compatibility but is deliberately
+    ignored. Action metadata is written by the protected agent, so reading
+    configuration from it (as 1.0.0 did via ``predictive_authority_config``)
+    let an agent switch enforcement off for its own actions.
+    """
+    del action  # never a configuration source
     if explicit is not None:
         return explicit
-    raw = None
-    if policy and isinstance(policy.get("predictive_authority"), dict):
-        raw = policy
-    elif action and isinstance((action.metadata or {}).get("predictive_authority_config"), dict):
-        raw = (action.metadata or {}).get("predictive_authority_config")
+    raw = policy if policy and isinstance(policy.get("predictive_authority"), dict) else None
     return parse_predictive_config(raw, env=env)
 
 

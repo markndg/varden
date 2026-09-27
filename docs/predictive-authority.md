@@ -1,5 +1,25 @@
 # Predictive Authority
 
+> **Status: experimental in 1.0.x.** Off by default. Start in `observe` mode.
+> 1.0.0 let an agent disable enforcement through action metadata; use 1.0.1+.
+
+## Operational notes (1.0.1)
+
+- **Configuration sources:** only the policy's `predictive_authority` section and
+  `VARDEN_PA_*` environment variables. Action metadata is never read for configuration,
+  and client-supplied `predictive_authority*` metadata keys are stripped at ingest.
+- **Bounded live state:** `VARDEN_PA_MAX_SESSIONS` (default 10000) and
+  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 86400). Eviction order: idle sessions, then
+  sessions with no accumulated authority (least recently used first), then plain LRU.
+  An evicted session restarts from a fresh state. Durable per-event snapshots are
+  unaffected.
+- **One worker:** live state is process-local, so run a single control-plane worker when
+  PA is enabled.
+- **Demo isolation:** `POST /predictive/demo` and the `demo` tenant use a separate store and
+  never touch live sessions.
+- **Tenant scoping:** read endpoints use the caller's tenant. The only other `tenant_id`
+  they accept is `demo`; any other value returns 403.
+
 Varden Predictive Authority evaluates not only whether an action is allowed, but
 what authority and sensitive resources become **reachable** if that action is
 permitted.

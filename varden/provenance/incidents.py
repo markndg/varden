@@ -268,13 +268,24 @@ def _enforcement_outcome(event: dict[str, Any], *, decision: str, action_type: s
                 "side_effect_prevented": True,
                 "note": limitation,
             }
-        elif achieved in {"require_approval", "sanitise", "sanitize"}:
+        elif achieved == "require_approval":
             enf = {
                 "surface": "webshield",
                 "boundary": True,
                 "intercepted": True,
                 "pre_execution": True,
                 "side_effect_prevented": True,
+                "note": limitation,
+            }
+        elif achieved in {"sanitise", "sanitize"}:
+            # Modified, not prevented.
+            enf = {
+                "surface": "webshield",
+                "boundary": True,
+                "intercepted": True,
+                "pre_execution": True,
+                "side_effect_prevented": False,
+                "sanitised": True,
                 "note": limitation,
             }
         elif achieved in {"observed_only", "unavailable"}:

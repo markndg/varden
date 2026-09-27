@@ -423,13 +423,26 @@ class WebShieldStore:
                 "side_effect_prevented": True,
                 "note": limitation,
             }
-        elif achieved_enforcement in {"require_approval", "sanitise", "sanitize"}:
+        elif achieved_enforcement == "require_approval":
+            # Held for approval: not executed at this event (same as /sdk/guard).
             metadata["enforcement"] = {
                 "surface": "webshield",
                 "boundary": True,
                 "intercepted": True,
                 "pre_execution": True,
                 "side_effect_prevented": True,
+                "note": limitation,
+            }
+        elif achieved_enforcement in {"sanitise", "sanitize"}:
+            # Sanitised output still reaches the agent in modified form: the
+            # operation was intercepted and changed, not prevented.
+            metadata["enforcement"] = {
+                "surface": "webshield",
+                "boundary": True,
+                "intercepted": True,
+                "pre_execution": True,
+                "side_effect_prevented": False,
+                "sanitised": True,
                 "note": limitation,
             }
         elif achieved_enforcement in {"observed_only", "unavailable"}:
