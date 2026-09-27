@@ -367,6 +367,10 @@ See:
 
 # Predictive Authority
 
+> **Experimental in 1.0.x.** The core firewall is stable; Predictive Authority is new,
+> off by default, and its configuration and APIs may change. Run it in `observe` mode
+> first. Upgrade to 1.0.1 or later before using `enforce` (see the changelog).
+
 Normal policy answers:
 
 > **Can this action happen now?**
@@ -471,6 +475,19 @@ block → allow        ✗
 ```
 
 This makes Predictive Authority an additional security layer rather than a competing policy engine.
+
+Configuration comes only from the policy file's `predictive_authority` section and
+`VARDEN_PA_*` environment variables. Agents cannot influence it.
+
+Live session state is held in memory, per control-plane process:
+
+- It is bounded by `VARDEN_PA_MAX_SESSIONS` (default 10,000) and
+  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 24h). An evicted session's next action is
+  analysed from a fresh state, so size the cap for your workload
+  (evictions are reported in the registry stats).
+- Run a **single** control-plane worker when Predictive Authority is enabled. With
+  several workers (`uvicorn --workers N`), each process sees only part of a session, and
+  chains that cross workers are missed.
 
 ## Bounded analysis
 

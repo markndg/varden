@@ -1,5 +1,39 @@
 # Changelog
 
+## v1.0.1
+
+Security release. **Upgrade if you run Predictive Authority in `enforce` mode.**
+
+### Security fixes
+
+- **Agents could disable Predictive Authority enforcement.** 1.0.0 read PA configuration from
+  `action.metadata.predictive_authority_config`, which the protected agent writes, and let it
+  override the operator's settings. Sending `{"mode": "off"}` turned operator-enabled enforcement
+  off for that agent's actions. Configuration now comes only from the policy file and
+  environment. Client-supplied `predictive_authority*` metadata is stripped at ingest.
+- **Action tenant came from the client payload.** `/sdk/guard` and `/sdk/log` now always use the
+  credential's tenant.
+- **A viewer could wipe live Predictive Authority state.** `POST /predictive/demo` reset the
+  process-wide session registry, discarding every agent's accumulated authority. The demo now
+  runs in an isolated store.
+- **PA read endpoints honoured any `tenant_id` query parameter.** They are now scoped to the
+  caller's tenant, plus the isolated `demo` tenant.
+
+### Fixes
+
+- **Unbounded memory growth with PA enabled.** The live session registry never evicted
+  (~15 KB per trace id, and the SDK mints one per untraced action). Now bounded by
+  `VARDEN_PA_MAX_SESSIONS` and `VARDEN_PA_SESSION_IDLE_SECONDS`, with eviction that
+  preserves sessions carrying accumulated authority.
+- **Web Shield `sanitise` was recorded as "side effect prevented".** A sanitised output still
+  reaches the agent in modified form. It is now recorded as intercepted and sanitised, not
+  prevented. `require_approval` is unchanged (held, not executed, matching `/sdk/guard`).
+
+### Docs
+
+- Predictive Authority is labelled experimental in 1.0.x. There is guidance on sizing the
+  session cap and on running a single control-plane worker when PA is enabled.
+
 ## v1.0.0
 
 Varden 1.0 establishes the first production/stable release of Varden's runtime security model for AI agents.

@@ -74,6 +74,10 @@ class EventStreamBroker:
 
 
 
+# Metadata keys only the control plane may write. Stripped from every
+# client-submitted action before evaluation.
+AGENT_RESERVED_METADATA_KEYS = frozenset({"predictive_authority", "predictive_authority_config"})
+
 def _policy_must_be_valid(config: AppConfig) -> bool:
     """Outside dev (or with VARDEN_STRICT_POLICY) a bad policy is fatal, not a warning."""
     return config.env != "dev" or bool(getattr(config, "strict_policy", False))
@@ -474,6 +478,13 @@ def create_app(config: AppConfig) -> FastAPI:
 
     def normalize_action(payload: dict[str, Any], tenant_id: str) -> Action:
         metadata = payload.get("metadata") or {}
+        if isinstance(metadata, dict):
+            # Server-computed keys: a client must never be able to pre-set them.
+            # Agent-supplied Predictive Authority config or results could
+            # otherwise disable enforcement or forge audit/UI evidence.
+            metadata = {k: v for k, v in metadata.items() if k not in AGENT_RESERVED_METADATA_KEYS}
+        else:
+            metadata = {}
         args = payload.get("args") or {}
         url = payload.get("url")
         domain = payload.get("domain") or (urlparse(url).netloc if url else None)
@@ -489,7 +500,8 @@ def create_app(config: AppConfig) -> FastAPI:
             workflow_id=payload.get("workflow_id"),
             parent_event_id=payload.get("parent_event_id"),
             trace_id=payload.get("trace_id") or metadata.get("trace_id") or payload.get("workflow_id"),
-            tenant_id=payload.get("tenant_id") or tenant_id,
+            # Tenant comes from the credential, never from the client payload.
+            tenant_id=tenant_id,
         )
 
     def enrich_action(action: Action, payload: Any) -> Action:

@@ -26,8 +26,8 @@ def safe_label(value: Any, *, max_len: int = 120) -> str:
     return text
 
 
-def build_session_view(*, tenant_id: str = "default", trace_id: str = "default") -> dict[str, Any]:
-    reg = get_authority_registry()
+def build_session_view(*, tenant_id: str = "default", trace_id: str = "default", registry=None) -> dict[str, Any]:
+    reg = registry if registry is not None else get_authority_registry()
     key = f"{tenant_id}:{trace_id}"
     state = reg.get(key)
     explanation = reg.last_explanation(key)
@@ -100,8 +100,8 @@ def build_session_view(*, tenant_id: str = "default", trace_id: str = "default")
     }
 
 
-def build_event_view(*, tenant_id: str, trace_id: str, index: int = -1) -> dict[str, Any] | None:
-    reg = get_authority_registry()
+def build_event_view(*, tenant_id: str, trace_id: str, index: int = -1, registry=None) -> dict[str, Any] | None:
+    reg = registry if registry is not None else get_authority_registry()
     key = f"{tenant_id}:{trace_id}"
     events = reg.event_views(key)
     if not events:
@@ -132,12 +132,16 @@ def build_demo_fixture(*, mode: str = "enforce") -> dict[str, Any]:
     from ..models import Action, Decision
     from .config import PredictiveAuthorityConfig
     from .engine import PredictiveAuthorityEngine
-    from .registry import reset_authority_registry
+    from .registry import DEMO_TENANT_ID, get_demo_registry
 
-    reset_authority_registry()
-    engine = PredictiveAuthorityEngine(PredictiveAuthorityConfig(enabled=True, mode=mode, max_depth=4))
+    # Isolated store: the demo must never reset or pollute live sessions.
+    demo_registry = get_demo_registry()
+    demo_registry.reset()
+    engine = PredictiveAuthorityEngine(
+        PredictiveAuthorityConfig(enabled=True, mode=mode, max_depth=4), registry=demo_registry
+    )
     tid = "ui-demo"
-    tenant = "demo"
+    tenant = DEMO_TENANT_ID
     steps = [
         Action(
             type="tool_call",
@@ -177,7 +181,9 @@ def build_demo_fixture(*, mode: str = "enforce") -> dict[str, Any]:
     for action in steps:
         engine.evaluate(action, Decision(action="allow", reason="no matching rule", effective_action="allow"))
     # Also seed a safe comparison session.
-    safe_engine = PredictiveAuthorityEngine(PredictiveAuthorityConfig(enabled=True, mode=mode, max_depth=3))
+    safe_engine = PredictiveAuthorityEngine(
+        PredictiveAuthorityConfig(enabled=True, mode=mode, max_depth=3), registry=demo_registry
+    )
     for action in (
         Action(type="filesystem_read", tool="open", args={"args": ["README.md", "r"]}, trace_id="ui-safe", tenant_id=tenant),
         Action(type="subprocess", tool="subprocess.run", args={"args": ["pytest", "-q"]}, trace_id="ui-safe", tenant_id=tenant),
@@ -185,7 +191,7 @@ def build_demo_fixture(*, mode: str = "enforce") -> dict[str, Any]:
         safe_engine.evaluate(action, Decision(action="allow", reason="no matching rule", effective_action="allow"))
 
     return {
-        "hazardous": build_session_view(tenant_id=tenant, trace_id=tid),
-        "safe": build_session_view(tenant_id=tenant, trace_id="ui-safe"),
+        "hazardous": build_session_view(tenant_id=tenant, trace_id=tid, registry=demo_registry),
+        "safe": build_session_view(tenant_id=tenant, trace_id="ui-safe", registry=demo_registry),
         "mode": mode,
     }
