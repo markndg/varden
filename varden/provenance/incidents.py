@@ -22,6 +22,15 @@ FINDING_LABELS: dict[str, str] = {
     "unknown_provenance_sensitive_action": "Sensitive action with unknown origin",
     "cross_server_authority_flow": "Cross-server authority flow",
     "cross_origin_authority_flow": "Cross-origin authority flow",
+    # Web Shield / WebMCP scan categories (findings use ``category``, not only ``type``).
+    "unicode_obfuscation": "Unicode obfuscation",
+    "prompt_injection": "Prompt injection language",
+    "credential_harvesting": "Credential harvesting",
+    "exfiltration": "Data exfiltration language",
+    "payment_abuse": "Payment / financial abuse",
+    "capability_mismatch": "Declared vs inferred capability mismatch",
+    "confusable_tool_name": "Confusable tool name",
+    "sensitive_schema": "Sensitive schema fields",
 }
 
 FINDING_BLURBS: dict[str, str] = {
@@ -33,6 +42,14 @@ FINDING_BLURBS: dict[str, str] = {
     "unknown_provenance_sensitive_action": "A sensitive action ran with incomplete or unknown provenance.",
     "cross_server_authority_flow": "Authority crossed MCP server boundaries in this chain.",
     "cross_origin_authority_flow": "Authority crossed origin boundaries in this chain.",
+    "unicode_obfuscation": "Hidden or bidirectional Unicode was used to disguise tool intent.",
+    "prompt_injection": "Tool metadata contained language that attempts to override agent instructions.",
+    "credential_harvesting": "The tool asked for or targeted credentials / secrets.",
+    "exfiltration": "The tool description suggested sending sensitive data off-host.",
+    "payment_abuse": "The tool targeted payment or financial side effects.",
+    "capability_mismatch": "Declared capabilities did not match what the schema implies.",
+    "confusable_tool_name": "The tool name closely mimics a trusted tool.",
+    "sensitive_schema": "The input schema requests sensitive fields.",
 }
 
 SEVERITY_RANK = {"critical": 40, "high": 30, "medium": 20, "low": 10, "info": 0}
@@ -96,14 +113,24 @@ def _primary_finding_type(findings: list[dict[str, Any]]) -> str | None:
         "unknown_provenance_sensitive_action",
         "authority_escalation",
         "delegation_violation",
+        "unicode_obfuscation",
+        "prompt_injection",
+        "credential_harvesting",
+        "exfiltration",
     )
-    types = {str(f.get("type") or "") for f in findings if isinstance(f, dict)}
+
+    def _ftype(f: dict[str, Any]) -> str:
+        return str(f.get("type") or f.get("category") or "").strip()
+
+    types = {_ftype(f) for f in findings if isinstance(f, dict)} - {""}
     for key in priority:
         if key in types:
             return key
     for f in findings:
-        if isinstance(f, dict) and f.get("type"):
-            return str(f["type"])
+        if isinstance(f, dict):
+            key = _ftype(f)
+            if key:
+                return key
     return None
 
 
@@ -219,10 +246,55 @@ def _enforcement_outcome(event: dict[str, Any], *, decision: str, action_type: s
     """Derive outcome claims only from enforcement evidence.
 
     Primary label = what did not happen. Secondary detail = how Varden intervened.
+
+    Accepts classic ``metadata.enforcement`` stamps (``/sdk/guard``) and Web Shield
+    ``achieved_enforcement`` / ``enforcement_limitation`` fields.
     """
     action = event.get("action") or {}
     meta = action.get("metadata") or {}
     enf = dict(meta.get("enforcement") or {})
+
+    # Normalize Web Shield achieved_enforcement into the same stamp shape when
+    # the classic enforcement object is absent (common for webmcp.* events).
+    if not enf and meta.get("achieved_enforcement"):
+        achieved = str(meta.get("achieved_enforcement") or "").strip().lower()
+        limitation = meta.get("enforcement_limitation")
+        if achieved == "block":
+            enf = {
+                "surface": "webshield",
+                "boundary": True,
+                "intercepted": True,
+                "pre_execution": True,
+                "side_effect_prevented": True,
+                "note": limitation,
+            }
+        elif achieved in {"require_approval", "sanitise", "sanitize"}:
+            enf = {
+                "surface": "webshield",
+                "boundary": True,
+                "intercepted": True,
+                "pre_execution": True,
+                "side_effect_prevented": True,
+                "note": limitation,
+            }
+        elif achieved in {"observed_only", "unavailable"}:
+            enf = {
+                "surface": "webshield",
+                "boundary": False,
+                "intercepted": False,
+                "pre_execution": False,
+                "side_effect_prevented": False,
+                "note": limitation
+                or "This integration reported the action but Varden cannot verify that execution was prevented.",
+            }
+        elif achieved == "allow":
+            enf = {
+                "surface": "webshield",
+                "boundary": True,
+                "intercepted": False,
+                "pre_execution": True,
+                "side_effect_prevented": False,
+            }
 
     prevented: bool | None
     if "side_effect_prevented" in enf:
@@ -359,11 +431,19 @@ def build_explanation(incident: dict[str, Any]) -> dict[str, Any]:
 
     if decision == "blocked":
         summary = incident.get("summary") or f"Varden blocked `{tool}`."
-        decision_reason = (
-            "No valid delegation granted the missing authority."
-            if missing
-            else (incident.get("policy") or {}).get("reason") or "Policy blocked this action."
-        )
+        policy_reason = (incident.get("policy") or {}).get("reason") or ""
+        if missing:
+            decision_reason = "No valid delegation granted the missing authority."
+        elif policy_reason and policy_reason != "matched block rule":
+            decision_reason = policy_reason
+        elif findings_types := list(incident.get("finding_types") or []):
+            decision_reason = (
+                "Policy blocked this action based on security findings: "
+                + ", ".join(humanize_finding(t) for t in findings_types[:3])
+                + "."
+            )
+        else:
+            decision_reason = policy_reason or "Policy blocked this action."
     elif decision == "approval_required":
         summary = f"Approval required for `{tool}` — execution denied without a scoped token."
         decision_reason = "require_approval without a server-issued scoped approval token."
@@ -397,6 +477,17 @@ def build_explanation(incident: dict[str, Any]) -> dict[str, Any]:
     if missing:
         paragraphs.append("Missing: " + ", ".join(missing) + ".")
         paragraphs.append(decision_reason)
+    elif decision == "blocked" and not required and not granted:
+        # Risk-band / Web Shield style block without capability classification.
+        paragraphs.append(decision_reason)
+        finding_explanations = [
+            str(f.get("explanation") or f.get("blurb") or "").strip()
+            for f in (incident.get("findings") or [])
+            if isinstance(f, dict)
+        ]
+        for text in finding_explanations[:3]:
+            if text and text not in paragraphs:
+                paragraphs.append(text)
     elif decision in {"allowed", "monitored", "warned", "sanitised"}:
         paragraphs.append(decision_reason)
         if not any(str(s.get("trust_level") or "").lower() in {"untrusted", "hostile"} for s in sources if isinstance(s, dict)):
@@ -1002,18 +1093,26 @@ def incident_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     findings_raw = list(meta.get("findings") or [])
-    findings = [
-        {
-            "type": f.get("type"),
-            "label": humanize_finding(f.get("type")),
-            "blurb": finding_blurb(f.get("type")),
-            "severity": f.get("severity") or "info",
-            "explanation": f.get("explanation") or "",
-            "evidence": {k: v for k, v in f.items() if k not in {"type", "severity", "explanation"}},
-        }
-        for f in findings_raw
-        if isinstance(f, dict)
-    ]
+    findings = []
+    for f in findings_raw:
+        if not isinstance(f, dict):
+            continue
+        # Web Shield findings use ``category``; provenance findings use ``type``.
+        ftype = f.get("type") or f.get("category") or f.get("rule_id")
+        findings.append(
+            {
+                "type": ftype,
+                "label": humanize_finding(ftype),
+                "blurb": finding_blurb(ftype),
+                "severity": f.get("severity") or "info",
+                "explanation": f.get("explanation") or "",
+                "evidence": {
+                    k: v
+                    for k, v in f.items()
+                    if k not in {"type", "category", "severity", "explanation", "label", "blurb"}
+                },
+            }
+        )
     authority = dict(meta.get("authority") or {})
     provenance = dict(meta.get("provenance") or {})
     decision = _decision_label(event)
@@ -1049,9 +1148,22 @@ def incident_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
     )
 
     matched = (event.get("decision") or {}).get("matched_rule") or {}
+    raw_policy_reason = (event.get("decision") or {}).get("reason")
+    # Historical Web Shield / pack events often stored the opaque stub
+    # ``matched block rule``. Prefer rule title/description when present so
+    # Authority & Provenance can explain the block without re-evaluating.
+    policy_reason = raw_policy_reason
+    if isinstance(matched, dict):
+        stub = str(raw_policy_reason or "").strip().lower()
+        if not stub or (stub.startswith("matched ") and stub.endswith(" rule")):
+            for key in ("reason", "title", "description", "name"):
+                text = str(matched.get(key) or "").strip()
+                if text:
+                    policy_reason = text
+                    break
     policy = {
         "matched_rule": matched,
-        "reason": (event.get("decision") or {}).get("reason"),
+        "reason": policy_reason,
         "action": (event.get("decision") or {}).get("action"),
         "pack": (
             matched.get("pack")
@@ -1082,13 +1194,17 @@ def incident_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
             action_type=action.get("type"),
             method=action.get("method"),
         ),
-        "summary": finding_blurb(_primary_finding_type(findings_raw))
-        if findings_raw else (
-            "The requested file is inside the permitted workspace and the causal chain has valid READ_LOCAL authority."
-            if "READ_LOCAL" in (authority.get("required") or []) and not authority.get("violation")
+        "summary": (
+            finding_blurb(_primary_finding_type(findings))
+            if findings
             else (
-                "Privileged action without matching delegated authority."
-                if authority.get("violation") else "Provenance-aware authority decision."
+                "The requested file is inside the permitted workspace and the causal chain has valid READ_LOCAL authority."
+                if "READ_LOCAL" in (authority.get("required") or []) and not authority.get("violation")
+                else (
+                    "Privileged action without matching delegated authority."
+                    if authority.get("violation")
+                    else "Provenance-aware authority decision."
+                )
             )
         ),
         "action_type": action.get("type"),
@@ -1117,7 +1233,7 @@ def incident_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         "causal": meta.get("causal") or {},
         "findings": findings,
         "finding_count": len(findings),
-        "finding_types": [f["type"] for f in findings],
+        "finding_types": [f["type"] for f in findings if f.get("type")],
         "attack_path": path_nodes,
         "attack_path_full": full_nodes,
         "attack_path_meta": path_meta,

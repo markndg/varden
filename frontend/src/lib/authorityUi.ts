@@ -107,6 +107,15 @@ const FALLBACK_LABELS: Record<string, string> = {
   provenance_exfiltration_chain: 'Potential data exfiltration',
   unknown_provenance_sensitive_action: 'Sensitive action with unknown origin',
   cross_server_authority_flow: 'Cross-server authority flow',
+  cross_origin_authority_flow: 'Cross-origin authority flow',
+  unicode_obfuscation: 'Unicode obfuscation',
+  prompt_injection: 'Prompt injection language',
+  credential_harvesting: 'Credential harvesting',
+  exfiltration: 'Data exfiltration language',
+  payment_abuse: 'Payment / financial abuse',
+  capability_mismatch: 'Declared vs inferred capability mismatch',
+  confusable_tool_name: 'Confusable tool name',
+  sensitive_schema: 'Sensitive schema fields',
 };
 
 export function findingLabel(finding: IncidentFinding | string | null | undefined): string {

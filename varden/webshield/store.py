@@ -412,6 +412,36 @@ class WebShieldStore:
         if matched_rule:
             metadata["matched_rule"] = matched_rule
 
+        # Stamp classic enforcement evidence so Authority & Provenance can claim
+        # prevention/execution outcomes (same shape as /sdk/guard).
+        if achieved_enforcement == "block":
+            metadata["enforcement"] = {
+                "surface": "webshield",
+                "boundary": True,
+                "intercepted": True,
+                "pre_execution": True,
+                "side_effect_prevented": True,
+                "note": limitation,
+            }
+        elif achieved_enforcement in {"require_approval", "sanitise", "sanitize"}:
+            metadata["enforcement"] = {
+                "surface": "webshield",
+                "boundary": True,
+                "intercepted": True,
+                "pre_execution": True,
+                "side_effect_prevented": True,
+                "note": limitation,
+            }
+        elif achieved_enforcement in {"observed_only", "unavailable"}:
+            metadata["enforcement"] = {
+                "surface": "webshield",
+                "boundary": False,
+                "intercepted": False,
+                "pre_execution": False,
+                "side_effect_prevented": False,
+                "note": limitation,
+            }
+
         action.metadata = metadata
         status_map = {"block": "blocked", "warn": "warned", "monitor": "monitor", "allow": "allowed"}
         status = status_map.get(policy_decision, "monitor") if policy_decision in status_map else "monitor"

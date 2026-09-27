@@ -37,6 +37,13 @@ KNOWN_CLASSIFIERS = frozenset({
     "provenance_untrusted", "provenance_unknown", "authority_violation",
     "authority_escalation", "confused_deputy", "exfiltration_chain",
     "cross_server_flow", "untrusted_to_privileged",
+
+    # varden.predictive_authority
+    "credential_acquired",
+    "untrusted_to_external_path",
+    "cross_trust_domain_path",
+    "irreversible_action_reachable",
+    "authority_expands",
 })
 
 OPERATORS = frozenset({"exists", "eq", "contains", "startswith", "endswith", "in", "gte", "lte"})
@@ -305,16 +312,32 @@ class PolicyEngine:
 
     def evaluate(self, action):
         from .models import Decision
+
         policy = self.policy  # single read: safe against concurrent update_policy()
+
         for mode in MODES:
             for rule in policy.get(mode, []) or []:
                 if not isinstance(rule, dict) or rule.get("enabled") is False:
                     continue
+
                 if self._matches(action, rule):
-                    return Decision(action=mode, reason=f"matched {mode} rule", matched_rule=rule, effective_action=mode)
+                    return Decision(
+                        action=mode,
+                        reason=_rule_match_reason(mode, rule),
+                        matched_rule=rule,
+                        effective_action=mode,
+                    )
+
         fallback, scope = self.default_decision(action, policy)
+
         if fallback == "allow" and scope is None:
-            return Decision(action="allow", reason="no matching rule", matched_rule=None, effective_action="allow")
+            return Decision(
+                action="allow",
+                reason="no matching rule",
+                matched_rule=None,
+                effective_action="allow",
+            )
+
         return Decision(
             action=fallback,
             reason=f"no matching rule; default {fallback} for {scope}",
@@ -326,14 +349,18 @@ class PolicyEngine:
     def default_decision(action, policy) -> tuple[str, str | None]:
         """Fallback when no rule matches: defaults[surface] > defaults[type] > default > allow."""
         defaults = policy.get("defaults") if isinstance(policy.get("defaults"), dict) else {}
+
         surface = action_surface(action)
         if surface and defaults.get(surface) in DEFAULT_DECISIONS:
             return defaults[surface], f"surface {surface!r}"
+
         action_type = getattr(action, "type", None)
         if action_type and defaults.get(action_type) in DEFAULT_DECISIONS:
             return defaults[action_type], f"action type {action_type!r}"
+
         if policy.get("default") in DEFAULT_DECISIONS:
             return policy["default"], "policy"
+
         return "allow", None
 
     def _matches(self, action, rule):
@@ -544,3 +571,14 @@ class PolicyEngine:
                     return None
             return cur
         return None
+
+
+def _rule_match_reason(mode: str, rule: dict) -> str:
+    """Prefer operator-facing rule copy over the opaque ``matched {mode} rule`` stub."""
+    if not isinstance(rule, dict):
+        return f"matched {mode} rule"
+    for key in ("reason", "title", "description", "name", "id"):
+        text = str(rule.get(key) or "").strip()
+        if text:
+            return text
+    return f"matched {mode} rule"
