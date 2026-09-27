@@ -73,15 +73,46 @@ class EventStreamBroker:
 
 
 
+
+def _policy_must_be_valid(config: AppConfig) -> bool:
+    """Outside dev (or with VARDEN_STRICT_POLICY) a bad policy is fatal, not a warning."""
+    return config.env != "dev" or bool(getattr(config, "strict_policy", False))
+
+
+def _load_startup_policy(config: AppConfig) -> dict | None:
+    path = Path(config.policy_file)
+    if not path.exists():
+        if _policy_must_be_valid(config):
+            raise RuntimeError(
+                f"refusing to start: policy file {config.policy_file} not found. Outside dev Varden will not "
+                "run with an implicit allow-everything policy; create one (e.g. from policy-packs/) first."
+            )
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"refusing to start: cannot read policy {config.policy_file}: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise RuntimeError(f"refusing to start: policy {config.policy_file} must be a JSON object")
+    return doc
+
+
 def create_app(config: AppConfig) -> FastAPI:
     event_store = EventStore(config.db_path)
     workflow_store = WorkflowStore(config.db_path)
     auth = LocalAuth(config.auth_db_path, config.signing_secret)
-    initial_policy = json.loads(Path(config.policy_file).read_text(encoding="utf-8")) if Path(config.policy_file).exists() else None
+    initial_policy = _load_startup_policy(config)
     policy = PolicyEngine(config.db_path, initial_policy)
     if initial_policy is not None:
         _startup_validation = policy.validate(initial_policy)
-        for _msg in _startup_validation.get("errors", []):
+        _errors = _startup_validation.get("errors", [])
+        if _errors and _policy_must_be_valid(config):
+            raise RuntimeError(
+                f"refusing to start: policy {config.policy_file} is invalid "
+                f"({len(_errors)} error(s)): " + "; ".join(_errors)
+                + ". Fix the file or validate it with POST /policy/validate."
+            )
+        for _msg in _errors:
             logging.getLogger("varden").warning("policy %s: %s (rule will not behave as written)", config.policy_file, _msg)
         for _msg in _startup_validation.get("warnings", []):
             logging.getLogger("varden").info("policy %s: %s", config.policy_file, _msg)

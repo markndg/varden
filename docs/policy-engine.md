@@ -44,9 +44,16 @@ The parser handles all of the following before matching:
   - `varden session` shims (`argv` / `argv_join`)
   - `metadata.subprocess.argv`
 
-A rule matches if **any** command in the chain matches. Quotes that don't
-close fall back to plain whitespace splitting, so a malformed string can't hide
-a command.
+A rule matches if **any** command in the chain matches.
+
+> **Use `command` rules as a guardrail, not a boundary.** Static parsing of shell
+> text can't be complete: a shell can build the command it runs at runtime in
+> ways no matcher can predict from the text. A `command` block rule is much
+> harder to evade by accident than a substring rule, but it will not stop a
+> determined or injected agent on its own. For real enforcement, use an
+> **allowlist**: `"defaults": {"subprocess": "block"}` plus `allow` rules for the
+> programs the agent actually needs. Anything the matcher can't recognise then
+> falls through to `block`.
 
 The bundled packs now include argv-aware rules alongside the older substring
 rules:
@@ -64,6 +71,21 @@ outside Python's patched functions is still not covered (see
 [runtime-limitations.md](runtime-limitations.md)).
 
 ## 2. Validation: no more silent no-ops
+
+### At startup
+
+Outside `VARDEN_ENV=dev` (or with `VARDEN_STRICT_POLICY=true`), the server
+**refuses to start** if the policy file:
+
+- is missing (Varden won't run with an implicit allow-everything policy)
+- can't be parsed
+- fails validation
+
+In plain dev mode, problems are logged as warnings and the server starts.
+`deploy/config/policy.json` ships the baseline pack so the docker-compose
+setup starts out of the box.
+
+### On every change
 
 Before this release, a misspelled field (`agent_nme`), classifier
 (`classifier:secret`), operator (`{"contain": ...}`) or bucket (`"blok"`) was

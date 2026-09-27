@@ -429,7 +429,7 @@ dashboard immediately.
 
 ## Policy model
 
-Policies are a JSON file with outcome lists (`block`, `require_approval`, `sanitise`, `warn`, `monitor`, `allow`), an optional `default` / per-surface `defaults` decision for when nothing matches (deny-by-default), and optional `budget_rules` for LLM spend caps. Match commands with the argv-aware `command` predicate rather than substrings. Policies are validated strictly — a misspelled field, classifier or operator is an error, not a rule that silently never fires. See [docs/policy-engine.md](docs/policy-engine.md).
+Policies are a JSON file with outcome lists (`block`, `require_approval`, `sanitise`, `warn`, `monitor`, `allow`), an optional `default` / per-surface `defaults` decision for when nothing matches (deny-by-default), and optional `budget_rules` for LLM spend caps. Match commands with the argv-aware `command` predicate rather than substrings. It's a guardrail, not a boundary: for enforcement, prefer a subprocess allowlist (`"defaults": {"subprocess": "block"}` plus `allow` rules). Policies are validated strictly — a misspelled field, classifier or operator is an error, not a rule that silently never fires. See [docs/policy-engine.md](docs/policy-engine.md).
 
 ```json
 {
@@ -563,8 +563,8 @@ docker compose -f deploy/docker-compose.yml up
 
 See `deploy/self_hosting.md` and `deploy/operations.md` for production configuration.
 Local defaults use SQLite. Outside `VARDEN_ENV=dev`, startup refuses a placeholder or
-short (<32 char) `VARDEN_SIGNING_SECRET` and requires dev bootstrap to be off; the public
-demo keys are then revoked. Provision credentials with:
+short (<32 char) `VARDEN_SIGNING_SECRET`, a missing or invalid policy file, and dev bootstrap
+being on; the public demo keys are revoked. Provision credentials with:
 
 ```bash
 varden keys --config deploy/config/prod.env create --role admin   # for you

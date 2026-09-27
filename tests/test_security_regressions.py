@@ -253,3 +253,46 @@ def test_any_import_order_works(stmt):
     repo = Path(__file__).resolve().parents[1]
     proc = subprocess.run([sys.executable, "-c", stmt], cwd=repo, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+# --- Startup policy validation ------------------------------------------------
+
+BAD_POLICY = {"block": [{"classifier:secret": True}], "warn": [], "monitor": [], "allow": []}
+
+
+def test_invalid_policy_fails_startup_outside_dev(tmp_path):
+    (tmp_path / "policy.json").write_text(json.dumps(BAD_POLICY))
+    with pytest.raises(RuntimeError, match="refusing to start.*secrets"):
+        create_app(_prod(tmp_path))
+
+
+def test_invalid_policy_fails_startup_in_dev_with_strict_policy(tmp_path):
+    (tmp_path / "policy.json").write_text(json.dumps(BAD_POLICY))
+    with pytest.raises(RuntimeError, match="refusing to start"):
+        create_app(_cfg(tmp_path, strict_policy=True))
+
+
+def test_invalid_policy_only_warns_in_plain_dev(tmp_path, caplog):
+    (tmp_path / "policy.json").write_text(json.dumps(BAD_POLICY))
+    create_app(_cfg(tmp_path))
+    assert any("classifier" in r.getMessage() for r in caplog.records)
+
+
+def test_missing_policy_fails_startup_outside_dev(tmp_path):
+    cfg = _prod(tmp_path)
+    Path(cfg.policy_file).unlink()
+    with pytest.raises(RuntimeError, match="not found"):
+        create_app(cfg)
+
+
+@pytest.mark.parametrize("content", ["{not json", "[]"])
+def test_unreadable_policy_fails_startup(tmp_path, content):
+    (tmp_path / "policy.json").write_text(content)
+    with pytest.raises(RuntimeError, match="refusing to start"):
+        create_app(_prod(tmp_path))
+
+
+def test_shipped_deploy_policy_starts_in_prod(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    (tmp_path / "policy.json").write_text((repo / "deploy" / "config" / "policy.json").read_text())
+    TestClient(create_app(_prod(tmp_path)))

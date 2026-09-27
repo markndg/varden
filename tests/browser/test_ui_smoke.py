@@ -1,4 +1,6 @@
 """Browser UI smoke suite — real control plane + Playwright."""
+# NOTE: the dashboard holds an SSE stream (/stream/updates) open, so the page never reaches
+# "networkidle". Tests wait for "load" and then assert on rendered content instead.
 
 from __future__ import annotations
 
@@ -189,9 +191,17 @@ def test_ui_route_renders(browser_page, path, heading, tmp_path):
     browser_page["failed_requests"].clear()
     url = f"{base}{path}"
     try:
-        response = page.goto(url, wait_until="networkidle", timeout=30000)
+        # Wait until this page's bootstrap request has fully finished (body read,
+        # not just headers), so the next test's navigation can't abort it
+        # mid-flight and have it reported as ERR_ABORTED.
+        with page.expect_event(
+            "requestfinished", lambda r: "/ui/bootstrap" in r.url, timeout=30000
+        ) as boot:
+            response = page.goto(url, wait_until="load", timeout=30000)
         assert response is not None
         assert response.ok, f"{url} -> {response.status}"
+        boot_response = boot.value.response()
+        assert boot_response is not None and boot_response.ok, "/ui/bootstrap did not succeed"
 
         root = page.locator("#root")
         expect(root).not_to_be_empty(timeout=15000)
@@ -207,8 +217,11 @@ def test_ui_route_renders(browser_page, path, heading, tmp_path):
         )
         assert js_ok is True
 
-        # Direct refresh still works
-        page.reload(wait_until="networkidle")
+        # Direct refresh still works (and its bootstrap must also finish before we move on)
+        with page.expect_event(
+            "requestfinished", lambda r: "/ui/bootstrap" in r.url, timeout=30000
+        ):
+            page.reload(wait_until="load")
         expect(page.locator("h1")).to_contain_text(heading, timeout=15000)
 
         unexpected_console = [
@@ -233,7 +246,7 @@ def test_ui_route_renders(browser_page, path, heading, tmp_path):
 def test_ui_bootstrap_and_navigation(browser_page):
     page = browser_page["page"]
     base = browser_page["base"]
-    page.goto(f"{base}/ui", wait_until="networkidle")
+    page.goto(f"{base}/ui", wait_until="load")
     expect(page.locator("h1")).to_contain_text("Trace and flow mission control")
 
     # Sidebar navigation (buttons, not anchors)

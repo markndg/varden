@@ -29,6 +29,10 @@
 - Strict validation: unknown fields, classifiers, operators and misspelled buckets are errors (with
   suggestions) instead of rules that silently never fire; startup logs problems in the loaded policy.
 - `default` / `defaults` (per surface or action type) decisions for deny-by-default policies.
+- Outside dev (or with `VARDEN_STRICT_POLICY=true`), a missing, unreadable or invalid policy file stops
+  startup instead of logging a warning. `deploy/config/policy.json` ships the baseline pack.
+- Docs are explicit that `command` rules are a guardrail; allowlists (`defaults` + `allow`) are the
+  recommended enforcement pattern for subprocesses.
 - Dashboard rules editor no longer drops `require_approval`, `sanitise`, `default` or `defaults` on save.
 - `varden keys create|list|revoke` to provision API keys; `VARDEN_BOOTSTRAP_ADMIN_API_KEY` to seed one.
 - Docs: `docs/policy-engine.md`.
