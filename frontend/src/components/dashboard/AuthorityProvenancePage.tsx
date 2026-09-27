@@ -143,7 +143,17 @@ function classNamesSafe(...parts: any[]) {
   return parts.filter(Boolean).join(' ');
 }
 
-function AuthorityMismatch({ authority, classNames }: { authority?: Incident['authority']; classNames: Helpers['classNames'] }) {
+function AuthorityMismatch({
+  authority,
+  classNames,
+  policyReason,
+  hasFindings,
+}: {
+  authority?: Incident['authority'];
+  classNames: Helpers['classNames'];
+  policyReason?: string | null;
+  hasFindings?: boolean;
+}) {
   const required = authority?.required || [];
   const granted = authority?.granted || [];
   const missing = new Set(authority?.missing || []);
@@ -152,7 +162,12 @@ function AuthorityMismatch({ authority, classNames }: { authority?: Incident['au
     return (
       <div className="emptyState emptyState--compact">
         <strong>Authority classification unavailable</strong>
-        <span className="muted">This integration did not provide enough information to classify the requested capability.</span>
+        <span className="muted">
+          {hasFindings || policyReason
+            ? 'This block was driven by policy / scan findings rather than a delegated-capability mismatch. Capability classification was not applicable for this integration event.'
+            : 'This integration did not provide enough information to classify the requested capability.'}
+        </span>
+        {policyReason ? <span className="muted">Policy: {policyReason}</span> : null}
       </div>
     );
   }
@@ -311,12 +326,14 @@ function InvestigationPanel({
   onClose,
   showFullLineage,
   onToggleLineage,
+  onOpenPredictive,
 }: {
   incident: Incident;
   classNames: Helpers['classNames'];
   onClose: () => void;
   showFullLineage: boolean;
   onToggleLineage: () => void;
+  onOpenPredictive?: (id: number) => void;
 }) {
   const [evidenceTab, setEvidenceTab] = useState<EvidenceTab>('explanation');
   const [selectedNode, setSelectedNode] = useState<AttackPathNode | null>(null);
@@ -354,7 +371,19 @@ function InvestigationPanel({
             {incident.trace_id ? ` · Trace ${incident.trace_id}` : ''}
           </p>
         </div>
-        <button type="button" className="button button--ghost" onClick={onClose}>Close</button>
+        <div className="toggleRow">
+          {incident.has_predictive && incident.event_id && onOpenPredictive ? (
+            <button
+              type="button"
+              className="button"
+              data-testid="audit-view-predictive"
+              onClick={() => onOpenPredictive(Number(incident.event_id))}
+            >
+              View Predictive Analysis
+            </button>
+          ) : null}
+          <button type="button" className="button button--ghost" onClick={onClose}>Close</button>
+        </div>
       </div>
 
       {!complete ? (
@@ -425,7 +454,12 @@ function InvestigationPanel({
       <section className="card card--nested">
         <div className="eyebrow">Authority</div>
         <h4>Delegated vs required</h4>
-        <AuthorityMismatch authority={incident.authority} classNames={classNames} />
+        <AuthorityMismatch
+          authority={incident.authority}
+          classNames={classNames}
+          policyReason={incident.policy?.reason || explanation?.decision_reason}
+          hasFindings={Boolean((incident.findings || []).length)}
+        />
       </section>
 
       <section className="card card--nested">
@@ -466,11 +500,11 @@ function InvestigationPanel({
         ) : null}
         {evidenceTab === 'findings' ? (
           <ul className="findingList" style={{ marginTop: 12 }}>
-            {(incident.findings || []).length ? (incident.findings || []).map((f) => (
-              <li key={f.type}>
+            {(incident.findings || []).length ? (incident.findings || []).map((f, idx) => (
+              <li key={`${f.type || 'finding'}-${idx}`}>
                 <strong>{findingLabel(f)}</strong>
-                <span className="muted"> — {f.blurb || f.explanation}</span>
-                <div className="codeInline muted">Finding: {f.type}</div>
+                <span className="muted"> — {f.explanation || f.blurb || 'No additional detail.'}</span>
+                {f.type ? <div className="codeInline muted">Finding: {f.type}</div> : null}
               </li>
             )) : <li className="muted">No security findings on this incident.</li>}
           </ul>
@@ -623,7 +657,13 @@ function ReachabilityMap({
   );
 }
 
-export function AuthorityProvenancePage({ helpers }: { helpers: Helpers }) {
+export function AuthorityProvenancePage({
+  helpers,
+  onOpenPredictive,
+}: {
+  helpers: Helpers;
+  onOpenPredictive?: (id: number) => void;
+}) {
   const { api, classNames, token } = helpers;
   const [summary, setSummary] = useState<any>(null);
   const [incidents, setIncidents] = useState<Incident[]>([]);
@@ -1154,6 +1194,7 @@ export function AuthorityProvenancePage({ helpers }: { helpers: Helpers }) {
             onClose={closeInvestigation}
             showFullLineage={showFullLineage}
             onToggleLineage={() => setShowFullLineage((v) => !v)}
+            onOpenPredictive={onOpenPredictive}
           />
         ) : null}
       </div>

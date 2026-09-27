@@ -358,7 +358,7 @@ def test_sanitised_display_decision():
 
 def test_authority_map_reachability_and_exposure_labels(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     _guard_secret(client, key)
     client.post(
         "/mcp/security/fingerprint",
@@ -390,7 +390,7 @@ def test_authority_map_reachability_and_exposure_labels(tmp_path):
 
 def test_authority_map_endpoint(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     _guard_secret(client, key)
     client.post(
         "/mcp/security/fingerprint",
@@ -411,7 +411,7 @@ def test_authority_map_endpoint(tmp_path):
 
 def test_observational_log_does_not_claim_prevention(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     resp = client.post(
         "/sdk/log",
         headers={"x-api-key": key},
@@ -431,7 +431,7 @@ def test_observational_log_does_not_claim_prevention(tmp_path):
 
 def test_incidents_api_groups_findings(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     body = _guard_secret(client, key, trace_id="api-inc-1")
     enf = ((body.get("action") or {}).get("metadata") or {}).get("enforcement") or {}
     assert enf.get("side_effect_prevented") is True
@@ -455,7 +455,7 @@ def test_incidents_api_groups_findings(tmp_path):
 
 def test_allowed_workspace_title_and_explanation(tmp_path):
     client = _client(tmp_path)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     workspace = "/tmp/varden-workspace"
     client.post(
         "/sdk/guard",
@@ -476,3 +476,136 @@ def test_allowed_workspace_title_and_explanation(tmp_path):
     assert allowed
     assert "Workspace" in allowed[0]["title"] or "file read" in allowed[0]["title"].lower()
     assert allowed[0].get("quiet") is True or allowed[0]["finding_count"] == 0
+
+
+def test_webshield_shaped_findings_explain_block_without_generic_finding_label():
+    """Web Shield findings use ``category``; incidents must not collapse to 'Finding'."""
+    from varden.models import Decision
+    from varden.policy import PolicyEngine
+
+    event = {
+        "id": 42,
+        "status": "blocked",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "agent_name": "webmcp:translate.example",
+        "decision": {
+            "action": "block",
+            "reason": "matched block rule",
+            "matched_rule": {
+                "name": "webshield_block_critical_registration",
+                "title": "Block critical-risk WebMCP tool registrations",
+                "description": "Block critical-risk WebMCP tool registrations",
+            },
+        },
+        "action": {
+            "type": "webmcp.tool_registration",
+            "tool": "translate_text",
+            "domain": "https://translate.example",
+            "metadata": {
+                "webmcp": True,
+                "findings": [
+                    {
+                        "rule_id": "unicode.zero_width",
+                        "category": "unicode_obfuscation",
+                        "severity": "critical",
+                        "field_path": "description",
+                        "evidence": "U+200B",
+                        "explanation": "Zero-width characters disguise the tool description.",
+                    }
+                ],
+                "achieved_enforcement": "block",
+                "requested_enforcement": "block",
+            },
+        },
+    }
+    from varden.models import Action
+    from varden.policy import PolicyEngine
+
+    # Prefer policy rule copy when evaluating fresh decisions.
+    engine = PolicyEngine(
+        ":memory:",
+        {
+            "block": [
+                {
+                    "name": "webshield_block_critical_registration",
+                    "title": "Block critical-risk WebMCP tool registrations",
+                    "type": "webmcp.tool_registration",
+                }
+            ]
+        },
+    )
+    decision = engine.evaluate(Action(type="webmcp.tool_registration", tool="translate_text"))
+    assert decision.reason == "Block critical-risk WebMCP tool registrations"
+    assert "matched block rule" not in decision.reason
+
+    # Historical events may still carry the stub reason — explanation should still
+    # surface finding identity / rule title, and outcome should use achieved_enforcement.
+    incident = incident_from_event(event)
+    assert incident is not None
+    assert incident["findings"][0]["type"] == "unicode_obfuscation"
+    assert incident["findings"][0]["label"] == "Unicode obfuscation"
+    assert incident["findings"][0]["label"] != "Finding"
+    assert "Unicode" in (incident["summary"] or "") or "disguise" in (incident["summary"] or "").lower()
+    assert incident["outcome"]["side_effect_prevented"] is True
+    assert incident["outcome"]["label"] != "OUTCOME UNVERIFIED"
+    assert incident["policy"]["reason"] == "Block critical-risk WebMCP tool registrations"
+    explanation = incident["explanation"]
+    assert "matched block rule" not in (explanation.get("decision_reason") or "")
+    assert (
+        "Unicode obfuscation" in (explanation.get("decision_reason") or explanation.get("text") or "")
+        or "Block critical-risk" in (explanation.get("decision_reason") or "")
+    )
+    assert "Zero-width" in (explanation.get("text") or "")
+
+
+def test_webshield_enforcement_stamp_on_block(tmp_path):
+    """Live Web Shield blocks stamp metadata.enforcement for the incident read model."""
+    from varden.webshield.store import WebShieldStore
+    from varden.stores import EventStore
+    from varden.policy import PolicyEngine
+
+    db = tmp_path / "ws.db"
+    init_db(str(db))
+    events = EventStore(str(db))
+    policy = PolicyEngine(
+        str(db),
+        {
+            "block": [
+                {
+                    "title": "Block critical-risk WebMCP tool registrations",
+                    "type": "webmcp.tool_registration",
+                }
+            ]
+        },
+    )
+    store = WebShieldStore(str(db), events, policy, None)
+    event = store._log_event(
+        "default",
+        "webmcp.tool_registration",
+        session_id="s1",
+        tool_name="translate_text",
+        owner_origin="https://translate.example",
+        risk_score=90,
+        metadata={
+            "phase": "registration",
+            "findings": [
+                {
+                    "rule_id": "unicode.zero_width",
+                    "category": "unicode_obfuscation",
+                    "severity": "critical",
+                    "field_path": "description",
+                    "evidence": "U+200B",
+                    "explanation": "Zero-width characters disguise the tool description.",
+                }
+            ],
+            "risk_band": "critical",
+        },
+    )
+    meta = (event.get("action") or {}).get("metadata") or {}
+    assert meta.get("achieved_enforcement") == "block"
+    assert meta.get("enforcement", {}).get("side_effect_prevented") is True
+    incident = incident_from_event(event)
+    assert incident is not None
+    assert incident["outcome"]["side_effect_prevented"] is True
+    assert incident["decision"] == "blocked"
+    assert "matched block rule" not in (incident["policy"].get("reason") or "")

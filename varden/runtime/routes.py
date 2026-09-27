@@ -88,7 +88,7 @@ def register_runtime_routes(
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
     ):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         if session_provenance_store is None:
             raise HTTPException(status_code=503, detail="session provenance unavailable")
         trace_id = str(payload.get("trace_id") or "")
@@ -109,7 +109,7 @@ def register_runtime_routes(
         x_api_key: str | None = Header(default=None),
         authorization: str | None = Header(default=None),
     ):
-        record = require(x_api_key, authorization, "viewer", scope="read")
+        record = require(x_api_key, authorization, "agent", scope="read")
         if session_provenance_store is None:
             return {"sources": []}
         sources = session_provenance_store.list_sources(tenant_id=record["tenant_id"], trace_id=trace_id)

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 
 import asyncio
 import json
@@ -15,7 +16,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse,
 from fastapi.staticfiles import StaticFiles
 
 from .alerts import AlertEngine, BackgroundWorker, ConsoleSink, FileSink
-from .auth import LocalAuth, OSS_TENANT_ID
+from .auth import LocalAuth, OSS_TENANT_ID, DEV_ADMIN_API_KEY, DEV_AGENT_API_KEY, DEV_API_KEYS
 from .blaze import BlazeRuntime
 from .classification import ClassifierEngine
 from .config import AppConfig
@@ -48,6 +49,7 @@ from .runtime.posture import evaluate_posture
 from .runtime.coverage_store import RuntimeCoverageStore
 from .runtime.routes import register_runtime_routes
 from .runtime.session_provenance import SessionProvenanceStore
+from .predictive_authority.routes import register_predictive_authority_routes
 
 
 class EventStreamBroker:
@@ -71,12 +73,49 @@ class EventStreamBroker:
 
 
 
+
+def _policy_must_be_valid(config: AppConfig) -> bool:
+    """Outside dev (or with VARDEN_STRICT_POLICY) a bad policy is fatal, not a warning."""
+    return config.env != "dev" or bool(getattr(config, "strict_policy", False))
+
+
+def _load_startup_policy(config: AppConfig) -> dict | None:
+    path = Path(config.policy_file)
+    if not path.exists():
+        if _policy_must_be_valid(config):
+            raise RuntimeError(
+                f"refusing to start: policy file {config.policy_file} not found. Outside dev Varden will not "
+                "run with an implicit allow-everything policy; create one (e.g. from policy-packs/) first."
+            )
+        return None
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"refusing to start: cannot read policy {config.policy_file}: {exc}") from exc
+    if not isinstance(doc, dict):
+        raise RuntimeError(f"refusing to start: policy {config.policy_file} must be a JSON object")
+    return doc
+
+
 def create_app(config: AppConfig) -> FastAPI:
     event_store = EventStore(config.db_path)
     workflow_store = WorkflowStore(config.db_path)
     auth = LocalAuth(config.auth_db_path, config.signing_secret)
-    initial_policy = json.loads(Path(config.policy_file).read_text(encoding="utf-8")) if Path(config.policy_file).exists() else None
+    initial_policy = _load_startup_policy(config)
     policy = PolicyEngine(config.db_path, initial_policy)
+    if initial_policy is not None:
+        _startup_validation = policy.validate(initial_policy)
+        _errors = _startup_validation.get("errors", [])
+        if _errors and _policy_must_be_valid(config):
+            raise RuntimeError(
+                f"refusing to start: policy {config.policy_file} is invalid "
+                f"({len(_errors)} error(s)): " + "; ".join(_errors)
+                + ". Fix the file or validate it with POST /policy/validate."
+            )
+        for _msg in _errors:
+            logging.getLogger("varden").warning("policy %s: %s (rule will not behave as written)", config.policy_file, _msg)
+        for _msg in _startup_validation.get("warnings", []):
+            logging.getLogger("varden").info("policy %s: %s", config.policy_file, _msg)
     token_budget_store = TokenBudgetStore(config.db_path)
     mcp_inventory_store = McpInventoryStore(config.db_path)
     idem = IdempotencyStore(config.db_path)
@@ -131,8 +170,24 @@ def create_app(config: AppConfig) -> FastAPI:
 
     tenant = auth.ensure_tenant(OSS_TENANT_ID)
     user = auth.ensure_user("admin", OSS_TENANT_ID, role="admin")
-    bootstrap_token = auth.issue_bearer_token(user["user_id"], OSS_TENANT_ID, "admin")
-    bootstrap_key = auth.create_api_key("admin-demo-key", tenant_id=OSS_TENANT_ID, role="admin")
+    if config.enable_dev_bootstrap:
+        # Dev only: well-known credentials so `varden demo` works with zero setup.
+        bootstrap_token = auth.issue_bearer_token(user["user_id"], OSS_TENANT_ID, "admin")
+        bootstrap_key = auth.create_api_key(DEV_ADMIN_API_KEY, tenant_id=OSS_TENANT_ID, role="admin")
+        # Least-privilege key handed to protected processes (SDK auto-bootstrap,
+        # `varden session`). It can only submit actions for a decision.
+        bootstrap_agent_key = auth.create_api_key(DEV_AGENT_API_KEY, tenant_id=OSS_TENANT_ID, role="agent")
+    else:
+        # The demo keys are public. Never mint them outside dev, and revoke them
+        # if this auth DB was ever used with dev bootstrap enabled.
+        bootstrap_token = None
+        bootstrap_key = {"api_key": None, "role": None}
+        bootstrap_agent_key = {"api_key": None, "role": None}
+        for _dev_key in DEV_API_KEYS:
+            auth.revoke_api_key(_dev_key)
+    if config.bootstrap_admin_api_key and config.bootstrap_admin_api_key not in DEV_API_KEYS:
+        if auth.authenticate_api_key(config.bootstrap_admin_api_key) is None:
+            auth.create_api_key(config.bootstrap_admin_api_key, tenant_id=OSS_TENANT_ID, role="admin")
 
     current_scan_mode = {"value": config.scan_mode}
     active_workflow_by_tenant: dict[str, str | None] = {}
@@ -522,6 +577,30 @@ def create_app(config: AppConfig) -> FastAPI:
             tenant_id=action.tenant_id,
             error=error,
         ).to_dict())
+        # Durable Predictive snapshot bound to this audit event_id.
+        try:
+            from .predictive_authority.persistence import persist_predictive_snapshot
+            from .predictive_authority.registry import get_authority_registry
+
+            persist_predictive_snapshot(
+                db_path=config.db_path,
+                event_id=int(event_id),
+                action=action,
+                tenant_id=action.tenant_id,
+            )
+            try:
+                reg = get_authority_registry()
+                key = reg.session_key(
+                    tenant_id=action.tenant_id,
+                    trace_id=action.trace_id,
+                    workflow_id=action.workflow_id,
+                )
+                reg.stamp_last_event_id(key, int(event_id))
+            except Exception:
+                pass
+        except Exception:
+            # Snapshot persistence must not break decision audit logging.
+            pass
         event_row = event_store.get_event(event_id, tenant_id=action.tenant_id) or {}
         action_row = event_row.get("action") or {}
         decision_row = event_row.get("decision") or {}
@@ -570,6 +649,24 @@ def create_app(config: AppConfig) -> FastAPI:
                     decision = budget_decision
                 elif budget_decision and budget_decision.action == "block":
                     decision = budget_decision
+        # Predictive Authority: optional post-policy enrichment. Disabled by
+        # default. Observe records recommendations without changing decisions;
+        # enforce may strengthen but never weaken the existing decision.
+        # Failures keep the existing decision (fail-safe).
+        try:
+            import os as _os
+
+            from .predictive_authority import apply_predictive_authority
+
+            decision, _pa_result = apply_predictive_authority(
+                action,
+                decision,
+                policy=policy.get_policy(),
+                env=dict(_os.environ),
+            )
+        except Exception:
+            # Predictive Authority must never bypass or break core enforcement.
+            pass
         recent_events = event_store.list_events(limit=120, tenant_id=tenant_id)
         trace_events = event_store.list_trace_events(action.trace_id, tenant_id=tenant_id, limit=60) if action.trace_id else []
         action = intelligence.apply_decision_context(action, decision, recent_events=recent_events, trace_events=trace_events)
@@ -603,6 +700,7 @@ def create_app(config: AppConfig) -> FastAPI:
             "status": "ok",
             "bootstrap_api_key": bootstrap_key["api_key"] if config.enable_dev_bootstrap else None,
             "bootstrap_bearer_token": bootstrap_token if config.enable_dev_bootstrap else None,
+            "bootstrap_agent_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
             "tenant_id": OSS_TENANT_ID,
             "metrics": event_store.metrics(OSS_TENANT_ID),
             "public_base_url": config.public_base_url,
@@ -615,10 +713,22 @@ def create_app(config: AppConfig) -> FastAPI:
     def sdk_bootstrap():
         return {
             "base_url": config.public_base_url,
-            "bootstrap_api_key": bootstrap_key["api_key"] if config.enable_dev_bootstrap else None,
+            # Protected processes get the ingest-only agent key, never an admin key.
+            "bootstrap_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
+            "bootstrap_role": "agent" if config.enable_dev_bootstrap else None,
             "tenant_id": OSS_TENANT_ID,
             "default_policy": policy.get_policy(),
             "scan_mode": current_scan_mode["value"],
+        }
+
+    @app.get("/auth/whoami")
+    def auth_whoami(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        """Report the caller's role so SDKs can refuse over-privileged agent keys."""
+        record = require(x_api_key, authorization, "agent", scope="read")
+        return {
+            "role": record.get("role"),
+            "tenant_id": record.get("tenant_id"),
+            "dev_bootstrap": bool(config.enable_dev_bootstrap),
         }
 
     @app.get("/health/live")
@@ -665,6 +775,10 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get("/ui/authority", response_class=HTMLResponse)
     def ui_authority():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/predictive", response_class=HTMLResponse)
+    def ui_predictive():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
     @app.get("/webshield/lab", response_class=HTMLResponse)
@@ -806,7 +920,7 @@ def create_app(config: AppConfig) -> FastAPI:
     @app.post("/sdk/guard")
     @app.post("/v1/actions/guard")
     def sdk_guard(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         action_payload = payload.get("action") or {}
         raw_payload = payload.get("payload") or action_payload.get("args") or {}
         # Client-asserted "approved=true" / coverage claims are ignored.
@@ -982,7 +1096,7 @@ def create_app(config: AppConfig) -> FastAPI:
         side effects must be pre-checked via ``POST /sdk/guard``. Calling
         ``/sdk/log`` alone never authorises an action.
         """
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         action_payload = payload.get("action") or {}
         decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log (audit-only; not an enforcement decision)"}
         action = normalize_action(action_payload, record["tenant_id"])
@@ -1240,6 +1354,9 @@ def create_app(config: AppConfig) -> FastAPI:
 
     register_webshield_routes(app, require=require, webshield_store=webshield_store, idem=idem)
     register_provenance_routes(app, require=require, provenance_store=provenance_store, event_store=event_store)
+    register_predictive_authority_routes(
+        app, require=require, event_store=event_store, db_path=config.db_path
+    )
     register_runtime_routes(
         app,
         require=require,

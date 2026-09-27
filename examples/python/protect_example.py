@@ -1,7 +1,7 @@
 import requests
 import varden
 
-varden.protect(base_url="http://127.0.0.1:8000", api_key="admin-demo-key", auto_instrument=True)
+varden.protect(base_url="http://127.0.0.1:8000", api_key="agent-demo-key", auto_instrument=True)  # ingest-only dev key
 
 @varden.tool("list_files")
 def list_files(path: str):

@@ -443,6 +443,11 @@ class EventStore:
                 "classifiers": action.get("classifiers") or {},
                 "matched_rule": matched_rule,
                 "matched_rule_label": matched_rule_label,
+                "trace_id": e.get("trace_id") or action.get("trace_id"),
+                "has_predictive": bool(
+                    isinstance((action.get("metadata") or {}).get("predictive_authority"), dict)
+                    and (action.get("metadata") or {}).get("predictive_authority")
+                ),
             })
 
         total_events = metrics.get("total_events", 0) or 0

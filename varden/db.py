@@ -541,6 +541,29 @@ def _apply_migrations(conn):
         )
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (10)")
 
+    if 11 not in versions:
+        # Predictive Authority historical snapshots — bound to events.id via
+        # content_hash stamped into action.metadata.predictive_authority
+        # (included in the tamper-evident audit chain). Retention follows the
+        # events/DB lifecycle; no separate retention subsystem.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS predictive_snapshots (
+              event_id INTEGER PRIMARY KEY,
+              tenant_id TEXT,
+              created_at REAL NOT NULL,
+              schema_version INTEGER NOT NULL,
+              content_hash TEXT NOT NULL,
+              snapshot_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_predictive_snapshots_tenant
+              ON predictive_snapshots(tenant_id, created_at);
+            CREATE INDEX IF NOT EXISTS idx_predictive_snapshots_hash
+              ON predictive_snapshots(content_hash);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (11)")
+
 
 class _AutoCloseConnection(sqlite3.Connection):
     """sqlite3.Connection used as a context manager only commits/rolls back

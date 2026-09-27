@@ -108,16 +108,19 @@ varden demo
 **Wrap your CLI tools with Varden session:**
 ```bash
 export VARDEN_BASE_URL=http://127.0.0.1:8000
-export VARDEN_API_KEY=admin-demo-key
+export VARDEN_API_KEY=agent-demo-key   # ingest-only; never give an agent an admin key
 varden session . -- cursor .
 ```
 
-Subprocess calls, HTTP requests, and LLM calls that Cursor makes now appear in your
-dashboard — blocked, warned, or logged according to your policy.
+CLI tools that Cursor's shell runs by name (`git`, `kubectl`, `terraform`, `docker`, …;
+see the shim list below) now appear in your dashboard — blocked, warned, or logged
+according to your policy.
 
-> **Note:** Varden intercepts via a PATH shim. Child processes Cursor spawns will
-> be covered; processes Cursor launches outside the shell PATH may not be. Use an
-> interactive `varden session` shell for broadest coverage.
+> **Note:** `varden session` works through PATH shims. It sees shimmed binaries
+> invoked by name from that shell. It does **not** see Cursor's own HTTP or LLM
+> traffic (Cursor is not a Python process), or binaries invoked by absolute path
+> (`/usr/bin/git`). Use `varden.protect()` for Python agents and `varden mcp wrap`
+> for MCP servers.
 
 ![Varden dashboard — trace and flow mission control](docs/dashboard-screenshot.png)
 
@@ -190,7 +193,42 @@ Persistent decisions are stored in an atomic SHA-256 hash chain; verify with
 | Filesystem full mediation | PARTIAL |
 | Audit hash chain | supported |
 | Audit verification (`varden audit verify`) | supported |
+| Predictive Authority (observe/enforce) | supported (opt-in) |
 | External signed checkpoint | not provided |
+
+### Predictive Authority
+
+Varden Predictive Authority evaluates not only whether an action is allowed, but
+what authority and sensitive resources become **reachable** if that action is
+permitted.
+
+It performs **deterministic reachability analysis** over evidence-backed
+authority state — not an LLM risk classifier, and not a prediction of what the
+agent will do next. It is **disabled by default**. `observe` records
+recommendations without changing decisions; `enforce` may strengthen existing
+decisions but never weakens them.
+
+Within configured bounds, sequential AuthorityState accumulation allows Varden
+to identify hazardous trajectories as prerequisite authority becomes reachable
+(see adversarial validation). Hazard analysis is bounded by authority-relevant
+transitions rather than arbitrary alias hops, while independent node, edge and
+visit limits bound computational work. Large graphs may produce a hazardous
+finding together with `TRUNCATED` status: the identified path is valid, but
+analysis was not exhaustive. Incomplete analysis is never treated as safe.
+
+```bash
+varden authority demo
+varden authority status
+varden predictive demo
+```
+
+Dashboard: **Predictive** (`/ui/predictive`) visualises observed vs predicted
+(reachable) authority, evidence-backed trajectories, and the enforcement
+interrupt point.
+
+See [docs/predictive-authority.md](docs/predictive-authority.md) and
+[docs/predictive-authority-adversarial-validation.md](docs/predictive-authority-adversarial-validation.md).
+
 
 ```bash
 varden coverage
@@ -375,7 +413,8 @@ python -m varden.api --config examples/dev.env
 - Dashboard: `http://127.0.0.1:8000/`
 - Rules editor: `http://127.0.0.1:8000/ui/rules`
 - API docs: `http://127.0.0.1:8000/docs`
-- Bootstrap key: `admin-demo-key`
+- Bootstrap keys (dev only, public, revoked automatically when `VARDEN_ENABLE_DEV_BOOTSTRAP=false`):
+  `admin-demo-key` for you, `agent-demo-key` (ingest-only) for agents
 
 ### 5. Run the demo
 
@@ -390,13 +429,14 @@ dashboard immediately.
 
 ## Policy model
 
-Policies are a JSON file with four outcome lists (`block`, `warn`, `monitor`, `allow`) plus optional `budget_rules` for LLM spend caps.
+Policies are a JSON file with outcome lists (`block`, `require_approval`, `sanitise`, `warn`, `monitor`, `allow`), an optional `default` / per-surface `defaults` decision for when nothing matches (deny-by-default), and optional `budget_rules` for LLM spend caps. Match commands with the argv-aware `command` predicate rather than substrings. It's a guardrail, not a boundary: for enforcement, prefer a subprocess allowlist (`"defaults": {"subprocess": "block"}` plus `allow` rules). Policies are validated strictly — a misspelled field, classifier or operator is an error, not a rule that silently never fires. See [docs/policy-engine.md](docs/policy-engine.md).
 
 ```json
 {
   "block": [
     {"type": "tool_call", "tool": "delete_database"},
-    {"type": "tool_call", "tool": "subprocess.run", "field:args.args": {"contains": "delete_database"}}
+    {"type": "tool_call", "tool": "subprocess.run", "field:args.args": {"contains": "delete_database"}},
+    {"type": "tool_call", "command": {"program": "rm", "flags_all": [["r", "R", "recursive"], ["f", "force"]]}}
   ],
   "warn": [
     {"classifier:secrets": true},
@@ -416,7 +456,7 @@ Policies are a JSON file with four outcome lists (`block`, `warn`, `monitor`, `a
 }
 ```
 
-Rules are evaluated in order: `block → warn → monitor → allow`. First match wins.
+Rules are evaluated in order: `block → require_approval → sanitise → warn → monitor → allow`. First match wins; if nothing matches, `defaults[surface]` → `default` → `allow`.
 Token budget rules run on `llm_call` actions before execution (pre-check) and after completion via SDK usage logging (post-record).
 Edit visually at `/ui/rules` or directly in the JSON file. Policy versions are tracked.
 
@@ -522,8 +562,18 @@ docker compose -f deploy/docker-compose.yml up
 ```
 
 See `deploy/self_hosting.md` and `deploy/operations.md` for production configuration.
-Local defaults use SQLite. Production self-hosting should use a strong signing secret
-and disable the dev bootstrap auth.
+Local defaults use SQLite. Outside `VARDEN_ENV=dev`, startup refuses a placeholder or
+short (<32 char) `VARDEN_SIGNING_SECRET`, a missing or invalid policy file, and dev bootstrap
+being on; the public demo keys are revoked. Provision credentials with:
+
+```bash
+varden keys --config deploy/config/prod.env create --role admin   # for you
+varden keys --config deploy/config/prod.env create --role agent   # for each protected process
+```
+
+or seed a first admin key with `VARDEN_BOOTSTRAP_ADMIN_API_KEY` (32+ chars). Give agents
+`agent`-role keys only: they can submit actions for a decision and nothing else. In
+`strict` mode the SDK refuses to start with a privileged key.
 
 ---
 

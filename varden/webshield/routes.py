@@ -97,7 +97,7 @@ def register_webshield_routes(
         authorization: str | None = Header(default=None),
         idempotency_key: str | None = Header(default=None),
     ):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         _check_payload_size(payload)
         session_id = _require_str(payload, "session_id")
         tool_raw = payload.get("tool")
@@ -150,7 +150,7 @@ def register_webshield_routes(
         authorization: str | None = Header(default=None),
         idempotency_key: str | None = Header(default=None),
     ):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         _check_payload_size(payload)
         session_id = _require_str(payload, "session_id")
         event = _require_str(payload, "event")
@@ -189,7 +189,7 @@ def register_webshield_routes(
         authorization: str | None = Header(default=None),
         idempotency_key: str | None = Header(default=None),
     ):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         _check_payload_size(payload)
         session_id = _require_str(payload, "session_id")
         identity_key = _require_str(payload, "identity_key")
@@ -238,7 +238,7 @@ def register_webshield_routes(
         records one hop per call; reconstructing a full multi-hop chain across
         many tools/origins is not implemented — see docs/web-shield-limitations.md.
         """
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         _check_payload_size(payload)
         session_id = _require_str(payload, "session_id")
         from_origin = _require_str(payload, "from_origin")
@@ -262,7 +262,7 @@ def register_webshield_routes(
         authorization: str | None = Header(default=None),
         idempotency_key: str | None = Header(default=None),
     ):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         _check_payload_size(payload, max_bytes=400_000)
         session_id = _require_str(payload, "session_id")
         identity_key = _require_str(payload, "identity_key")
@@ -286,7 +286,7 @@ def register_webshield_routes(
 
     @app.post("/webshield/extension/health")
     def webshield_extension_health(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
-        record = require(x_api_key, authorization, "viewer", scope="ingest")
+        record = require(x_api_key, authorization, "agent", scope="ingest")
         _check_payload_size(payload)
         session_id = _require_str(payload, "session_id")
         return webshield_store.record_extension_health(

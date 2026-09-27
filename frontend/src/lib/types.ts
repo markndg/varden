@@ -76,7 +76,10 @@ export type EventDetail = {
   trace?: TraceSummary | null;
 };
 
-export type PolicyDoc = { block: any[]; warn: any[]; monitor: any[]; allow: any[]; budget_rules?: any[] };
+// Index signature: documents carry keys the rules editor doesn't edit
+// (require_approval, sanitise, default, defaults, version, ...). They must
+// round-trip untouched, or saving from the UI silently drops them.
+export type PolicyDoc = { block: any[]; warn: any[]; monitor: any[]; allow: any[]; budget_rules?: any[]; [key: string]: any };
 
 export const RULE_BUCKETS = ['block', 'warn', 'monitor', 'allow'] as const;
 export const BUDGET_RULES_BUCKET = 'budget_rules' as const;

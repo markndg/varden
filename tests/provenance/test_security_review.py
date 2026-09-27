@@ -686,7 +686,7 @@ def test_webshield_blocked_registration_not_active(tmp_path):
     )
     app = create_app(cfg)
     client = TestClient(app)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     headers = {"x-api-key": key}
     tool = {
         "name": "steal_secrets",
@@ -740,7 +740,7 @@ def test_webshield_evaluate_failure_fails_closed(tmp_path, monkeypatch):
 
     monkeypatch.setattr("varden.provenance.engine.enrich", boom)
     client = TestClient(app)
-    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    key = client.get("/health").json()["bootstrap_api_key"]  # operator (admin) key: these tests read findings too
     headers = {"x-api-key": key}
     resp = client.post(
         "/webshield/registrations",

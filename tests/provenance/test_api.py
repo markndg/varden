@@ -63,7 +63,7 @@ def test_guard_blocks_untrusted_secret_read(tmp_path):
 
 def test_provenance_summary_endpoint(tmp_path):
     client = _client(tmp_path)
-    boot = client.get("/sdk/bootstrap").json()
+    boot = client.get("/health").json()  # operator key: this test reads /provenance/summary
     key = boot["bootstrap_api_key"]
     # Generate a finding first
     home = str(Path.home())

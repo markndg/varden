@@ -482,16 +482,47 @@ def _patch_module_for_name(fullname: str, guard: VardenGuard) -> None:
 
 
 
+_DEFAULT_PORTS = {'http': 80, 'https': 443}
+
+
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """Return (scheme, host, port) for a URL, or None if it is unusable.
+
+    URLs carrying userinfo are rejected outright: ``http://127.0.0.1:8000@evil``
+    has host ``evil`` and must never be mistaken for the control plane.
+    """
+    parsed = urlparse(str(url))
+    scheme = (parsed.scheme or '').lower()
+    if scheme not in _DEFAULT_PORTS or not parsed.hostname:
+        return None
+    if parsed.username is not None or parsed.password is not None or '@' in (parsed.netloc or ''):
+        return None
+    try:
+        port = parsed.port or _DEFAULT_PORTS[scheme]
+    except ValueError:
+        return None
+    return scheme, parsed.hostname.lower().rstrip('.'), port
+
+
 def _is_control_plane_request(url: str | None, guard: VardenGuard) -> bool:
+    """True only for requests to exactly the configured control-plane origin.
+
+    These requests skip guarding (Varden must be able to reach itself), so the
+    comparison is on parsed scheme/host/port, never a string prefix.
+    """
     if not url:
         return False
     try:
-        parsed = urlparse(str(url))
-        if parsed.hostname in {"testserver", "test"}:
-            return True
-        return str(url).startswith(guard.client.base_url.rstrip('/'))
+        target = _origin(str(url))
+        base = _origin(guard.client.base_url)
+        if target is None or base is None or target != base:
+            return False
+        base_path = urlparse(guard.client.base_url).path.rstrip('/')
+        target_path = urlparse(str(url)).path or '/'
+        return not base_path or target_path == base_path or target_path.startswith(base_path + '/')
     except Exception:
         return False
+
 def _patch_requests(guard: VardenGuard) -> None:
     try:
         import requests
