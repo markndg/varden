@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "varden"
-version = "0.4.1"
-description = "A self-hosted runtime firewall for AI agents"
+version = "1.0.0"
+description = "Runtime security, policy enforcement, provenance and predictive authority for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -13,20 +13,37 @@ authors = [
   { name = "Mark Griffiths" }
 ]
 keywords = [
-  "ai", "agents", "llm", "security", "firewall",
-  "observability", "runtime", "guardrails", "policy"
+  "ai",
+  "agents",
+  "llm",
+  "security",
+  "agent-security",
+  "runtime-security",
+  "ai-security",
+  "firewall",
+  "mcp",
+  "webmcp",
+  "provenance",
+  "authority",
+  "policy",
+  "guardrails",
+  "observability",
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 5 - Production/Stable",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Security",
   "Topic :: Software Development :: Libraries",
   "Topic :: System :: Monitoring",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
 ]
 dependencies = [
   "fastapi>=0.111",
@@ -66,9 +83,11 @@ all = [
 
 [project.urls]
 Homepage = "https://github.com/markndg/varden"
+Documentation = "https://github.com/markndg/varden#readme"
 Repository = "https://github.com/markndg/varden"
 Issues = "https://github.com/markndg/varden/issues"
-Changelog = "https://github.com/markndg/varden/commits/main"
+Security = "https://github.com/markndg/varden/security"
+Changelog = "https://github.com/markndg/varden/blob/main/CHANGELOG.md"
 
 [project.scripts]
 varden = "varden.cli:main"
