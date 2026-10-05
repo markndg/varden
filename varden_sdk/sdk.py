@@ -393,10 +393,13 @@ class VardenGuard:
         provenance_sources = list(_current_provenance.get() or [])
         merged_meta = {'app_name': self.app_name, 'tenant': self.tenant, **auto_meta, **(metadata or {}), 'lineage': lineage}
         surface = ((metadata or {}).get('runtime') or {}).get('surface') or (auto_meta.get('execution_surface') if isinstance(auto_meta, dict) else None) or type
+        # Locked contract mode is authoritative for runtime labels — a poisoned
+        # observe guard must not stamp observe onto an enforcing session.
+        effective_mode = _live_product_mode(self)
         merged_meta = enrich_action_runtime_metadata(
             merged_meta,
             surface=str(surface),
-            mode=self.product_mode,
+            mode=effective_mode,
             pre_execution=True,
         )
         if tool and tool in self._tool_registry:
@@ -431,6 +434,13 @@ class VardenGuard:
             if result and result.event_id:
                 _current_trace_id.set(trace_id)
                 _current_parent_event_id.set(result.event_id)
+            # Defensive: if CP returns a blocked decision without 403, still deny
+            # under a locked enforcing contract (never trust local observe mode).
+            if result and result.blocked and _live_enforcing(self):
+                raise VardenBlockedError(
+                    f"blocked by Varden ({(result.decision or {}).get('action')})",
+                    result.decision,
+                )
             return result
         except VardenBlockedError as exc:
             # Observe mode records the block but must not prevent side effects.
@@ -446,8 +456,15 @@ class VardenGuard:
                     )
                 return GuardResult(decision=detail or {'action': 'block', 'reason': str(exc)}, action=action, event_id=None)
             raise
-        except Exception:
-            if self.fail_mode == 'closed':
+        except Exception as exc:
+            # Authoritative fail_mode comes from the locked contract when present.
+            # A poisoned fail_mode=open guard must not open a locked closed runtime.
+            if _live_fail_closed(self):
+                if _live_enforcing(self):
+                    raise VardenBlockedError(
+                        f"control plane unreachable under locked enforcing contract: {exc}",
+                        {"action": "block", "reason": "control_plane_unreachable"},
+                    ) from exc
                 raise
             return None
 
@@ -477,7 +494,7 @@ class VardenGuard:
                 _current_parent_event_id.set(result.get('event_id'))
             return result
         except Exception:
-            if self.fail_mode == 'closed':
+            if _live_fail_closed(self):
                 raise
             return None
 
@@ -630,6 +647,33 @@ def _live_enforcing(guard: VardenGuard | None = None) -> bool:
         return False
     mode = getattr(current, "product_mode", None) or getattr(current, "mode", None)
     return is_enforcing(mode) or mode == "enforce"
+
+
+def _live_fail_closed(guard: VardenGuard | None = None) -> bool:
+    """Effective fail-closed flag for control-plane / transport errors.
+
+    After mode lock, ``enforcement_contract()['fail_mode']`` is authoritative —
+    a poisoned observe/open guard must not open the failure path of a locked
+    guarded/strict (closed) runtime.
+    """
+    contract = get_coverage_registry().enforcement_contract()
+    if contract.get("mode_locked"):
+        return str(contract.get("fail_mode") or "").lower() == "closed"
+    current = guard or _current_guard.get()
+    if current is None:
+        return True
+    return str(getattr(current, "fail_mode", "") or "").lower() == "closed"
+
+
+def _live_product_mode(guard: VardenGuard | None = None) -> str:
+    """Effective product mode for action metadata / runtime labels."""
+    contract = get_coverage_registry().enforcement_contract()
+    if contract.get("mode_locked") and contract.get("mode"):
+        return str(contract.get("mode"))
+    current = guard or _current_guard.get()
+    if current is None:
+        return GUARDED
+    return str(getattr(current, "product_mode", None) or getattr(current, "mode", None) or GUARDED)
 
 
 def current_provenance_sources() -> list[dict[str, Any]]:
