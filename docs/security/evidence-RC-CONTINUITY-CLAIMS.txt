@@ -1,0 +1,27 @@
+RC ContinuityStore claim honesty — BEFORE (characterization) vs AFTER (fix)
+
+Defect: AuthorityRegistry.continuity_status() / stats() set
+  cross_restart_continuity_verified = bool(store is not None)
+when a ContinuityStore was bound. That claimed verified cross-restart
+continuity merely because a SQLite fail-safe store was attached. Full live
+graph replay is not implemented; the claim was false.
+
+BEFORE (pre-fix characterization from RC probe):
+  durable_store_bound=True
+  cross_restart_continuity_verified=True   # FALSE CLAIM
+  continuity_scope=process_lifetime_plus_durable_failsafe
+
+AFTER (production fix + test_rc_BEFORE_deleted_db_must_not_claim_verified_restart):
+  durable_store_bound=True
+  cross_restart_continuity_verified=False  # honest
+  continuity_scope=process_lifetime_plus_durable_failsafe
+
+Also fixed:
+  - active_worker_count() on lease failure returned None → topology skipped
+    multi-worker detection. Now degrades + returns 2 (conservative).
+  - attach_continuity_store on read-only / failing store raised or left
+    process undegraded. Now probes and marks CONTINUITY_STORE_ATTACH_FAILED.
+  - configure_authority_registry bind failure left process undegraded.
+    Now CONTINUITY_STORE_BIND_FAILED.
+  - touch_lease + count were non-atomic (startup race both see 1).
+    Now touch_lease_and_count() under BEGIN IMMEDIATE.

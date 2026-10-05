@@ -41,16 +41,19 @@ def main() -> int:
             locked = True
             print(f"  downgrade rejected: {exc}")
 
-        # Also try mutating guard attributes (must not change locked registry session).
+        # Also try mutating guard attributes (must not change locked registry session
+        # and must raise once mode is locked).
+        mutated = False
         try:
             guard.product_mode = "observe"
             guard.fail_mode = "open"
-        except Exception:
-            pass
+            mutated = True
+        except RuntimeError as exc:
+            print(f"  mutation rejected: {exc}")
         after = reg.attestation()
         print(f"  after  mode={after.get('mode')} fail_mode={after.get('fail_mode')}")
 
-        ok = locked and after.get("mode") == "strict" and after.get("fail_mode") == "closed"
+        ok = locked and (not mutated) and after.get("mode") == "strict" and after.get("fail_mode") == "closed"
         print("RESULT", "PASS" if ok else "FAIL")
         varden.unpatch_runtime()
         return 0 if ok else 1

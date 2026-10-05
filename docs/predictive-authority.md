@@ -11,10 +11,35 @@
 - **Bounded live state:** `VARDEN_PA_MAX_SESSIONS` (default 10000) and
   `VARDEN_PA_SESSION_IDLE_SECONDS` (default 86400). Eviction order: idle sessions, then
   sessions with no accumulated authority (least recently used first), then plain LRU.
-  An evicted session restarts from a fresh state. Durable per-event snapshots are
-  unaffected.
-- **One worker:** live state is process-local, so run a single control-plane worker when
-  PA is enabled.
+  An evicted session that never accumulated authority restarts from a fresh
+  state. Evicting (or idle-expiring) a session that *had* accumulated authority
+  records a bounded tombstone; recreating that session key marks
+  `continuity_broken` so enforce mode applies `failure_mode` (default
+  `require_approval`) rather than treating monitoring-state loss as proof of
+  safety. If the tombstone table itself drops entries under its cap
+  (`2 * max_sessions`), the process sets `continuity_degraded`
+  (`TOMBSTONE_HISTORY_INCOMPLETE`) for the rest of its lifetime — bounded
+  process-local state cannot distinguish a forgotten key from a new one.
+  When the control plane binds a SQLite **ContinuityStore** (automatic in
+  `create_app`), tombstones and `had_authority` markers are also durable:
+  reintroducing a prior-authority session after process restart marks
+  `continuity_broken` (fail-safe). Worker leases on the same database detect
+  multiple OS processes even if each declares `single_worker` and worker-count
+  env vars are unset. Full live-graph *replay* across restart/workers is not
+  claimed — only fail-closed continuity (`cross_restart_continuity_verified`
+  is always false). ContinuityStore read/write/lease/attach failures degrade
+  the process (`CONTINUITY_STORE_*`) rather than treating unknown continuity as
+  clean authority. Separate DB paths do **not** share leases. Durable per-event
+  snapshots remain separate (audit / UI) and are not reloaded into live analysis.
+  Topology declaration: set `VARDEN_PA_DEPLOYMENT=single_worker` for enforce
+  (or `multi_worker_allowed` / `VARDEN_PA_ALLOW_MULTI_WORKER=1` to accept residual
+  risk). Undeclared topology fails safe.
+- **Deployment declaration:** enforce mode requires
+  `VARDEN_PA_DEPLOYMENT=single_worker` (or explicit `multi_worker_allowed` /
+  `VARDEN_PA_ALLOW_MULTI_WORKER`). Undeclared topology fails safe
+  (`DEPLOYMENT_UNDECLARED`). Detected `WEB_CONCURRENCY`/`VARDEN_WORKERS` > 1
+  without allow → `MULTI_WORKER_UNSUPPORTED`. Opt-in is residual-risk acceptance,
+  not verified shared-state coordination.
 - **Demo isolation:** `POST /predictive/demo` and the `demo` tenant use a separate store and
   never touch live sessions.
 - **Tenant scoping:** read endpoints use the caller's tenant. The only other `tenant_id`

@@ -482,12 +482,21 @@ Configuration comes only from the policy file's `predictive_authority` section a
 Live session state is held in memory, per control-plane process:
 
 - It is bounded by `VARDEN_PA_MAX_SESSIONS` (default 10,000) and
-  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 24h). An evicted session's next action is
-  analysed from a fresh state, so size the cap for your workload
-  (evictions are reported in the registry stats).
-- Run a **single** control-plane worker when Predictive Authority is enabled. With
-  several workers (`uvicorn --workers N`), each process sees only part of a session, and
-  chains that cross workers are missed.
+  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 24h). Evicting a session that never
+  accumulated authority restarts analysis from a fresh state. Evicting (or
+  idle-expiring) a session that *had* accumulated authority records a bounded
+  tombstone; recreating that session key marks `continuity_broken` so enforce
+  mode applies `failure_mode` (default `require_approval`). If tombstones are
+  forgotten under the cap, the process enters `continuity_degraded` and enforce
+  fails safe for the remainder of the process lifetime (bounded state cannot
+  tell a new session from a forgotten one). Cross-**restart** continuity is
+  not verified.
+- Enforce mode requires an explicit deployment declaration:
+  `VARDEN_PA_DEPLOYMENT=single_worker`. Undeclared topology fails safe. Detected
+  multi-worker env vars without allow → fail-safe. `VARDEN_PA_ALLOW_MULTI_WORKER=1`
+  / `multi_worker_allowed` accepts residual risk — it is **not** verified
+  shared-state safety. In-process Python cannot see sibling workers that omit
+  those env vars.
 
 ## Bounded analysis
 

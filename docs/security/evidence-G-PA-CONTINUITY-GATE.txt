@@ -1,0 +1,18 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-8.4.2, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.13/bin/python3
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /Users/mark/GitHub/varden
+configfile: pyproject.toml
+plugins: langsmith-0.8.3, hypothesis-6.156.6, anyio-4.13.0
+collecting ... collected 7 items
+
+tests/security/gauntlet/test_continuity_gate.py::test_gauntlet_BEFORE_tombstone_exhaustion_without_degradation_flag PASSED [ 14%]
+tests/security/gauntlet/test_continuity_gate.py::test_gauntlet_AFTER_tombstone_exhaustion_degrades_process_failsafe PASSED [ 28%]
+tests/security/gauntlet/test_continuity_gate.py::test_gauntlet_impossibility_note_new_vs_forgotten PASSED [ 42%]
+tests/security/gauntlet/test_continuity_gate.py::test_gauntlet_undeclared_deployment_failsafe PASSED [ 57%]
+tests/security/gauntlet/test_continuity_gate.py::test_gauntlet_declared_single_worker_allows_benign_shell PASSED [ 71%]
+tests/security/gauntlet/test_continuity_gate.py::test_gauntlet_split_chain_across_declared_single_worker_processes PASSED [ 85%]
+tests/security/gauntlet/test_continuity_gate.py::test_gauntlet_process_restart_loses_continuity PASSED [100%]
+
+============================== 7 passed in 0.23s ===============================

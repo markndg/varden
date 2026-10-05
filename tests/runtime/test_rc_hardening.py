@@ -31,15 +31,18 @@ from varden.runtime.coverage import (
 def _activate(reg: CoverageRegistry, **kwargs) -> None:
     kwargs.setdefault("mode", "strict")
     kwargs.setdefault("fail_mode", "closed")
-    reg.set_session(lock_mode=True, **kwargs)
+    # Simulated ENFORCED marks for unit tests happen without live probes; lock
+    # only when the test exercises lock semantics explicitly.
+    kwargs.setdefault("lock_mode", False)
+    reg.set_session(**kwargs)
 
 
 def test_missing_required_enforced_vs_weaker_statuses():
     reg = CoverageRegistry()
-    _activate(reg, mode="strict", require_coverage=["http", "subprocess", "filesystem"])
     reg.mark("http.requests", status=ENFORCED, active=True, applicable=True)
     reg.mark("subprocess", status=ENFORCED, active=True, applicable=True)
     reg.mark("filesystem", status=ENFORCED, active=True, applicable=True)
+    _activate(reg, mode="strict", require_coverage=["http", "subprocess", "filesystem"], lock_mode=True)
     assert reg.missing_required() == []
 
     cases = [
@@ -77,9 +80,9 @@ def test_partial_required_surface_blocks_protected_posture():
     from varden.runtime.posture import NOT_READY, evaluate_posture
 
     reg = CoverageRegistry()
-    _activate(reg, mode="strict", require_coverage=["http", "subprocess"])
     reg.mark("http.requests", status=PARTIAL, active=True, applicable=True)
     reg.mark("subprocess", status=ENFORCED, active=True, applicable=True)
+    _activate(reg, mode="strict", require_coverage=["http", "subprocess"], lock_mode=True)
     report = evaluate_posture(reg, self_test="not_run")
     assert report.result == NOT_READY
     assert report.to_dict().get("result") == NOT_READY
@@ -94,17 +97,25 @@ def test_coverage_registry_reset_clears_session_security_state():
         session_id="sess-1",
         require_coverage=["http", "mcp"],
         allow_uncovered=["filesystem"],
-        lock_mode=True,
+        lock_mode=False,
     )
     reg.mark("http.requests", status=ENFORCED, active=True, applicable=True)
     reg.discover("mcp", detail={"reason": "config present"})
+    reg.set_session(
+        mode="strict",
+        fail_mode="closed",
+        session_id="sess-1",
+        require_coverage=["http", "mcp"],
+        allow_uncovered=["filesystem"],
+        lock_mode=True,
+    )
     att1 = reg.attestation()
     assert att1["mode"] == "strict"
     assert att1["session_id"] == "sess-1"
     assert att1["require_coverage"] == ["http", "mcp"]
     assert att1["mode_locked"] is True
 
-    reg.reset()
+    reg.reset(release_enforcement_lock=True)
     att2 = reg.attestation()
     assert att2["mode"] == "guarded"
     assert att2["fail_mode"] == "closed"
@@ -119,7 +130,7 @@ def test_coverage_registry_reset_clears_session_security_state():
     reg.set_session(mode="guarded", fail_mode="closed", require_coverage=["subprocess"], lock_mode=True)
     assert reg.attestation()["require_coverage"] == ["subprocess"]
     assert "http" not in reg.attestation()["require_coverage"]
-    reg.reset()
+    reg.reset(release_enforcement_lock=True)
 
 
 def test_surface_aliases_resolve_to_catalogue():

@@ -43,12 +43,15 @@ def _activate(
     require_coverage: list[str] | None = None,
     allow_uncovered: list[str] | None = None,
 ) -> None:
+    # Posture fixtures simulate coverage rows without live probes — do not lock,
+    # so mark(ENFORCED) remains a unit-test simulation (install_interceptor is
+    # required for ENFORCED after mode lock in production).
     reg.set_session(
         mode=mode,
         fail_mode=fail_mode,
         require_coverage=require_coverage,
         allow_uncovered=allow_uncovered,
-        lock_mode=True,
+        lock_mode=False,
     )
 
 
@@ -132,18 +135,18 @@ def _mark_core_enforced(reg: CoverageRegistry, *, filesystem: str = ENFORCED, ne
         (
             "required_mcp_not_routed",
             lambda reg: (
-                _activate(reg, mode="strict", require_coverage=["http", "subprocess", "mcp"]),
                 _mark_core_enforced(reg, filesystem=ENFORCED),
                 reg.mark("mcp", status=NOT_ROUTED, active=False, applicable=True),
+                _activate(reg, mode="strict", require_coverage=["http", "subprocess", "mcp"]),
             ),
             NOT_FULLY_ROUTED,
         ),
         (
             "strict_readiness_failure",
             lambda reg: (
+                reg.mark("subprocess", status=ENFORCED, active=True),
                 _activate(reg, mode="strict", require_coverage=["http", "subprocess"]),
                 # leave http uncovered
-                reg.mark("subprocess", status=ENFORCED, active=True),
             ),
             NOT_READY,
         ),
@@ -173,13 +176,13 @@ def test_posture_combinations(case, setup, expected):
 
 def test_precedence_not_ready_over_not_routed():
     reg = _fresh_registry()
-    _activate(reg, mode="strict", require_coverage=["http", "mcp"])
     _mark_core_enforced(reg, filesystem=ENFORCED)
     reg.discover("mcp", detail={"reason": "present"})
     reg.mark("mcp", status=NOT_ROUTED, active=False, applicable=True)
     # http required but uncovered → material readiness failure wins over routing
     reg.mark("http.requests", status=UNCOVERED, active=False)
     reg.mark("http.httpx", status=UNCOVERED, active=False)
+    _activate(reg, mode="strict", require_coverage=["http", "mcp"])
     report = evaluate_posture(reg)
     assert report.result == NOT_READY
 

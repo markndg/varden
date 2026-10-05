@@ -18,6 +18,21 @@ Security release. **Upgrade if you run Predictive Authority in `enforce` mode.**
   runs in an isolated store.
 - **PA read endpoints honoured any `tenant_id` query parameter.** They are now scoped to the
   caller's tenant, plus the isolated `demo` tenant.
+- **PA session eviction could weaken enforce decisions.** Evicting or idle-expiring a session
+  that had accumulated authority discarded the graph and restarted the same session key from a
+  clean slate. Eviction of accumulated authority now records a bounded continuity tombstone;
+  recreate marks `continuity_broken` and enforce applies `failure_mode`.
+- **Tombstone-table exhaustion could restore trust.** Forgetting a tombstone under the
+  `2×max_sessions` cap made a reintroduced session key look brand-new (`allow`). Any tombstone
+  drop now sets process-wide `continuity_degraded` (`TOMBSTONE_HISTORY_INCOMPLETE`) so enforce
+  fails safe for the process lifetime until operator registry reset. Bounded process-local
+  state cannot distinguish new keys from forgotten ones.
+- **Multi-worker / undeclared topology.** Live state is process-local. Enforce requires
+  `VARDEN_PA_DEPLOYMENT=single_worker` (undeclared → `DEPLOYMENT_UNDECLARED` fail-safe).
+  Detected worker env > 1 without allow → `MULTI_WORKER_UNSUPPORTED`. Opt-in accepts residual
+  risk only; sibling processes that each declare single_worker can still miss chains.
+- **Cross-restart continuity is unsupported.** Claims report
+  `cross_restart_continuity_verified=false` / `continuity_scope=process_lifetime_only`.
 
 ### Fixes
 
@@ -28,11 +43,20 @@ Security release. **Upgrade if you run Predictive Authority in `enforce` mode.**
 - **Web Shield `sanitise` was recorded as "side effect prevented".** A sanitised output still
   reaches the agent in modified form. It is now recorded as intercepted and sanitised, not
   prevented. `require_approval` is unchanged (held, not executed, matching `/sdk/guard`).
+- **Demo agent imports activated `varden.protect()`.** Importing demo modules for metadata
+  tests patched process-local `httpx` and broke Starlette `TestClient` for later tests in the
+  same process. `protect()` now runs inside `run()`.
+- **Live guard could weaken after mode lock.** `activate()` set `_current_guard` before the
+  coverage registry lock check, so a second `protect(mode="observe")` swapped the live guard
+  even when `set_session` refused the downgrade; mutating `product_mode` had the same effect
+  on interceptors. Lock is checked first, locked mode attributes are immutable, and
+  interceptors treat the locked registry mode as authoritative.
 
 ### Docs
 
 - Predictive Authority is labelled experimental in 1.0.x. There is guidance on sizing the
   session cap and on running a single control-plane worker when PA is enabled.
+- Security gauntlet baseline/findings/results under `docs/security/GAUNTLET-*.md`.
 
 ## v1.0.0
 

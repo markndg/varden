@@ -39,6 +39,10 @@ class CoverageSurface:
     enforcement_mode: str = "none"
     interceptor: str | None = None
     active: bool = False
+    # Installed = patch recorded for this process; verified = last probe passed.
+    # Attestation may only report ENFORCED when verified is True (see verify()).
+    installed: bool = False
+    verified: bool | None = None
     # When False, the surface exists in the catalog but is not relevant to this
     # runtime (e.g. MCP with no discovered config). Posture must not treat
     # NOT_ROUTED on a non-applicable surface as a material gap.
@@ -205,17 +209,26 @@ class CoverageRegistry:
         self._discovered: dict[str, dict[str, Any]] = {}
         self._mode_locked: bool = False
         self._interceptor_checks: dict[str, Any] = {}
+        self._interceptor_sealed: set[str] = set()
         self.reset()
 
-    def reset(self) -> None:
+    def reset(self, *, release_enforcement_lock: bool = False) -> None:
         """Full process-local teardown after runtime unpatch / session end.
 
         Clears surfaces, discovery, interceptor checks, *and* the security
         contract (mode, fail mode, session id, require_coverage, exceptions,
-        attestation timestamp, mode lock). A subsequent ``protect()`` must not
-        inherit stale readiness state from a prior activation.
+        attestation timestamp, mode lock).
+
+        While enforcement mode is locked, ``reset()`` refuses unless
+        ``release_enforcement_lock=True`` (used only by ``unpatch_runtime``).
+        Callers must not clear the lock while interceptors remain installed.
         """
         with self._lock:
+            if self._mode_locked and not release_enforcement_lock:
+                raise RuntimeError(
+                    "cannot reset coverage registry while enforcement mode is locked; "
+                    "call unpatch_runtime() first"
+                )
             self._surfaces = {}
             for item in _CATALOG:
                 self._surfaces[item["name"]] = CoverageSurface(
@@ -225,11 +238,14 @@ class CoverageRegistry:
                     applicable=bool(item.get("applicable", True)),
                     limitations=list(item.get("limitations") or []),
                     active=False,
+                    installed=False,
+                    verified=None,
                 )
             self._allow_uncovered = set()
             self._discovered = {}
             self._mode_locked = False
             self._interceptor_checks = {}
+            self._interceptor_sealed = set()
             self._require_coverage = []
             self._mode = "guarded"
             self._fail_mode = "closed"
@@ -247,20 +263,49 @@ class CoverageRegistry:
         lock_mode: bool = False,
     ) -> None:
         with self._lock:
-            if self._mode_locked and (mode != self._mode or fail_mode != self._fail_mode):
-                raise RuntimeError(
-                    f"security mode locked after activation ({self._mode}/{self._fail_mode}); "
-                    "silent downgrade refused"
-                )
+            require = list(require_coverage or [])
+            allow = {str(x).strip().lower() for x in (allow_uncovered or [])}
+            if self._mode_locked:
+                # Locked contract is immutable: mode, fail_mode, coverage requirements
+                # and accepted exceptions cannot change (including silent expansion of
+                # allow_uncovered). Identical re-entry is a no-op.
+                if (
+                    mode != self._mode
+                    or fail_mode != self._fail_mode
+                    or require != self._require_coverage
+                    or allow != self._allow_uncovered
+                ):
+                    raise RuntimeError(
+                        f"security mode locked after activation ({self._mode}/{self._fail_mode}); "
+                        "silent downgrade refused"
+                    )
+                if session_id is not None:
+                    self._session_id = session_id
+                return
             self._mode = mode
             self._fail_mode = fail_mode
             self._session_id = session_id
-            self._require_coverage = list(require_coverage or [])
-            self._allow_uncovered = {str(x).strip().lower() for x in (allow_uncovered or [])}
-            if lock_mode or mode == "strict":
+            self._require_coverage = require
+            self._allow_uncovered = allow
+            if lock_mode:
                 self._mode_locked = True
             self._apply_requirement_applicability()
 
+    def enforcement_contract(self) -> dict[str, Any]:
+        """Authoritative process-local enforcement configuration.
+
+        When ``mode_locked`` is true this is the single source of truth for
+        interceptor enforce/observe decisions (not mutable guard attributes).
+        """
+        with self._lock:
+            return {
+                "mode": self._mode,
+                "fail_mode": self._fail_mode,
+                "mode_locked": self._mode_locked,
+                "require_coverage": list(self._require_coverage),
+                "allow_uncovered": sorted(self._allow_uncovered),
+                "session_id": self._session_id,
+            }
     def _apply_requirement_applicability(self) -> None:
         """Surfaces explicitly required by the coverage contract become applicable."""
         primary_for_category = REQUIREMENT_CATEGORY_SURFACES
@@ -277,9 +322,71 @@ class CoverageRegistry:
                     surface.applicable = True
 
     def register_interceptor_check(self, name: str, checker: Any) -> None:
-        """Register a callable that returns True if the interceptor is still active."""
+        """Register a callable that returns True if the interceptor is still active.
+
+        After mode lock, sealed probes cannot be replaced (prevents false ENFORCED
+        attestation via poisoned always-true checkers). Prefer
+        ``install_interceptor`` from patch install paths.
+        """
+        key = canonical_surface_name(name)
         with self._lock:
-            self._interceptor_checks[name] = checker
+            if self._mode_locked and key in self._interceptor_sealed:
+                raise RuntimeError(
+                    f"cannot replace sealed interceptor probe for {key!r} while "
+                    "enforcement mode is locked"
+                )
+            self._interceptor_checks[key] = checker
+            if self._mode_locked:
+                self._interceptor_sealed.add(key)
+
+    def install_interceptor(
+        self,
+        name: str,
+        *,
+        checker: Any,
+        interceptor: str | None = None,
+        limitations: list[str] | None = None,
+        evidence: dict[str, Any] | None = None,
+        status: str = ENFORCED,
+    ) -> CoverageSurface:
+        """Record an installed interceptor + sealed probe (patch_runtime path).
+
+        This is the only supported way to claim ENFORCED after mode lock: the
+        probe must pass at install time. Subsequent attestation/verify cannot
+        retain ENFORCED if the probe fails.
+        """
+        if status not in VALID_STATUSES:
+            raise ValueError(f"invalid coverage status: {status}")
+        key = canonical_surface_name(name)
+        try:
+            ok = bool(checker())
+        except Exception:
+            ok = False
+        if status == ENFORCED and not ok:
+            raise RuntimeError(
+                f"cannot install ENFORCED interceptor for {key!r}: live probe failed"
+            )
+        with self._lock:
+            if self._mode_locked and key in self._interceptor_sealed:
+                # Same-contract re-entry: refresh probe only while still live.
+                if not ok:
+                    raise RuntimeError(
+                        f"cannot refresh sealed interceptor for {key!r}: probe failed"
+                    )
+            self._interceptor_checks[key] = checker
+            self._interceptor_sealed.add(key)
+            return self._mark_unlocked(
+                key,
+                status=status,
+                interceptor=interceptor,
+                active=ok,
+                installed=True,
+                verified=ok,
+                limitations=limitations,
+                evidence=evidence,
+                applicable=True,
+                enforcement_mode="enforced" if status == ENFORCED else None,
+            )
 
     def discover(self, name: str, *, detail: dict[str, Any] | None = None) -> None:
         """Record a discovered relevant surface (e.g. MCP config present)."""
@@ -288,6 +395,43 @@ class CoverageRegistry:
             surface = self._surfaces.get(name)
             if surface is not None:
                 surface.applicable = True
+
+    def _mark_unlocked(
+        self,
+        resolved: str,
+        *,
+        status: str,
+        interceptor: str | None = None,
+        active: bool = True,
+        installed: bool | None = None,
+        verified: bool | None = None,
+        limitations: list[str] | None = None,
+        evidence: dict[str, Any] | None = None,
+        enforcement_mode: str | None = None,
+        applicable: bool | None = None,
+    ) -> CoverageSurface:
+        surface = self._surfaces.get(resolved)
+        if surface is None:
+            category = resolved.split(".", 1)[0]
+            surface = CoverageSurface(name=resolved, category=category, status=status)
+            self._surfaces[resolved] = surface
+        surface.status = status
+        surface.active = active
+        if installed is not None:
+            surface.installed = bool(installed)
+        if verified is not None:
+            surface.verified = verified
+        surface.interceptor = interceptor or surface.interceptor
+        surface.enforcement_mode = enforcement_mode or ("enforced" if status == ENFORCED else status.lower())
+        if applicable is not None:
+            surface.applicable = bool(applicable)
+        if limitations is not None:
+            surface.limitations = list(limitations)
+        if evidence:
+            surface.evidence = {**(surface.evidence or {}), **evidence}
+        if verified is True:
+            surface.last_verified = time.time()
+        return surface
 
     def mark(
         self,
@@ -300,33 +444,63 @@ class CoverageRegistry:
         evidence: dict[str, Any] | None = None,
         enforcement_mode: str | None = None,
         applicable: bool | None = None,
+        installed: bool | None = None,
+        verified: bool | None = None,
     ) -> CoverageSurface:
         if status not in VALID_STATUSES:
             raise ValueError(f"invalid coverage status: {status}")
         resolved = canonical_surface_name(name)
         with self._lock:
-            surface = self._surfaces.get(resolved)
-            if surface is None:
-                category = resolved.split(".", 1)[0]
-                surface = CoverageSurface(name=resolved, category=category, status=status)
-                self._surfaces[resolved] = surface
-            surface.status = status
-            surface.active = active
-            surface.interceptor = interceptor or surface.interceptor
-            surface.enforcement_mode = enforcement_mode or ("enforced" if status == ENFORCED else status.lower())
-            if applicable is not None:
-                surface.applicable = bool(applicable)
-            if limitations is not None:
-                surface.limitations = list(limitations)
-            if evidence:
-                surface.evidence = {**(surface.evidence or {}), **evidence}
-            surface.last_verified = time.time()
-            return surface
+            existing = self._surfaces.get(resolved)
+            if self._mode_locked and status == ENFORCED:
+                # Locked sessions cannot mint false ENFORCED via mark(): require a
+                # sealed live probe (install_interceptor). Downgrades remain OK.
+                checker = self._interceptor_checks.get(resolved)
+                ok = False
+                if checker is not None:
+                    try:
+                        ok = bool(checker())
+                    except Exception:
+                        ok = False
+                if not ok:
+                    raise RuntimeError(
+                        f"cannot mark {resolved!r} ENFORCED while mode is locked without "
+                        "a live sealed interceptor probe; use install_interceptor()"
+                    )
+                return self._mark_unlocked(
+                    resolved,
+                    status=ENFORCED,
+                    interceptor=interceptor,
+                    active=True,
+                    installed=True if installed is None else installed,
+                    verified=True,
+                    limitations=limitations,
+                    evidence=evidence,
+                    enforcement_mode=enforcement_mode or "enforced",
+                    applicable=applicable if applicable is not None else True,
+                )
+            return self._mark_unlocked(
+                resolved,
+                status=status,
+                interceptor=interceptor,
+                active=active,
+                installed=installed
+                if installed is not None
+                else (True if status == ENFORCED else (existing.installed if existing else False)),
+                verified=verified
+                if verified is not None
+                else (True if status == ENFORCED else (existing.verified if existing else None)),
+                limitations=limitations,
+                evidence=evidence,
+                enforcement_mode=enforcement_mode,
+                applicable=applicable,
+            )
 
     def verify(self) -> dict[str, Any]:
         """Live-check whether registered interceptors still wrap their targets.
 
         If an interceptor was removed, downgrade that surface from ENFORCED.
+        Attestation and readiness must call this before reporting ENFORCED.
         """
         changes: list[dict[str, Any]] = []
         with self._lock:
@@ -338,17 +512,31 @@ class CoverageRegistry:
                 ok = False
             surface = self.get(name)
             if surface and surface.status == ENFORCED and not ok:
-                self.mark(
-                    name,
-                    status=UNCOVERED,
-                    active=False,
-                    interceptor=surface.interceptor,
-                    limitations=list(surface.limitations) + ["Interceptor tamper detected — wrapper no longer installed."],
-                    evidence={"tamper_detected": True},
-                )
+                with self._lock:
+                    self._mark_unlocked(
+                        canonical_surface_name(name),
+                        status=UNCOVERED,
+                        active=False,
+                        installed=True,
+                        verified=False,
+                        interceptor=surface.interceptor,
+                        limitations=list(surface.limitations)
+                        + ["Interceptor tamper detected — wrapper no longer installed."],
+                        evidence={**(surface.evidence or {}), "tamper_detected": True},
+                    )
                 changes.append({"surface": name, "from": ENFORCED, "to": UNCOVERED, "reason": "tamper"})
             elif surface and ok and surface.status == ENFORCED:
-                surface.last_verified = time.time()
+                with self._lock:
+                    surface.verified = True
+                    surface.installed = True
+                    surface.active = True
+                    surface.last_verified = time.time()
+            elif surface and not ok and surface.installed:
+                with self._lock:
+                    surface.verified = False
+                    surface.active = False
+                    if surface.status == ENFORCED:
+                        surface.status = UNCOVERED
         return {"verified_at": time.time(), "changes": changes, "ok": not changes}
 
     def get(self, name: str) -> CoverageSurface | None:
@@ -456,11 +644,17 @@ class CoverageRegistry:
                         (surf := self._surfaces.get(name)) is not None
                         and surf.status == ENFORCED
                         and surf.active
+                        and (not self._mode_locked or surf.verified is True)
                         for name in names
                     )
                 else:
                     surf = self._surfaces.get(key)
-                    ok = bool(surf is not None and surf.status == ENFORCED and surf.active)
+                    ok = bool(
+                        surf is not None
+                        and surf.status == ENFORCED
+                        and surf.active
+                        and (not self._mode_locked or surf.verified is True)
+                    )
                 if not ok:
                     missing.append(item)
         return missing

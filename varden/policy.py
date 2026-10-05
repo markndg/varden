@@ -1,5 +1,9 @@
 from __future__ import annotations
-import difflib, json, time
+import copy
+import difflib
+import json
+import threading
+import time
 from .command_match import action_matches_command, validate_command_spec
 from .db import connect
 
@@ -57,7 +61,7 @@ KNOWN_ACTION_TYPES = frozenset({
 
 POLICY_TOP_LEVEL_KEYS = frozenset(MODES) | frozenset({
     "budget_rules", "default", "defaults", "version", "name", "description",
-    "pack_name", "metadata", "id", "updated_at",
+    "pack_name", "metadata", "id", "updated_at", "allow_vacuous_policy",
 })
 
 
@@ -78,21 +82,50 @@ def action_surface(action) -> str | None:
     return None
 
 
+# Buckets that must be present on publish/replace so clients cannot omit keys
+# and silently wipe rules (PUT is full-document replace, not PATCH).
+PUBLISH_REQUIRED_BUCKETS = ("block", "warn", "monitor", "allow")
+
+
 class PolicyEngine:
     def __init__(self, db_path: str, initial_policy: dict | None = None):
         self.db_path = db_path
-        self.policy = initial_policy or {"block": [], "warn": [], "monitor": [], "allow": []}
+        self._lock = threading.RLock()
+        # Always store a private deep copy so callers cannot mutate live policy
+        # via a retained get_policy()/update_policy argument reference.
+        self.policy = copy.deepcopy(
+            initial_policy or {"block": [], "warn": [], "monitor": [], "allow": []}
+        )
 
-    def get_policy(self): return self.policy
-    def update_policy(self, policy): self.policy = policy
+    def get_policy(self):
+        with self._lock:
+            return copy.deepcopy(self.policy)
 
-    def validate(self, policy):
+    def update_policy(self, policy):
+        """Atomically replace the live policy with a deep copy of ``policy``.
+
+        Rejects non-dict payloads. Callers that need validation must run
+        ``validate()`` first (HTTP PUT /policy does). In-process updates from
+        trusted control-plane code still go through a coherent snapshot so
+        concurrent ``evaluate`` calls never observe a half-written document.
+        """
+        if not isinstance(policy, dict):
+            raise TypeError("policy must be a dict")
+        snapshot = copy.deepcopy(policy)
+        with self._lock:
+            self.policy = snapshot
+
+    def validate(self, policy, *, for_publish: bool = False):
         """Validate a policy document.
 
         Errors make the policy unpublishable. The main job is to catch rules
         that would silently never fire: misspelled fields, unknown classifiers,
         unknown operators and misspelled bucket names all used to be accepted
         and then matched nothing.
+
+        When ``for_publish=True`` (PUT /policy, import-pack, publish), also
+        refuse missing core buckets and vacuous allow-all documents unless the
+        operator sets ``allow_vacuous_policy: true``.
         """
         errors: list[str] = []
         warnings: list[str] = []
@@ -108,8 +141,10 @@ class PolicyEngine:
                 warnings.append(f"unknown top-level key {key!r} is ignored")
         for mode in MODES:
             rules = policy.get(mode, [])
-            if not isinstance(rules, list):
+            if mode in policy and not isinstance(rules, list):
                 errors.append(f"{mode} must be a list")
+                continue
+            if not isinstance(rules, list):
                 continue
             for idx, rule in enumerate(rules):
                 where = f"{mode}[{idx}]"
@@ -134,7 +169,52 @@ class PolicyEngine:
         from .rules.registry import validate_budget_rules
 
         errors.extend(validate_budget_rules(policy))
+        if for_publish:
+            errors.extend(self._validate_publish_integrity(policy))
         return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+    @staticmethod
+    def _validate_publish_integrity(policy: dict) -> list[str]:
+        """Extra checks for live replace paths (not simulate/startup soft paths)."""
+        errors: list[str] = []
+        for bucket in PUBLISH_REQUIRED_BUCKETS:
+            if bucket not in policy:
+                errors.append(
+                    f"missing required top-level key {bucket!r}; "
+                    "PUT replaces the full document — send an explicit empty list if intentional"
+                )
+            elif not isinstance(policy.get(bucket), list):
+                errors.append(f"{bucket} must be a list")
+        if PolicyEngine._is_vacuous_allow_all(policy):
+            errors.append(
+                "vacuous policy refused: no rules in any enforcement bucket and default "
+                "decision is allow; set allow_vacuous_policy=true to confirm, or set "
+                "default/defaults to a deny posture"
+            )
+        return errors
+
+    @staticmethod
+    def _is_vacuous_allow_all(policy: dict) -> bool:
+        if policy.get("allow_vacuous_policy") is True:
+            return False
+        meta = policy.get("metadata")
+        if isinstance(meta, dict) and meta.get("allow_vacuous_policy") is True:
+            return False
+        has_rules = any(
+            isinstance(policy.get(mode), list) and len(policy.get(mode) or []) > 0
+            for mode in MODES
+        )
+        if has_rules:
+            return False
+        default = policy.get("default")
+        if default in DEFAULT_DECISIONS and default != "allow":
+            return False
+        defaults = policy.get("defaults") if isinstance(policy.get("defaults"), dict) else {}
+        for value in defaults.values():
+            if value in DEFAULT_DECISIONS and value != "allow":
+                return False
+        # No rules and no deny-by-default → silent allow-all wipe.
+        return True
 
     @staticmethod
     def _field_problem(key: str) -> str | None:
@@ -297,23 +377,36 @@ class PolicyEngine:
                 candidate = json.loads(row["policy_json"])
             except json.JSONDecodeError:
                 return {"published_version": None, "error": "corrupt policy_json in version"}
-            validation = self.validate(candidate)
+            validation = self.validate(candidate, for_publish=True)
             if not validation["valid"]:
                 return {"published_version": None, "error": "invalid policy", "validation": validation}
+            if policy_file:
+                from .fsutil import atomic_write_json
+
+                try:
+                    atomic_write_json(policy_file, candidate)
+                except Exception as exc:
+                    return {
+                        "published_version": None,
+                        "error": f"policy file write failed: {exc}",
+                        "validation": validation,
+                    }
             conn.execute("UPDATE policy_versions SET status = 'archived' WHERE status = 'published'")
             conn.execute("UPDATE policy_versions SET status = 'published' WHERE id = ?", (version_id,))
             conn.commit()
         self.update_policy(candidate)
-        if policy_file:
-            from .fsutil import atomic_write_json
-
-            atomic_write_json(policy_file, candidate)
         return {"published_version": version_id, "policy": candidate}
 
-    def evaluate(self, action):
+    def evaluate(self, action, *, policy_doc: dict | None = None):
         from .models import Decision
 
-        policy = self.policy  # single read: safe against concurrent update_policy()
+        if policy_doc is not None:
+            policy = policy_doc
+        else:
+            with self._lock:
+                # Hold a stable reference for the duration of matching so a concurrent
+                # update_policy() cannot tear the rule lists mid-evaluation.
+                policy = self.policy
 
         for mode in MODES:
             for rule in policy.get(mode, []) or []:

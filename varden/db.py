@@ -564,6 +564,38 @@ def _apply_migrations(conn):
         )
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (11)")
 
+    if 12 not in versions:
+        # Predictive Authority continuity signals (tombstones / restart /
+        # multi-worker leases). Not full live graphs — fail-closed markers only.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS pa_continuity_meta (
+              key TEXT PRIMARY KEY,
+              value TEXT NOT NULL,
+              updated_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pa_continuity_sessions (
+              session_key TEXT PRIMARY KEY,
+              had_authority INTEGER NOT NULL DEFAULT 0,
+              tombstoned INTEGER NOT NULL DEFAULT 0,
+              tombstone_reason TEXT,
+              process_id TEXT,
+              updated_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pa_continuity_sessions_updated
+              ON pa_continuity_sessions(updated_at);
+            CREATE TABLE IF NOT EXISTS pa_worker_leases (
+              worker_id TEXT PRIMARY KEY,
+              hostname TEXT,
+              pid INTEGER,
+              last_seen REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pa_worker_leases_seen
+              ON pa_worker_leases(last_seen);
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (12)")
+
 
 class _AutoCloseConnection(sqlite3.Connection):
     """sqlite3.Connection used as a context manager only commits/rolls back
