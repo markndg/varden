@@ -4,20 +4,25 @@
 **Baseline commit:** `9536e49f0921126d68da475f10901feb1cdf74fc`  
 **Version:** 1.0.1  
 
-## Continuity acceptance gate (follow-up)
 
-| ID | Before | After | Side effect if CP allows | Status |
-|----|--------|-------|--------------------------|--------|
-| G-PA-EVICT-01 | shell require_approval → allow after LRU | continuity_broken fail-safe | would execute on allow | Partially fixed |
-| G-PA-EVICT-02 | forgotten tombstone → allow | process continuity_degraded fail-safe | blocked by failure_mode | Fixed (fail-safe) |
-| G-PA-MULTI-01 | split registries → allow | declare/fail-safe; env>1 fail-safe | residual if both declare single_worker | Partially fixed |
-| G-PA-RESTART-01 | restart → allow | claims: not verified | would execute on allow | Documented limitation |
+## Continuity acceptance gate — final state
 
-**Impossibility (process-local only):** cannot distinguish genuinely new session keys from
-forgotten tombstoned keys; cannot verify sibling workers or post-restart history.
+| ID | Before | Final behaviour | Status |
+|----|--------|-----------------|--------|
+| G-PA-EVICT-01 | Accumulated authority could be lost after LRU eviction, weakening `require_approval` → `allow` | Authority-bearing eviction records a continuity tombstone; recreation is treated as incomplete and enforce fails safe | Fixed (fail-safe) |
+| G-PA-EVICT-02 | Forgotten bounded tombstones could restore a clean-state `allow` | Tombstone loss marks continuity degraded; durable continuity state preserves the signal across process lifetime/restart | Fixed (fail-safe) |
+| G-PA-MULTI-01 | Separate process-local registries could miss authority accumulated by another worker | Shared-DB worker leases detect sibling workers and produce `MULTI_WORKER_UNSUPPORTED` unless explicitly allowed | Fixed when control-plane DB is shared |
+| G-PA-RESTART-01 | Restart discarded live authority state and could treat an existing trace as new | Durable `had_authority` state detects reintroduction after restart and produces `SESSION_CONTINUITY_BROKEN` | Fixed (fail-safe; no graph replay) |
 
-**Claims change required:** PA enforce continuity is process-lifetime and
-declaration-dependent; not cross-restart; not multi-process without shared state.
+**Final continuity model:** live `AuthorityState` graphs remain process-local.
+The control-plane `ContinuityStore` persists security-relevant continuity
+signals — tombstones, prior-authority markers and worker leases — so loss of
+live state can be detected and handled fail-safe.
+
+This is deliberately not described as shared or replayable authority state.
+Full graph replay across restart/workers is not implemented, and
+`cross_restart_continuity_verified` remains false. Worker coordination requires
+a shared control-plane database; separate database paths cannot coordinate.
 
 Evidence: `docs/security/evidence-G-PA-CONTINUITY-GATE.txt` (7 passed).
 

@@ -479,24 +479,28 @@ This makes Predictive Authority an additional security layer rather than a compe
 Configuration comes only from the policy file's `predictive_authority` section and
 `VARDEN_PA_*` environment variables. Agents cannot influence it.
 
-Live session state is held in memory, per control-plane process:
+Live Predictive Authority graphs remain process-local and bounded.
 
-- It is bounded by `VARDEN_PA_MAX_SESSIONS` (default 10,000) and
-  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 24h). Evicting a session that never
-  accumulated authority restarts analysis from a fresh state. Evicting (or
-  idle-expiring) a session that *had* accumulated authority records a bounded
-  tombstone; recreating that session key marks `continuity_broken` so enforce
-  mode applies `failure_mode` (default `require_approval`). If tombstones are
-  forgotten under the cap, the process enters `continuity_degraded` and enforce
-  fails safe for the remainder of the process lifetime (bounded state cannot
-  tell a new session from a forgotten one). Cross-**restart** continuity is
-  not verified.
-- Enforce mode requires an explicit deployment declaration:
-  `VARDEN_PA_DEPLOYMENT=single_worker`. Undeclared topology fails safe. Detected
-  multi-worker env vars without allow → fail-safe. `VARDEN_PA_ALLOW_MULTI_WORKER=1`
-  / `multi_worker_allowed` accepts residual risk — it is **not** verified
-  shared-state safety. In-process Python cannot see sibling workers that omit
-  those env vars.
+Varden also persists continuity signals in the control-plane SQLite database.
+These signals do not reconstruct or share the live authority graph. Instead,
+they allow enforce mode to detect when security-relevant authority history may
+have been lost and fail safe rather than treating the session as new.
+
+- Session state is bounded by `VARDEN_PA_MAX_SESSIONS` (default 10,000) and
+  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 24h).
+- If a session that accumulated authority is evicted or reintroduced after a
+  process restart, durable continuity markers cause the analysis to be treated
+  as incomplete rather than starting from a trusted clean state.
+- If continuity state cannot be read or written, enforce mode fails safe.
+- Workers sharing the same control-plane database use durable worker leases.
+  Multiple active workers are treated as unsupported for Predictive Authority
+  enforcement unless the operator explicitly accepts that residual risk.
+- Workers using separate database paths cannot coordinate authority history or
+  worker leases.
+
+Varden does **not** claim full cross-process or cross-restart graph continuity.
+`cross_restart_continuity_verified` remains false: durable continuity signals
+detect loss of authority history; they do not replay the lost graph.
 
 ## Bounded analysis
 
