@@ -103,8 +103,8 @@ Evidence: `docs/security/evidence-G-COV-ATTEST-01.txt`. Full suite (excl. browse
 | 7 Provenance | 2 chain tests | protected for PA path |
 | 8 Negative controls | embedded in eviction/multi-worker | pass |
 
-**Gauntlet suite:** 40+ tests under `tests/security/gauntlet/` (plus provenance file),
-including G-SDK-MODE-01 enforcement-integrity coverage.
+**Security gauntlet:** **91 tests passed** in the final run under
+`tests/security/gauntlet/` (including G-SDK-MODE-01 enforcement-integrity coverage).
 
 ## Performance
 
