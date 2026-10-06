@@ -19,11 +19,10 @@ BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
 AGENT_NAME = 'flagged-demo-agent'
 
-# This is the entire adoption story for developers.
-# Start the Varden control plane locally, then just do:
+# Adoption story for developers (activated in run(), not at import time, so
+# importing this module for metadata tests does not patch the process httpx):
 #   import varden
 #   varden.protect()
-varden.protect()
 
 
 DEMO_WARN_RULES = [
@@ -67,6 +66,7 @@ def latest_event_detail() -> dict[str, Any]:
 
 
 def run() -> int:
+    varden.protect()
     _ensure_demo_policy()
     confidential_payload = {
         'title': 'Q2 incident review',

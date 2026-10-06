@@ -18,11 +18,10 @@ BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
 AGENT_NAME = 'blocked-demo-agent'
 
-# This is the entire adoption story for developers.
-# Start the Varden control plane locally, then just do:
+# Adoption story for developers (activated in run(), not at import time, so
+# importing this module for metadata tests does not patch the process httpx):
 #   import varden
 #   varden.protect()
-varden.protect()
 
 
 DEMO_BLOCK_RULES = [
@@ -88,6 +87,7 @@ def list_backups(path: str) -> list[str]:
 
 
 def run() -> int:
+    varden.protect()
     _ensure_demo_policy()
     print('Varden OSS demo: blocked action with one-line protection')
     print('Only setup in this file: import varden + varden.protect()')

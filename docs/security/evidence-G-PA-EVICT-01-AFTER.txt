@@ -1,0 +1,33 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-8.4.2, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.13/bin/python3
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /Users/mark/GitHub/varden
+configfile: pyproject.toml
+plugins: langsmith-0.8.3, hypothesis-6.156.6, anyio-4.13.0
+collecting ... collected 22 items
+
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_BEFORE_evidence_shell_weakens_after_eviction_without_continuity PASSED [  4%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_AFTER_eviction_must_not_weaken_enforce_decision PASSED [  9%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_idle_expiry_of_accumulated_authority_sets_continuity PASSED [ 13%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_eviction_prefers_empty_before_valuable_still_holds PASSED [ 18%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_benign_fresh_session_shell_still_allows PASSED [ 22%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_observe_mode_reports_continuity_without_blocking PASSED [ 27%]
+tests/predictive_authority/test_pa_v101_security.py::test_agent_metadata_cannot_downgrade_operator_enforce[override0] PASSED [ 31%]
+tests/predictive_authority/test_pa_v101_security.py::test_agent_metadata_cannot_downgrade_operator_enforce[override1] PASSED [ 36%]
+tests/predictive_authority/test_pa_v101_security.py::test_agent_metadata_cannot_downgrade_operator_enforce[override2] PASSED [ 40%]
+tests/predictive_authority/test_pa_v101_security.py::test_agent_metadata_cannot_downgrade_operator_enforce[override3] PASSED [ 45%]
+tests/predictive_authority/test_pa_v101_security.py::test_resolve_config_ignores_action_metadata PASSED [ 50%]
+tests/predictive_authority/test_pa_v101_security.py::test_agent_cannot_forge_predictive_audit_metadata PASSED [ 54%]
+tests/predictive_authority/test_pa_v101_security.py::test_tenant_comes_from_credential_not_payload PASSED [ 59%]
+tests/predictive_authority/test_pa_v101_security.py::test_registry_never_exceeds_max_sessions PASSED [ 63%]
+tests/predictive_authority/test_pa_v101_security.py::test_eviction_prefers_sessions_without_accumulated_authority PASSED [ 68%]
+tests/predictive_authority/test_pa_v101_security.py::test_idle_sessions_are_evicted_first PASSED [ 72%]
+tests/predictive_authority/test_pa_v101_security.py::test_evicted_session_side_data_is_not_resurrected PASSED [ 77%]
+tests/predictive_authority/test_pa_v101_security.py::test_control_plane_registry_bounded_under_unique_traces PASSED [ 81%]
+tests/predictive_authority/test_pa_v101_security.py::test_demo_does_not_reset_live_sessions PASSED [ 86%]
+tests/predictive_authority/test_pa_v101_security.py::test_read_routes_refuse_foreign_tenant_but_allow_own_and_demo PASSED [ 90%]
+tests/predictive_authority/test_pa_v101_security.py::test_sanitised_webshield_output_is_not_claimed_prevented PASSED [ 95%]
+tests/predictive_authority/test_pa_v101_security.py::test_incident_outcome_does_not_claim_prevention_for_sanitise PASSED [100%]
+
+============================== 22 passed in 4.30s ==============================

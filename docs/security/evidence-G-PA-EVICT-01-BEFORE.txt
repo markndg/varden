@@ -1,0 +1,37 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.13, pytest-8.4.2, pluggy-1.6.0 -- /Library/Frameworks/Python.framework/Versions/3.13/bin/python3
+cachedir: .pytest_cache
+hypothesis profile 'default'
+rootdir: /Users/mark/GitHub/varden
+configfile: pyproject.toml
+plugins: langsmith-0.8.3, hypothesis-6.156.6, anyio-4.13.0
+collecting ... collected 6 items
+
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_BEFORE_evidence_shell_weakens_after_eviction_without_continuity PASSED [ 16%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_AFTER_eviction_must_not_weaken_enforce_decision FAILED [ 33%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_idle_expiry_of_accumulated_authority_sets_continuity FAILED [ 50%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_eviction_prefers_empty_before_valuable_still_holds PASSED [ 66%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_benign_fresh_session_shell_still_allows PASSED [ 83%]
+tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_observe_mode_reports_continuity_without_blocking FAILED [100%]
+
+=================================== FAILURES ===================================
+________ test_gauntlet_AFTER_eviction_must_not_weaken_enforce_decision _________
+tests/security/gauntlet/test_pa_session_eviction.py:140: in test_gauntlet_AFTER_eviction_must_not_weaken_enforce_decision
+    assert getattr(state, "continuity_broken", False) is True
+E   AssertionError: assert False is True
+E    +  where False = getattr(AuthorityState(session_key='t:gauntlet-evict', graph=<varden.predictive_authority.graph.CapabilityGraph object at 0x108eeae60>, capabilities={}, resources={}, provenance_refs=[], approvals=[], irreversible_actions=[], delegated_authority=[], history=[AuthorityTransitionRecord(timestamp=1790959163.288189, action_summary='tool_call:shell', added_capabilities=[], added_resources=[], added_sinks=[], irreversible=False, event_ref=None)], initial_capability_names=set(), created_at=1790959163.288048, updated_at=1790959163.288189, policy_context={}), 'continuity_broken', False)
+______ test_gauntlet_idle_expiry_of_accumulated_authority_sets_continuity ______
+tests/security/gauntlet/test_pa_session_eviction.py:162: in test_gauntlet_idle_expiry_of_accumulated_authority_sets_continuity
+    assert key in getattr(reg, "_authority_tombstones", {})
+E   AssertionError: assert 't:gauntlet-evict' in {}
+E    +  where {} = getattr(<varden.predictive_authority.registry.AuthorityRegistry object at 0x108c22c40>, '_authority_tombstones', {})
+________ test_gauntlet_observe_mode_reports_continuity_without_blocking ________
+tests/security/gauntlet/test_pa_session_eviction.py:208: in test_gauntlet_observe_mode_reports_continuity_without_blocking
+    assert reg.get(key).continuity_broken is True
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   AttributeError: 'AuthorityState' object has no attribute 'continuity_broken'
+=========================== short test summary info ============================
+FAILED tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_AFTER_eviction_must_not_weaken_enforce_decision
+FAILED tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_idle_expiry_of_accumulated_authority_sets_continuity
+FAILED tests/security/gauntlet/test_pa_session_eviction.py::test_gauntlet_observe_mode_reports_continuity_without_blocking
+========================= 3 failed, 3 passed in 0.10s ==========================
