@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.0.1
+## v1.0.2
 
 Security release. **Upgrade if you run Predictive Authority in `enforce` mode.**
 
