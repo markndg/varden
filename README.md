@@ -479,15 +479,28 @@ This makes Predictive Authority an additional security layer rather than a compe
 Configuration comes only from the policy file's `predictive_authority` section and
 `VARDEN_PA_*` environment variables. Agents cannot influence it.
 
-Live session state is held in memory, per control-plane process:
+Live Predictive Authority graphs remain process-local and bounded.
 
-- It is bounded by `VARDEN_PA_MAX_SESSIONS` (default 10,000) and
-  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 24h). An evicted session's next action is
-  analysed from a fresh state, so size the cap for your workload
-  (evictions are reported in the registry stats).
-- Run a **single** control-plane worker when Predictive Authority is enabled. With
-  several workers (`uvicorn --workers N`), each process sees only part of a session, and
-  chains that cross workers are missed.
+Varden also persists continuity signals in the control-plane SQLite database.
+These signals do not reconstruct or share the live authority graph. Instead,
+they allow enforce mode to detect when security-relevant authority history may
+have been lost and fail safe rather than treating the session as new.
+
+- Session state is bounded by `VARDEN_PA_MAX_SESSIONS` (default 10,000) and
+  `VARDEN_PA_SESSION_IDLE_SECONDS` (default 24h).
+- If a session that accumulated authority is evicted or reintroduced after a
+  process restart, durable continuity markers cause the analysis to be treated
+  as incomplete rather than starting from a trusted clean state.
+- If continuity state cannot be read or written, enforce mode fails safe.
+- Workers sharing the same control-plane database use durable worker leases.
+  Multiple active workers are treated as unsupported for Predictive Authority
+  enforcement unless the operator explicitly accepts that residual risk.
+- Workers using separate database paths cannot coordinate authority history or
+  worker leases.
+
+Varden does **not** claim full cross-process or cross-restart graph continuity.
+`cross_restart_continuity_verified` remains false: durable continuity signals
+detect loss of authority history; they do not replay the lost graph.
 
 ## Bounded analysis
 

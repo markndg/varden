@@ -8,7 +8,7 @@ import os
 import subprocess
 from typing import Any, Callable
 
-from varden.runtime.coverage import ENFORCED, PARTIAL, get_coverage_registry
+from varden.runtime.coverage import ENFORCED, PARTIAL, UNCOVERED, get_coverage_registry
 from varden.runtime.modes import is_enforcing
 
 SHELL_ELEVATED = frozenset(
@@ -31,8 +31,30 @@ SHELL_ELEVATED = frozenset(
 
 
 def _enforcing(guard: Any) -> bool:
+    """Whether side effects must be blocked on deny.
+
+    Locked ``enforcement_contract()`` is authoritative — a mutated or swapped
+    live guard cannot silently observe-out of enforcement.
+    """
+    try:
+        contract = get_coverage_registry().enforcement_contract()
+        if contract.get("mode_locked"):
+            mode = contract.get("mode")
+            return is_enforcing(mode) or mode == "enforce"
+    except Exception:
+        pass
     mode = getattr(guard, "product_mode", None) or getattr(guard, "mode", None)
     return is_enforcing(mode) or mode == "enforce"
+
+
+def _fail_closed(guard: Any) -> bool:
+    try:
+        contract = get_coverage_registry().enforcement_contract()
+        if contract.get("mode_locked"):
+            return str(contract.get("fail_mode") or "").lower() == "closed"
+    except Exception:
+        pass
+    return str(getattr(guard, "fail_mode", "") or "").lower() == "closed"
 
 
 def _blocked_error(guard: Any):
@@ -46,19 +68,27 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
         import urllib.request as urllib_request
     except Exception:
         return
-    key = "urllib.request.urlopen"
-    if key in originals:
-        return
-    originals[key] = urllib_request.urlopen
+    from varden_sdk import sdk as sdk_mod
 
-    @functools.wraps(originals[key])
+    key = "urllib.request.urlopen"
+    wrapper = sdk_mod._WRAPPERS.get(key)
+    if key in originals and wrapper is not None and urllib_request.urlopen is wrapper:
+        return
+    if key not in originals:
+        originals[key] = urllib_request.urlopen
+    elif urllib_request.urlopen is not originals[key] and wrapper is None:
+        # Foreign wrapper — do not fight; leave attestation to verify.
+        return
+    original = originals[key]
+
+    @functools.wraps(original)
     def wrapper(url, *args, **kwargs):
         from varden_sdk.sdk import current_guard
 
         current = current_guard() or guard
         url_s = url if isinstance(url, str) else getattr(url, "full_url", None) or str(url)
         if hasattr(current, "_is_control_plane_url") and current._is_control_plane_url(url_s):
-            return originals[key](url, *args, **kwargs)
+            return original(url, *args, **kwargs)
         payload = {"url": url_s, "args": list(args), "kwargs": {k: str(type(v)) for k, v in kwargs.items()}}
         result = current.guarded_action(
             type="http_request",
@@ -71,17 +101,25 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
         )
         if result and result.blocked and _enforcing(current):
             raise _blocked_error(current)(f"urllib request to {url_s} blocked", result.decision)
-        return originals[key](url, *args, **kwargs)
+        return original(url, *args, **kwargs)
 
     urllib_request.urlopen = wrapper
-    get_coverage_registry().mark(
-        "http.urllib",
-        status=ENFORCED,
-        interceptor="urllib.request.urlopen",
-        active=True,
-        applicable=True,
-        enforcement_mode="enforced",
-    )
+    sdk_mod._WRAPPERS[key] = wrapper
+    try:
+        get_coverage_registry().install_interceptor(
+            "http.urllib",
+            checker=lambda: urllib_request.urlopen is wrapper,
+            interceptor="urllib.request.urlopen",
+        )
+    except RuntimeError:
+        get_coverage_registry().mark(
+            "http.urllib",
+            status=UNCOVERED,
+            active=False,
+            installed=True,
+            verified=False,
+            applicable=True,
+        )
 
 
 def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
@@ -99,9 +137,6 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         if mutation in {"WRITE_CI", "WRITE_CONFIG", "WRITE_CODE"}:
             return True
         return False
-
-    def _fail_closed(current: Any) -> bool:
-        return str(getattr(current, "fail_mode", "closed") or "closed").lower() == "closed"
 
     def _guard_filesystem(
         current: Any,
@@ -502,17 +537,8 @@ def patch_subprocess_extended(guard: Any, originals: dict[str, Any]) -> None:
     except Exception:
         pass
 
-    get_coverage_registry().mark(
-        "subprocess",
-        status=ENFORCED,
-        interceptor="subprocess+os.system/popen+asyncio",
-        active=True,
-        enforcement_mode="enforced",
-        limitations=[
-            "Saved pre-patch function references bypass monkeypatching.",
-            "Native forks from extensions are outside Python hooks.",
-        ],
-    )
+    # Subprocess ENFORCED attestation is owned by ``patch_runtime.install_interceptor``
+    # (sealed probe). Do not mark ENFORCED here — that would allow false attestation.
 
 
 def restore_extended(originals: dict[str, Any]) -> None:

@@ -11,7 +11,10 @@ from varden.predictive_authority.registry import reset_authority_registry
 def fresh_engine(mode: str = "enforce", max_depth: int = 4, **kwargs) -> PredictiveAuthorityEngine:
     reset_authority_registry()
     cfg = PredictiveAuthorityConfig(enabled=True, mode=mode, max_depth=max_depth, **kwargs)
-    return PredictiveAuthorityEngine(cfg)
+    # Gauntlet/security default: declare single-worker so enforce is not fail-safed
+    # solely for undeclared topology in unit tests.
+    env = {"VARDEN_PA_DEPLOYMENT": "single_worker"}
+    return PredictiveAuthorityEngine(cfg, env=env)
 
 
 def allow_decision() -> Decision:

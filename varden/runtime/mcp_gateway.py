@@ -37,6 +37,56 @@ OBSERVED_METHODS = frozenset(
 )
 
 
+# Active gateway sessions in this process. Live CoverageRegistry probes check
+# this set so MCP may only be attested ENFORCED while a gateway is actually
+# routing — never via a bare mark() after mode lock.
+_ACTIVE_GATEWAY_SESSIONS: set[str] = set()
+
+
+def mcp_gateway_routing_active() -> bool:
+    """Live probe: True while at least one MCP gateway session is routing here."""
+    return bool(_ACTIVE_GATEWAY_SESSIONS)
+
+
+def register_mcp_gateway_coverage(
+    *,
+    server_id: str,
+    evidence: dict[str, Any] | None = None,
+) -> Any:
+    """Install sealed MCP ENFORCED coverage for an active gateway session.
+
+    This is the supported post-lock path (``install_interceptor`` + live probe).
+    Direct/discovered MCP configs remain ``NOT_ROUTED`` until a gateway session
+    registers here.
+    """
+    from varden.runtime.coverage import ENFORCED, get_coverage_registry
+
+    _ACTIVE_GATEWAY_SESSIONS.add(server_id)
+    payload = {"server_id": server_id, "gateway": True}
+    if evidence:
+        payload.update(evidence)
+    return get_coverage_registry().install_interceptor(
+        "mcp",
+        checker=mcp_gateway_routing_active,
+        interceptor="varden.runtime.mcp_gateway",
+        limitations=["Direct MCP connections outside the gateway remain uncovered."],
+        evidence=payload,
+        status=ENFORCED,
+    )
+
+
+def release_mcp_gateway_coverage(server_id: str) -> None:
+    """Drop a gateway session from the live probe; verify() may downgrade MCP."""
+    _ACTIVE_GATEWAY_SESSIONS.discard(server_id)
+    if not _ACTIVE_GATEWAY_SESSIONS:
+        try:
+            from varden.runtime.coverage import get_coverage_registry
+
+            get_coverage_registry().verify()
+        except Exception:
+            pass
+
+
 def _json_safe(value: Any) -> Any:
     try:
         json.dumps(value)
@@ -342,18 +392,7 @@ def run_stdio_gateway(
     )
     session.start()
     try:
-        from varden.runtime.coverage import ENFORCED, get_coverage_registry
-
-        get_coverage_registry().mark(
-            "mcp",
-            status=ENFORCED,
-            interceptor="varden.runtime.mcp_gateway",
-            active=True,
-            applicable=True,
-            enforcement_mode="enforced",
-            evidence={"server_id": server_id},
-            limitations=["Direct MCP connections outside the gateway remain uncovered."],
-        )
+        register_mcp_gateway_coverage(server_id=server_id)
     except Exception:
         pass
     try:
@@ -384,6 +423,7 @@ def run_stdio_gateway(
                 sys.stdout.write(json.dumps(resp, ensure_ascii=False) + "\n")
                 sys.stdout.flush()
     finally:
+        release_mcp_gateway_coverage(server_id)
         session.stop()
     return 0
 

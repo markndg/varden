@@ -1,0 +1,4 @@
+after_restore {'verified_at': 1790961472.803602, 'changes': [{'surface': 'http.requests', 'from': 'ENFORCED', 'to': 'UNCOVERED', 'reason': 'tamper'}], 'ok': False}
+POISON_CHECK_REFUSED cannot replace sealed interceptor probe for 'http.requests' while enforcement mode is locked
+POISON_MARK_REFUSED cannot mark 'http.requests' ENFORCED while mode is locked without a live sealed interceptor probe; use install_intercept
+attestation_status UNCOVERED verified False FALSE_ENFORCED False

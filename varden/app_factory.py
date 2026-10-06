@@ -136,6 +136,20 @@ def create_app(config: AppConfig) -> FastAPI:
     blaze = BlazeRuntime(config.blaze_command)
     metrics = MetricsExporter(event_store)
     health = HealthChecks(config.db_path, config.auth_db_path)
+    try:
+        from .predictive_authority.registry import configure_authority_registry
+
+        configure_authority_registry(db_path=config.db_path)
+    except Exception:
+        logging.getLogger("varden").warning(
+            "PA continuity store bind failed; enforcing process-local continuity degrade"
+        )
+        try:
+            from .predictive_authority.registry import get_authority_registry
+
+            get_authority_registry().mark_continuity_degraded("CONTINUITY_STORE_BIND_FAILED")
+        except Exception:
+            pass
     alerts = AlertEngine([ConsoleSink(), FileSink("varden_alerts.jsonl")])
     background = BackgroundWorker(event_store, alerts, poll_interval=config.worker_poll_interval)
     limiter = RateLimiter(
@@ -644,8 +658,10 @@ def create_app(config: AppConfig) -> FastAPI:
     def evaluate_action(payload: dict[str, Any], raw_payload: Any, tenant_id: str):
         action = normalize_action(payload, tenant_id)
         action = enrich_action(action, raw_payload)
-        decision = policy.evaluate(action)
-        budget_rules = load_budget_rules(policy.get_policy())
+        # One coherent policy snapshot for evaluate + budget + PA on this decision.
+        policy_doc = policy.get_policy()
+        decision = policy.evaluate(action, policy_doc=policy_doc)
+        budget_rules = load_budget_rules(policy_doc)
         if action.type == "llm_call" and budget_rules:
             try:
                 budget_decision = token_budget_store.pre_check(action, raw_payload, budget_rules)
@@ -673,7 +689,7 @@ def create_app(config: AppConfig) -> FastAPI:
             decision, _pa_result = apply_predictive_authority(
                 action,
                 decision,
-                policy=policy.get_policy(),
+                policy=policy_doc,
                 env=dict(_os.environ),
             )
         except Exception:
@@ -1212,11 +1228,14 @@ def create_app(config: AppConfig) -> FastAPI:
             raise HTTPException(status_code=404, detail="policy pack not found")
         merged = merge_policy_pack(policy.get_policy(), pack_doc, mode=mode)
         candidate = merged["policy"]
-        validation = policy.validate(candidate)
+        validation = policy.validate(candidate, for_publish=True)
         if not validation["valid"]:
             raise HTTPException(status_code=400, detail=validation)
+        try:
+            atomic_write_json(config.policy_file, candidate)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"policy file write failed: {exc}")
         policy.update_policy(candidate)
-        atomic_write_json(config.policy_file, candidate)
         snapshot_id = policy.snapshot(f"import-pack:{pack_id}", created_by="control-plane", status="draft")
         return {"status": "imported", "pack_id": pack_id, "added": merged["added"], "snapshot_id": snapshot_id, "policy": candidate}
 
@@ -1267,11 +1286,14 @@ def create_app(config: AppConfig) -> FastAPI:
                 raise HTTPException(status_code=409, detail={"error_code": exc.error_code, "message": str(exc)})
             if cached is not None:
                 return cached
-        validation = policy.validate(candidate)
+        validation = policy.validate(candidate, for_publish=True)
         if not validation["valid"]:
             raise HTTPException(status_code=400, detail=validation)
+        try:
+            atomic_write_json(config.policy_file, candidate)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"policy file write failed: {exc}")
         policy.update_policy(candidate)
-        atomic_write_json(config.policy_file, candidate)
         snapshot_id = policy.snapshot("manual-update", created_by="control-plane", status="draft")
         response = {"status": "updated", "snapshot_id": snapshot_id}
         if idempotency_key:

@@ -12,6 +12,7 @@ from .authority_delta import AuthorityDelta, compute_authority_delta
 from .budget import AuthorityBudget
 from .config import PredictiveAuthorityConfig, parse_predictive_config
 from .counterfactual import CounterfactualExplanation, build_explanation
+from .deployment import pa_deployment_status
 from .facts import ActionFacts, apply_facts_to_state, extract_facts
 from .hazardous import HazardousFinding, detect_hazardous_analysis, detect_hazardous_paths
 from .evidence import AnalysisStatus
@@ -89,6 +90,9 @@ class PredictiveResult:
             "safe_conclusion": self.analysis_status == AnalysisStatus.COMPLETE.value
             and not (self.findings)
             and not self.error,
+            "continuity_broken": bool((self.after_snapshot or {}).get("continuity_broken")),
+            "continuity_break_reason": (self.after_snapshot or {}).get("continuity_break_reason"),
+            "deployment": (self.after_snapshot or {}).get("deployment"),
             "before": self.before_snapshot,
             "after": self.after_snapshot,
             # Integrity binding for side-stored full snapshot (hashed with audit event).
@@ -99,11 +103,19 @@ class PredictiveResult:
 
 
 class PredictiveAuthorityEngine:
-    def __init__(self, config: PredictiveAuthorityConfig | None = None, *, registry=None) -> None:
+    def __init__(
+        self,
+        config: PredictiveAuthorityConfig | None = None,
+        *,
+        registry=None,
+        env: dict[str, str] | None = None,
+    ) -> None:
         self.config = config or PredictiveAuthorityConfig()
         # None → the process-wide live registry (resolved per call so tests
         # that reset the global keep working).
         self._registry = registry
+        # Optional env mapping for deployment checks (tests); None → os.environ.
+        self._env = env
 
     def evaluate(
         self,
@@ -127,6 +139,22 @@ class PredictiveAuthorityEngine:
             return existing, result
 
         registry = self._registry if self._registry is not None else get_authority_registry()
+        active_workers = None
+        try:
+            active_workers = getattr(registry, "active_worker_count", lambda: None)()
+        except Exception:
+            active_workers = None
+        deployment = pa_deployment_status(
+            enforce=self.config.is_enforce(),
+            env=self._env,
+            active_workers=active_workers,
+        )
+        unsupported_deployment = bool(deployment.get("unsupported_multi_worker_enforce"))
+        deployment_incomplete_reason = (
+            str(deployment.get("reason") or "MULTI_WORKER_UNSUPPORTED")
+            if unsupported_deployment
+            else None
+        )
         key = registry.session_key(
             tenant_id=action.tenant_id,
             trace_id=action.trace_id,
@@ -163,6 +191,11 @@ class PredictiveAuthorityEngine:
             before_domains = {c.domain for c in state.capabilities.values() if c.domain}
 
             apply_facts_to_state(state, facts)
+            if commit:
+                try:
+                    registry.note_accumulated_authority(key, state)
+                except Exception:
+                    pass
 
             analysis = detect_hazardous_analysis(state.graph, max_depth=self.config.max_depth)
             findings = analysis.findings
@@ -199,7 +232,22 @@ class PredictiveAuthorityEngine:
 
             # Analysis status: truncation is NEVER a safe conclusion.
             # Includes graph construction bounds AND reachability visit/path bounds.
-            if state.graph.truncated or analysis.truncated or analysis.analysis_incomplete:
+            # Continuity loss, tombstone-table degradation, and unsupported /
+            # undeclared deployments are likewise never safe conclusions.
+            continuity_degraded = bool(getattr(registry, "continuity_degraded", lambda: False)())
+            if unsupported_deployment and deployment_incomplete_reason:
+                result.analysis_status = AnalysisStatus.TRUNCATED.value
+                result.analysis_incomplete_reason = deployment_incomplete_reason
+            elif continuity_degraded:
+                result.analysis_status = AnalysisStatus.TRUNCATED.value
+                result.analysis_incomplete_reason = (
+                    getattr(registry, "continuity_status", lambda: {})().get("continuity_degraded_reason")
+                    or "TOMBSTONE_HISTORY_INCOMPLETE"
+                )
+            elif state.continuity_broken:
+                result.analysis_status = AnalysisStatus.TRUNCATED.value
+                result.analysis_incomplete_reason = "SESSION_CONTINUITY_BROKEN"
+            elif state.graph.truncated or analysis.truncated or analysis.analysis_incomplete:
                 result.analysis_status = AnalysisStatus.TRUNCATED.value
                 result.analysis_incomplete_reason = (
                     state.graph.truncation_reason
@@ -229,6 +277,11 @@ class PredictiveAuthorityEngine:
                 "potential": sorted(n for n, c in state.capabilities.items() if c.kind.value == "potential"),
                 "graph_version": state.graph.version,
                 "truncated": state.graph.truncated,
+                "continuity_broken": state.continuity_broken,
+                "continuity_break_reason": state.continuity_break_reason,
+                "continuity_degraded": continuity_degraded,
+                "deployment": deployment,
+                "registry_continuity": getattr(registry, "continuity_status", lambda: {})(),
             }
 
             budget_exceeded = bool(budget and budget.would_exceed(delta))
@@ -239,22 +292,60 @@ class PredictiveAuthorityEngine:
                 budget_exceeded=budget_exceeded,
                 irreversible=facts.irreversible,
             )
-            # Truncated analysis in enforce: apply failure_mode (default require_approval).
+            # Truncated / continuity / unsupported-deployment analysis in enforce.
             if result.analysis_status == AnalysisStatus.TRUNCATED.value and self.config.is_enforce():
                 fm = self.config.resolved_failure_mode()
+                incomplete = result.analysis_incomplete_reason or "bound"
+                # Continuity / topology integrity must never silently preserve an
+                # allow under preserve_existing — that would restore the pre-fix
+                # weaken-to-allow class when operators misconfigure failure_mode.
+                _integrity_reasons = {
+                    "SESSION_CONTINUITY_BROKEN",
+                    "TOMBSTONE_HISTORY_INCOMPLETE",
+                    "DEPLOYMENT_UNDECLARED",
+                    "MULTI_WORKER_UNSUPPORTED",
+                    "CONTINUITY_STORE_READ_FAILED",
+                    "CONTINUITY_STORE_WRITE_FAILED",
+                }
+                if incomplete in _integrity_reasons and fm == "preserve_existing":
+                    fm = "require_approval"
+                if incomplete == "SESSION_CONTINUITY_BROKEN":
+                    reason_prefix = "session_continuity_broken"
+                    detail = (
+                        state.continuity_break_reason
+                        or "accumulated authority was discarded — not concluded safe"
+                    )
+                elif incomplete == "TOMBSTONE_HISTORY_INCOMPLETE":
+                    reason_prefix = "tombstone_history_incomplete"
+                    detail = (
+                        "bounded tombstone table forgot security-relevant session keys — "
+                        "cannot distinguish new sessions from forgotten ones"
+                    )
+                elif incomplete == "DEPLOYMENT_UNDECLARED":
+                    reason_prefix = "deployment_undeclared"
+                    detail = (
+                        "PA enforce requires VARDEN_PA_DEPLOYMENT=single_worker "
+                        "(or explicit multi_worker_allowed) — topology not verified"
+                    )
+                elif incomplete == "MULTI_WORKER_UNSUPPORTED":
+                    reason_prefix = "multi_worker_unsupported"
+                    detail = "process-local PA state cannot span workers — not concluded safe"
+                else:
+                    reason_prefix = "analysis_truncated"
+                    detail = "incomplete — not concluded safe"
                 if fm == "block":
                     recommendation = PredictiveRecommendation(
                         action="block",
-                        reason=f"analysis_truncated:{result.analysis_incomplete_reason or 'bound'}",
-                        matched_predicates=["analysis_truncated"],
+                        reason=f"{reason_prefix}:{incomplete}",
+                        matched_predicates=[reason_prefix],
                         authority_expands=True,
                         structural_units=recommendation.structural_units,
                     )
                 elif fm == "require_approval":
                     recommendation = PredictiveRecommendation(
                         action="require_approval",
-                        reason="analysis_truncated: incomplete — not concluded safe",
-                        matched_predicates=["analysis_truncated"],
+                        reason=f"{reason_prefix}: {detail}",
+                        matched_predicates=[reason_prefix],
                         authority_expands=True,
                         structural_units=recommendation.structural_units,
                     )
@@ -401,5 +492,5 @@ def apply_predictive_authority(
 ) -> tuple[Decision, PredictiveResult]:
     """Public integration point for the control-plane evaluate path."""
     cfg = resolve_config(policy=policy, action=action, explicit=config, env=env)
-    engine = PredictiveAuthorityEngine(cfg)
+    engine = PredictiveAuthorityEngine(cfg, env=env)
     return engine.evaluate(action, decision, policy=policy or {})

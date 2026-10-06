@@ -51,6 +51,11 @@ class AuthorityState:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     policy_context: dict[str, Any] = field(default_factory=dict)
+    # Set when this session key was recreated after an authoritative eviction /
+    # idle expiry discarded accumulated authority. Enforce mode must fail-safe;
+    # observe mode must report incomplete analysis (never "safe").
+    continuity_broken: bool = False
+    continuity_break_reason: str | None = None
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     def snapshot_capability_names(self, *, kind: CapabilityKind | None = None) -> set[str]:
@@ -132,5 +137,7 @@ class AuthorityState:
                 "created_at": self.created_at,
                 "updated_at": self.updated_at,
                 "policy_context": dict(self.policy_context),
+                "continuity_broken": self.continuity_broken,
+                "continuity_break_reason": self.continuity_break_reason,
                 "graph": self.graph.to_dict(),
             }

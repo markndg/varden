@@ -66,6 +66,7 @@ _current_provenance: contextvars.ContextVar[list[dict[str, Any]] | None] = conte
 _PATCH_LOCK = threading.Lock()
 _PATCHED = False
 _ORIGINALS: dict[str, Any] = {}
+_WRAPPERS: dict[str, Any] = {}
 _IMPORT_HOOK_INSTALLED = False
 _IMPORT_HOOK = None
 _SUPPORTED_IMPORTS = {'requests', 'httpx', 'openai', 'anthropic', 'subprocess', 'urllib', 'pathlib'}
@@ -167,6 +168,15 @@ class VardenClient:
 
 
 class VardenGuard:
+    _LOCKED_MODE_ATTRS = frozenset({"product_mode", "fail_mode", "mode"})
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in self._LOCKED_MODE_ATTRS and object.__getattribute__(self, "__dict__").get("_mode_locked"):
+            raise RuntimeError(
+                f"cannot mutate {name} after mode lock — silent downgrade refused"
+            )
+        object.__setattr__(self, name, value)
+
     def __init__(
         self,
         base_url: str = 'http://127.0.0.1:8000',
@@ -245,72 +255,113 @@ class VardenGuard:
     def activate(self) -> 'VardenGuard':
         self.client.ensure_credentials()
         self._check_credential_privilege()
-        _current_guard.set(self)
-        if self.auto_instrument:
-            patch_runtime(self)
         reg = get_coverage_registry()
-        reg.set_session(
-            mode=self.product_mode,
-            fail_mode=self.fail_mode,
-            require_coverage=self.require_coverage,
-            allow_uncovered=self.allow_uncovered,
-            lock_mode=True,
-        )
-        self._mode_locked = True
-        # Mark always-available tool surface.
-        reg.mark('tools.python', status=PARTIAL, interceptor='guard_tool/@tool/register_tool', active=True, applicable=True)
-        # LangChain remains non-applicable until the framework is actually in use.
-        # Discover MCP configs — strict must not silently READY when NOT_ROUTED.
-        discovered_mcp = _discover_mcp_configs(self.mcp_config)
-        if discovered_mcp:
-            mcp_surf = reg.get('mcp')
-            if not (mcp_surf and mcp_surf.status == ENFORCED and mcp_surf.active):
-                reg.discover(
-                    'mcp',
-                    detail={
-                        'reason': f"{discovered_mcp['count']} configured server(s) detected",
-                        'paths': discovered_mcp.get('paths') or [],
-                        'servers': discovered_mcp.get('servers') or [],
-                    },
-                )
-                reg.mark(
-                    'mcp',
-                    status=NOT_ROUTED,
-                    active=False,
-                    applicable=True,
-                    limitations=['MCP config discovered but traffic is not routed through the Varden gateway.'],
-                    evidence=discovered_mcp,
-                )
-        # Privileged registered tools without guard path → discover.
-        for name, meta in self._tool_registry.items():
-            authorities = meta.get('authorities') or []
-            if any(a in {'ADMIN', 'WRITE_DATABASE', 'DELETE', 'EXECUTE_PRIVILEGED'} for a in authorities):
-                reg.discover(f'tools.custom.{name}', detail={'reason': 'privileged custom tool registered', 'authorities': authorities})
-        if self.product_mode == 'strict' or self.require_coverage:
-            required = self.require_coverage or ['http', 'subprocess']
-            missing = reg.missing_required(required)
-            blocking = reg.discovered_blocking()
-            if self.product_mode == 'strict' and (missing or blocking):
-                parts = []
-                if missing:
-                    parts.append('required coverage missing: ' + ', '.join(missing))
-                if blocking:
-                    parts.append(
-                        'discovered surfaces unenforced: '
-                        + ', '.join(f"{b['surface']} ({b['state']})" for b in blocking)
-                    )
+        previous_guard = _current_guard.get()
+        contract = reg.enforcement_contract()
+        already_locked = bool(contract.get("mode_locked"))
+        # Refuse installing a different live guard once mode is locked — must run
+        # before ``_current_guard.set`` so interceptors never see a weaker guard
+        # while the registry still reports the prior enforcing mode.
+        # Authoritative contract is CoverageRegistry.enforcement_contract() (mode,
+        # fail_mode, require_coverage, allow_uncovered) — not guard attributes alone.
+        if already_locked:
+            want_allow = {str(x).strip().lower() for x in (self.allow_uncovered or [])}
+            want_require = list(self.require_coverage or [])
+            locked_allow = set(contract.get("allow_uncovered") or [])
+            locked_require = list(contract.get("require_coverage") or [])
+            if (
+                self.product_mode != contract.get("mode")
+                or self.fail_mode != contract.get("fail_mode")
+                or want_require != locked_require
+                or want_allow != locked_allow
+            ):
                 raise RuntimeError(
-                    'strict mode not ready — ' + '; '.join(parts)
-                    + '. Route MCP via gateway or pass allow_uncovered=[...].'
+                    f"security mode locked after activation "
+                    f"({contract.get('mode')}/{contract.get('fail_mode')}); "
+                    "silent downgrade refused"
                 )
-        if self.emit_attestation:
-            import logging
-            logging.getLogger('varden').info("\n" + format_startup_attestation(reg))
-            try:
-                print(format_startup_attestation(reg), flush=True)
-            except Exception:
-                pass
-        return self
+            # Same contract re-entry: refresh ContextVar to this guard only after
+            # set_session no-op succeeds (identical contract).
+        installed = False
+        try:
+            if self.auto_instrument:
+                patch_runtime(self)
+            reg.set_session(
+                mode=self.product_mode,
+                fail_mode=self.fail_mode,
+                require_coverage=self.require_coverage,
+                allow_uncovered=self.allow_uncovered,
+                lock_mode=True,
+            )
+            _current_guard.set(self)
+            installed = True
+            object.__setattr__(self, "_mode_locked", True)
+            # Mark always-available tool surface.
+            reg.mark('tools.python', status=PARTIAL, interceptor='guard_tool/@tool/register_tool', active=True, applicable=True)
+            # LangChain remains non-applicable until the framework is actually in use.
+            # Discover MCP configs — strict must not silently READY when NOT_ROUTED.
+            discovered_mcp = _discover_mcp_configs(self.mcp_config)
+            if discovered_mcp:
+                mcp_surf = reg.get('mcp')
+                if not (mcp_surf and mcp_surf.status == ENFORCED and mcp_surf.active):
+                    reg.discover(
+                        'mcp',
+                        detail={
+                            'reason': f"{discovered_mcp['count']} configured server(s) detected",
+                            'paths': discovered_mcp.get('paths') or [],
+                            'servers': discovered_mcp.get('servers') or [],
+                        },
+                    )
+                    reg.mark(
+                        'mcp',
+                        status=NOT_ROUTED,
+                        active=False,
+                        applicable=True,
+                        limitations=['MCP config discovered but traffic is not routed through the Varden gateway.'],
+                        evidence=discovered_mcp,
+                    )
+            # Privileged registered tools without guard path → discover.
+            for name, meta in self._tool_registry.items():
+                authorities = meta.get('authorities') or []
+                if any(a in {'ADMIN', 'WRITE_DATABASE', 'DELETE', 'EXECUTE_PRIVILEGED'} for a in authorities):
+                    reg.discover(f'tools.custom.{name}', detail={'reason': 'privileged custom tool registered', 'authorities': authorities})
+            if self.product_mode == 'strict' or self.require_coverage:
+                required = self.require_coverage or ['http', 'subprocess']
+                missing = reg.missing_required(required)
+                blocking = reg.discovered_blocking()
+                if self.product_mode == 'strict' and (missing or blocking):
+                    parts = []
+                    if missing:
+                        parts.append('required coverage missing: ' + ', '.join(missing))
+                    if blocking:
+                        parts.append(
+                            'discovered surfaces unenforced: '
+                            + ', '.join(f"{b['surface']} ({b['state']})" for b in blocking)
+                        )
+                    raise RuntimeError(
+                        'strict mode not ready — ' + '; '.join(parts)
+                        + '. Route MCP via gateway or pass allow_uncovered=[...].'
+                    )
+            if self.emit_attestation:
+                import logging
+                logging.getLogger('varden').info("\n" + format_startup_attestation(reg))
+                try:
+                    print(format_startup_attestation(reg), flush=True)
+                except Exception:
+                    pass
+            return self
+        except Exception:
+            # Unsuccessful activation must not leave a weaker/partial guard installed
+            # when we did not already hold a lock from a prior successful protect().
+            if not already_locked:
+                _current_guard.set(previous_guard)
+                try:
+                    unpatch_runtime()
+                except Exception:
+                    pass
+            elif not installed:
+                _current_guard.set(previous_guard)
+            raise
 
     def _is_control_plane_url(self, url: str | None) -> bool:
         return _is_control_plane_request(url, self)
@@ -342,10 +393,13 @@ class VardenGuard:
         provenance_sources = list(_current_provenance.get() or [])
         merged_meta = {'app_name': self.app_name, 'tenant': self.tenant, **auto_meta, **(metadata or {}), 'lineage': lineage}
         surface = ((metadata or {}).get('runtime') or {}).get('surface') or (auto_meta.get('execution_surface') if isinstance(auto_meta, dict) else None) or type
+        # Locked contract mode is authoritative for runtime labels — a poisoned
+        # observe guard must not stamp observe onto an enforcing session.
+        effective_mode = _live_product_mode(self)
         merged_meta = enrich_action_runtime_metadata(
             merged_meta,
             surface=str(surface),
-            mode=self.product_mode,
+            mode=effective_mode,
             pre_execution=True,
         )
         if tool and tool in self._tool_registry:
@@ -380,10 +434,19 @@ class VardenGuard:
             if result and result.event_id:
                 _current_trace_id.set(trace_id)
                 _current_parent_event_id.set(result.event_id)
+            # Defensive: if CP returns a blocked decision without 403, still deny
+            # under a locked enforcing contract (never trust local observe mode).
+            if result and result.blocked and _live_enforcing(self):
+                raise VardenBlockedError(
+                    f"blocked by Varden ({(result.decision or {}).get('action')})",
+                    result.decision,
+                )
             return result
         except VardenBlockedError as exc:
             # Observe mode records the block but must not prevent side effects.
-            if not is_enforcing(self.product_mode):
+            # When the coverage registry mode is locked, that mode is authoritative
+            # (a swapped weaker live guard must not observe-out of enforcement).
+            if not _live_enforcing(self):
                 detail = exc.decision if isinstance(exc.decision, dict) else {}
                 if isinstance(detail.get('decision'), dict):
                     return GuardResult(
@@ -393,8 +456,15 @@ class VardenGuard:
                     )
                 return GuardResult(decision=detail or {'action': 'block', 'reason': str(exc)}, action=action, event_id=None)
             raise
-        except Exception:
-            if self.fail_mode == 'closed':
+        except Exception as exc:
+            # Authoritative fail_mode comes from the locked contract when present.
+            # A poisoned fail_mode=open guard must not open a locked closed runtime.
+            if _live_fail_closed(self):
+                if _live_enforcing(self):
+                    raise VardenBlockedError(
+                        f"control plane unreachable under locked enforcing contract: {exc}",
+                        {"action": "block", "reason": "control_plane_unreachable"},
+                    ) from exc
                 raise
             return None
 
@@ -424,7 +494,7 @@ class VardenGuard:
                 _current_parent_event_id.set(result.get('event_id'))
             return result
         except Exception:
-            if self.fail_mode == 'closed':
+            if _live_fail_closed(self):
                 raise
             return None
 
@@ -434,7 +504,7 @@ class VardenGuard:
             @functools.wraps(fn)
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 result = self.guarded_action(type='tool_call', tool=tool_name, args={'args': list(args), 'kwargs': kwargs}, payload={'args': list(args), 'kwargs': kwargs})
-                if result and result.blocked and is_enforcing(self.product_mode):
+                if result and result.blocked and _live_enforcing(self):
                     raise VardenBlockedError(f'{tool_name} blocked', result.decision)
                 try:
                     value = await fn(*args, **kwargs)
@@ -450,7 +520,7 @@ class VardenGuard:
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             result = self.guarded_action(type='tool_call', tool=tool_name, args={'args': list(args), 'kwargs': kwargs}, payload={'args': list(args), 'kwargs': kwargs})
-            if result and result.blocked and is_enforcing(self.product_mode):
+            if result and result.blocked and _live_enforcing(self):
                 raise VardenBlockedError(f'{tool_name} blocked', result.decision)
             try:
                 value = fn(*args, **kwargs)
@@ -559,6 +629,51 @@ def _parse_json(resp: httpx.Response) -> Any:
 
 def current_guard() -> VardenGuard | None:
     return _current_guard.get()
+
+
+def _live_enforcing(guard: VardenGuard | None = None) -> bool:
+    """Effective enforcing flag for interceptors.
+
+    Locked coverage-registry ``enforcement_contract()`` wins over a mutated or
+    swapped live guard so attestation and interception cannot diverge after
+    ``protect()``.
+    """
+    contract = get_coverage_registry().enforcement_contract()
+    if contract.get("mode_locked"):
+        mode = contract.get("mode")
+        return is_enforcing(mode) or mode == "enforce"
+    current = guard or _current_guard.get()
+    if current is None:
+        return False
+    mode = getattr(current, "product_mode", None) or getattr(current, "mode", None)
+    return is_enforcing(mode) or mode == "enforce"
+
+
+def _live_fail_closed(guard: VardenGuard | None = None) -> bool:
+    """Effective fail-closed flag for control-plane / transport errors.
+
+    After mode lock, ``enforcement_contract()['fail_mode']`` is authoritative —
+    a poisoned observe/open guard must not open the failure path of a locked
+    guarded/strict (closed) runtime.
+    """
+    contract = get_coverage_registry().enforcement_contract()
+    if contract.get("mode_locked"):
+        return str(contract.get("fail_mode") or "").lower() == "closed"
+    current = guard or _current_guard.get()
+    if current is None:
+        return True
+    return str(getattr(current, "fail_mode", "") or "").lower() == "closed"
+
+
+def _live_product_mode(guard: VardenGuard | None = None) -> str:
+    """Effective product mode for action metadata / runtime labels."""
+    contract = get_coverage_registry().enforcement_contract()
+    if contract.get("mode_locked") and contract.get("mode"):
+        return str(contract.get("mode"))
+    current = guard or _current_guard.get()
+    if current is None:
+        return GUARDED
+    return str(getattr(current, "product_mode", None) or getattr(current, "mode", None) or GUARDED)
 
 
 def current_provenance_sources() -> list[dict[str, Any]]:
@@ -679,9 +794,40 @@ def unpatch_runtime() -> None:
                 pass
         _runtime_patches.restore_extended(_ORIGINALS)
         _ORIGINALS.clear()
+        _WRAPPERS.clear()
         _remove_import_hook()
         _PATCHED = False
-        get_coverage_registry().reset()
+        get_coverage_registry().reset(release_enforcement_lock=True)
+        _current_guard.set(None)
+
+
+def _reconcile_or_install(key: str, *, get_target: Any, set_target: Any, make_wrapper: Any) -> bool:
+    """Install wrapper or re-apply once if a third party restored the original.
+
+    Returns True when our wrapper is installed afterward. Does not fight foreign
+    wrappers (avoids repatch loops); coverage verify will then refuse ENFORCED.
+    """
+    if key not in _ORIGINALS:
+        original = get_target()
+        _ORIGINALS[key] = original
+        wrapper = make_wrapper(original)
+        _WRAPPERS[key] = wrapper
+        set_target(wrapper)
+        return True
+    original = _ORIGINALS[key]
+    wrapper = _WRAPPERS.get(key)
+    current = get_target()
+    if wrapper is not None and current is wrapper:
+        return True
+    if current is original and wrapper is not None:
+        set_target(wrapper)
+        return True
+    if current is original and wrapper is None:
+        wrapper = make_wrapper(original)
+        _WRAPPERS[key] = wrapper
+        set_target(wrapper)
+        return True
+    return False
 
 
 def patch_runtime(guard: VardenGuard) -> None:
@@ -698,37 +844,82 @@ def patch_runtime(guard: VardenGuard) -> None:
         _runtime_patches.patch_filesystem(guard, _ORIGINALS)
         reg = get_coverage_registry()
         if 'requests.sessions.Session.request' in _ORIGINALS:
-            reg.mark('http.requests', status=ENFORCED, interceptor='requests.Session.request', active=True, applicable=True)
-
             def _check_requests():
                 try:
                     import requests
-                    return requests.sessions.Session.request is not _ORIGINALS.get('requests.sessions.Session.request')
+                    return requests.sessions.Session.request is _WRAPPERS.get(
+                        'requests.sessions.Session.request'
+                    )
                 except Exception:
                     return False
 
-            reg.register_interceptor_check('http.requests', _check_requests)
+            try:
+                reg.install_interceptor(
+                    'http.requests',
+                    checker=_check_requests,
+                    interceptor='requests.Session.request',
+                )
+            except RuntimeError:
+                reg.mark(
+                    'http.requests',
+                    status=UNCOVERED,
+                    active=False,
+                    installed=True,
+                    verified=False,
+                    applicable=True,
+                    limitations=['requests interceptor not active'],
+                )
         if 'httpx.Client.send' in _ORIGINALS:
-            reg.mark('http.httpx', status=ENFORCED, interceptor='httpx.Client/AsyncClient.send', active=True, applicable=True)
-
             def _check_httpx():
-                return httpx.Client.send is not _ORIGINALS.get('httpx.Client.send')
+                return httpx.Client.send is _WRAPPERS.get('httpx.Client.send')
 
-            reg.register_interceptor_check('http.httpx', _check_httpx)
+            try:
+                reg.install_interceptor(
+                    'http.httpx',
+                    checker=_check_httpx,
+                    interceptor='httpx.Client/AsyncClient.send',
+                )
+            except RuntimeError:
+                reg.mark(
+                    'http.httpx',
+                    status=UNCOVERED,
+                    active=False,
+                    installed=True,
+                    verified=False,
+                    applicable=True,
+                )
         reg.mark('http.raw_sockets', status=UNCOVERED, active=False, applicable=True)
         reg.mark('http.aiohttp', status='UNSUPPORTED', active=False, applicable=True)
         reg.mark('http.urllib3', status=UNCOVERED, active=False, applicable=True)
         if 'subprocess.Popen' in _ORIGINALS:
-            reg.mark('subprocess', status=ENFORCED, interceptor='subprocess.*', active=True, applicable=True)
-
             def _check_subprocess():
-                return subprocess.Popen is not _ORIGINALS.get('subprocess.Popen')
+                return subprocess.Popen is _WRAPPERS.get('subprocess.Popen')
 
-            reg.register_interceptor_check('subprocess', _check_subprocess)
+            try:
+                reg.install_interceptor(
+                    'subprocess',
+                    checker=_check_subprocess,
+                    interceptor='subprocess+os.system/popen+asyncio',
+                    limitations=[
+                        'Saved pre-patch function references bypass monkeypatching.',
+                        'Native forks from extensions are outside Python hooks.',
+                    ],
+                )
+            except RuntimeError:
+                reg.mark(
+                    'subprocess',
+                    status=UNCOVERED,
+                    active=False,
+                    installed=True,
+                    verified=False,
+                    applicable=True,
+                )
         if 'openai.responses.create' in _ORIGINALS or 'openai.chat.completions.create' in _ORIGINALS:
-            reg.mark('llm.openai_transport', status=ENFORCED, interceptor='openai', active=True, applicable=True)
+            if not getattr(reg, '_mode_locked', False):
+                reg.mark('llm.openai_transport', status=ENFORCED, interceptor='openai', active=True, applicable=True)
         if 'anthropic.messages.create' in _ORIGINALS:
-            reg.mark('llm.anthropic_transport', status=ENFORCED, interceptor='anthropic', active=True, applicable=True)
+            if not getattr(reg, '_mode_locked', False):
+                reg.mark('llm.anthropic_transport', status=ENFORCED, interceptor='anthropic', active=True, applicable=True)
         # MCP stays non-applicable until discover()/gateway marks it. Do not
         # claim NOT_ROUTED merely because protect() ran without MCP configs.
         _PATCHED = True
@@ -801,52 +992,56 @@ def _patch_requests(guard: VardenGuard) -> None:
     except Exception:
         return
     key = 'requests.sessions.Session.request'
-    if key in _ORIGINALS:
-        return
-    _ORIGINALS[key] = requests.sessions.Session.request
 
-    @functools.wraps(_ORIGINALS[key])
-    def wrapper(self, method: str, url: str, *args: Any, **kwargs: Any):
-        current = current_guard() or guard
-        if _is_control_plane_request(url, current):
-            return _ORIGINALS[key](self, method, url, *args, **kwargs)
-        body = kwargs.get('json')
-        if body is None:
-            body = _decode_body_value(kwargs.get('data'))
-        payload = {'args': list(args), 'kwargs': _json_safe(kwargs), 'body': _json_safe(body)}
-        result = current.guarded_action(type='http_request', tool='requests', url=url, method=method.upper(), args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}})
-        if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
-            raise VardenBlockedError(f'HTTP request to {url} blocked', result.decision)
-        try:
-            response = _ORIGINALS[key](self, method, url, *args, **kwargs)
-            if result:
-                current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', url))})
-            return response
-        except Exception as exc:
-            if result:
-                current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
-            raise
-    requests.sessions.Session.request = wrapper
+    def _make(original: Any):
+        @functools.wraps(original)
+        def wrapper(self, method: str, url: str, *args: Any, **kwargs: Any):
+            current = current_guard() or guard
+            if _is_control_plane_request(url, current):
+                return original(self, method, url, *args, **kwargs)
+            body = kwargs.get('json')
+            if body is None:
+                body = _decode_body_value(kwargs.get('data'))
+            payload = {'args': list(args), 'kwargs': _json_safe(kwargs), 'body': _json_safe(body)}
+            result = current.guarded_action(type='http_request', tool='requests', url=url, method=method.upper(), args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}})
+            if result and result.blocked and _live_enforcing(current):
+                raise VardenBlockedError(f'HTTP request to {url} blocked', result.decision)
+            try:
+                response = original(self, method, url, *args, **kwargs)
+                if result:
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', url))})
+                return response
+            except Exception as exc:
+                if result:
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
+                raise
+        return wrapper
+
+    _reconcile_or_install(
+        key,
+        get_target=lambda: requests.sessions.Session.request,
+        set_target=lambda fn: setattr(requests.sessions.Session, 'request', fn),
+        make_wrapper=_make,
+    )
 
 
 def _patch_httpx(guard: VardenGuard) -> None:
     key = 'httpx.Client.send'
-    if key not in _ORIGINALS:
-        _ORIGINALS[key] = httpx.Client.send
 
-        @functools.wraps(_ORIGINALS[key])
+    def _make_send(original: Any):
+        @functools.wraps(original)
         def send_wrapper(self, request: httpx.Request, *args: Any, **kwargs: Any):
             current = current_guard() or guard
             request_url = str(request.url)
             if _is_control_plane_request(request_url, current):
-                return _ORIGINALS[key](self, request, *args, **kwargs)
+                return original(self, request, *args, **kwargs)
             body = _extract_httpx_body(request)
             payload = {'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)}
             result = current.guarded_action(type='http_request', tool='httpx', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}})
-            if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
+            if result and result.blocked and _live_enforcing(current):
                 raise VardenBlockedError(f'HTTPX request to {request.url} blocked', result.decision)
             try:
-                response = _ORIGINALS[key](self, request, *args, **kwargs)
+                response = original(self, request, *args, **kwargs)
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(request.url)})
                 return response
@@ -854,25 +1049,31 @@ def _patch_httpx(guard: VardenGuard) -> None:
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
                 raise
-        httpx.Client.send = send_wrapper
+        return send_wrapper
+
+    _reconcile_or_install(
+        key,
+        get_target=lambda: httpx.Client.send,
+        set_target=lambda fn: setattr(httpx.Client, 'send', fn),
+        make_wrapper=_make_send,
+    )
 
     key_async = 'httpx.AsyncClient.send'
-    if key_async not in _ORIGINALS:
-        _ORIGINALS[key_async] = httpx.AsyncClient.send
 
-        @functools.wraps(_ORIGINALS[key_async])
+    def _make_async(original: Any):
+        @functools.wraps(original)
         async def send_async_wrapper(self, request: httpx.Request, *args: Any, **kwargs: Any):
             current = current_guard() or guard
             request_url = str(request.url)
             if _is_control_plane_request(request_url, current):
-                return await _ORIGINALS[key_async](self, request, *args, **kwargs)
+                return await original(self, request, *args, **kwargs)
             body = _extract_httpx_body(request)
             payload = {'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)}
             result = current.guarded_action(type='http_request', tool='httpx_async', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}})
-            if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
+            if result and result.blocked and _live_enforcing(current):
                 raise VardenBlockedError(f'HTTPX request to {request.url} blocked', result.decision)
             try:
-                response = await _ORIGINALS[key_async](self, request, *args, **kwargs)
+                response = await original(self, request, *args, **kwargs)
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(request.url)})
                 return response
@@ -880,7 +1081,14 @@ def _patch_httpx(guard: VardenGuard) -> None:
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
                 raise
-        httpx.AsyncClient.send = send_async_wrapper
+        return send_async_wrapper
+
+    _reconcile_or_install(
+        key_async,
+        get_target=lambda: httpx.AsyncClient.send,
+        set_target=lambda fn: setattr(httpx.AsyncClient, 'send', fn),
+        make_wrapper=_make_async,
+    )
 
 
 def _llm_usage_output_payload(provider: str, response: Any, *, kwargs: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -924,7 +1132,7 @@ def _patch_openai(guard: VardenGuard) -> None:
                 current = current_guard() or guard
                 payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
                 result = current.guarded_action(type='llm_call', tool='openai.responses.create', args=payload, payload=payload)
-                if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
+                if result and result.blocked and _live_enforcing(current):
                     raise VardenBlockedError('OpenAI response call blocked', result.decision)
                 response = _ORIGINALS[key](self, *args, **kwargs)
                 if result:
@@ -946,7 +1154,7 @@ def _patch_openai(guard: VardenGuard) -> None:
                 current = current_guard() or guard
                 payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
                 result = current.guarded_action(type='llm_call', tool='openai.chat.completions.create', args=payload, payload=payload)
-                if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
+                if result and result.blocked and _live_enforcing(current):
                     raise VardenBlockedError('OpenAI chat completion blocked', result.decision)
                 response = _ORIGINALS[key](self, *args, **kwargs)
                 if result:
@@ -971,7 +1179,7 @@ def _patch_anthropic(guard: VardenGuard) -> None:
                 current = current_guard() or guard
                 payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
                 result = current.guarded_action(type='llm_call', tool='anthropic.messages.create', args=payload, payload=payload)
-                if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
+                if result and result.blocked and _live_enforcing(current):
                     raise VardenBlockedError('Anthropic message blocked', result.decision)
                 response = _ORIGINALS[key](self, *args, **kwargs)
                 if result:
@@ -982,37 +1190,50 @@ def _patch_anthropic(guard: VardenGuard) -> None:
 
 def _patch_subprocess(guard: VardenGuard) -> None:
     key = 'subprocess.Popen'
-    if key not in _ORIGINALS:
-        _ORIGINALS[key] = subprocess.Popen
 
-        class GuardedPopen(subprocess.Popen):
+    def _make_popen(original: Any):
+        class GuardedPopen(original):  # type: ignore[misc,valid-type]
             def __init__(self, args, *pargs, **kwargs):
                 current = current_guard() or guard
                 payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
                 result = current.guarded_action(type='tool_call', tool='subprocess.Popen', args=payload, payload=payload, metadata={'execution_surface': 'subprocess'})
-                if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
+                if result and result.blocked and _live_enforcing(current):
                     raise VardenBlockedError('Subprocess execution blocked', result.decision)
                 super().__init__(args, *pargs, **kwargs)
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'pid': getattr(self, 'pid', None)})
-        subprocess.Popen = GuardedPopen
+        GuardedPopen.__name__ = 'GuardedPopen'
+        return GuardedPopen
+
+    _reconcile_or_install(
+        key,
+        get_target=lambda: subprocess.Popen,
+        set_target=lambda cls: setattr(subprocess, 'Popen', cls),
+        make_wrapper=_make_popen,
+    )
 
     key_run = 'subprocess.run'
-    if key_run not in _ORIGINALS:
-        _ORIGINALS[key_run] = subprocess.run
 
-        @functools.wraps(_ORIGINALS[key_run])
+    def _make_run(original: Any):
+        @functools.wraps(original)
         def run_wrapper(*popenargs, **kwargs):
             current = current_guard() or guard
             payload = {'args': _json_safe(list(popenargs)), 'kwargs': _json_safe(kwargs)}
             result = current.guarded_action(type='tool_call', tool='subprocess.run', args=payload, payload=payload, metadata={'execution_surface': 'subprocess'})
-            if result and result.blocked and is_enforcing(getattr(current, 'product_mode', current.mode)):
+            if result and result.blocked and _live_enforcing(current):
                 raise VardenBlockedError('Subprocess execution blocked', result.decision)
-            response = _ORIGINALS[key_run](*popenargs, **kwargs)
+            response = original(*popenargs, **kwargs)
             if result:
                 current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'returncode': getattr(response, 'returncode', None)})
             return response
-        subprocess.run = run_wrapper
+        return run_wrapper
+
+    _reconcile_or_install(
+        key_run,
+        get_target=lambda: subprocess.run,
+        set_target=lambda fn: setattr(subprocess, 'run', fn),
+        make_wrapper=_make_run,
+    )
 
 
 def protect_from_env(**overrides: Any) -> VardenGuard:

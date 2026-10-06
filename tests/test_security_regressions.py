@@ -235,7 +235,11 @@ def test_simulate_trace_does_not_change_live_policy(tmp_path):
     result = engine.simulate_trace([row], ALLOW_ALL)
     assert result["summary"]["allow"] == 1  # candidate evaluated
     assert observed == ["block"]  # live decisions unaffected mid-simulation
-    assert engine.policy is live
+    # Live store is a private deep copy — caller retains no alias.
+    assert engine.policy is not live
+    live["block"] = []
+    assert engine.evaluate(probe).action == "block"
+    assert engine.get_policy()["block"][0]["tool"] == "delete_database"
 
 
 # --- 5. min_risk_score is a threshold ---------------------------------------

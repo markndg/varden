@@ -17,11 +17,10 @@ BASE_URL = 'http://127.0.0.1:8000'
 API_KEY = 'admin-demo-key'
 AGENT_NAME = 'monitor-demo-agent'
 
-# This is the entire adoption story for developers.
-# Start the Varden control plane locally, then just do:
+# Adoption story for developers (activated in run(), not at import time, so
+# importing this module for metadata tests does not patch the process httpx):
 #   import varden
 #   varden.protect()
-varden.protect()
 
 
 DEMO_MONITOR_POLICY = {
@@ -71,6 +70,7 @@ def run_sql(statement: str) -> dict[str, Any]:
 
 
 def run() -> int:
+    varden.protect()
     previous_policy = _json_request('/policy')
     _json_request('/policy', method='PUT', payload=DEMO_MONITOR_POLICY)
     print('Varden OSS demo: monitor rule with one-line protection')
