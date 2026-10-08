@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Threat Intelligence
+
+- Added an advisory Threat Intelligence subsystem. It is disabled unless `VARDEN_TI_ENABLED=true` and is not on the firewall decision path.
+- External records normalise into threat items, then into versioned security contracts. Contracts are not rules.
+- Applicability is `PROTECTED`, `EXPOSED`, `NOT_APPLICABLE`, or `REVIEW`. Partial or unrouted coverage is never reported as protected.
+- Candidate rules use Varden's existing policy language and stay inactive until an operator approves them.
+- MITRE ATLAS (pinned STIX JSON), NVD CVE API 2.0, and the CWE XML catalog are implemented. OWASP agentic material stays a scaffold unless an operator pins a versioned `owasp-agentic-v1` JSON document. HTML and PDF are not scraped.
+- Approval rebuilds the rule from the Varden template and refuses a stored candidate whose predicates, contract, coverage assumptions, or displayed content hash no longer match. A stored `PROTECTED` result is rechecked against the live policy.
+- The threat intelligence workspace separates mapped contracts from unmapped records and from runtime protection. Unmapped identifiers stay in review with the stored reason. A healthy watcher is not shown as protection.
+
 ## v1.0.2
 
 Security release. **Upgrade if you run Predictive Authority in `enforce` mode.**

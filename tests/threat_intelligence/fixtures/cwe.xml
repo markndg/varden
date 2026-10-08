@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Weakness_Catalog Version="4.fixture">
+  <Weaknesses>
+    <Weakness ID="522" Name="Insufficiently Protected Credentials"><Description>fixture secret weakness</Description></Weakness>
+    <Weakness ID="79" Name="XSS"><Description>not in the binding table</Description></Weakness>
+  </Weaknesses>
+</Weakness_Catalog>

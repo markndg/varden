@@ -50,14 +50,33 @@ from .runtime.coverage_store import RuntimeCoverageStore
 from .runtime.routes import register_runtime_routes
 from .runtime.session_provenance import SessionProvenanceStore
 from .predictive_authority.routes import register_predictive_authority_routes
+from .threat_intelligence.config import ThreatIntelConfig
+from .threat_intelligence.routes import register_threat_intelligence_routes
+from .threat_intelligence.scheduler import IntelligenceScheduler
+from .threat_intelligence.service import ThreatIntelService
 
 
 class EventStreamBroker:
+    """Fan-out for dashboard server-sent events.
+
+    ``close`` wakes every subscriber with a sentinel so generators return.
+    Shutdown calls this before Uvicorn waits on open connections. The
+    dashboard otherwise holds ``/stream/updates`` forever.
+    """
+
     def __init__(self):
         self._subscribers: set[asyncio.Queue] = set()
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     async def subscribe(self):
         queue: asyncio.Queue = asyncio.Queue()
+        if self._closed:
+            queue.put_nowait(None)
+            return queue
         self._subscribers.add(queue)
         return queue
 
@@ -65,9 +84,19 @@ class EventStreamBroker:
         self._subscribers.discard(queue)
 
     def publish(self, message: dict[str, Any]):
+        if self._closed or message is None:
+            return
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(message)
+            except Exception:
+                pass
+
+    def close(self):
+        self._closed = True
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(None)
             except Exception:
                 pass
 
@@ -162,16 +191,33 @@ def create_app(config: AppConfig) -> FastAPI:
         },
     )
     broker = EventStreamBroker()
+    threat_config = ThreatIntelConfig.from_env(
+        enabled=config.threat_intel_enabled,
+        db_path=config.db_path,
+        policy_file=config.policy_file,
+    )
+    threat_service = ThreatIntelService(threat_config, policy_engine=policy, event_store=event_store)
+    threat_scheduler = IntelligenceScheduler(threat_service)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         background.start()
+        if threat_config.enabled:
+            threat_scheduler.start()
         try:
             yield
         finally:
+            broker.close()
+            threat_scheduler.stop()
             background.stop()
 
     app = FastAPI(title="Varden Integrated Platform", version="3.0.0", lifespan=lifespan)
+    app.state.event_broker = broker
+
+    def request_shutdown() -> None:
+        broker.close()
+
+    app.request_shutdown = request_shutdown
 
     # Pre-parse body-size enforcement (docs/web-shield-hardening-review.md #8).
     # Must be the outermost user middleware so oversized bodies are rejected
@@ -809,6 +855,14 @@ def create_app(config: AppConfig) -> FastAPI:
     def ui_predictive():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
+    @app.get("/ui/threat-intelligence", response_class=HTMLResponse)
+    def ui_threat_intelligence():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/threat-intelligence/{item_id}", response_class=HTMLResponse)
+    def ui_threat_intelligence_item(item_id: str):
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
     @app.get("/webshield/lab", response_class=HTMLResponse)
     def webshield_lab_page():
         return (Path(__file__).parent / "web" / "webshield-lab.html").read_text(encoding="utf-8")
@@ -890,14 +944,17 @@ def create_app(config: AppConfig) -> FastAPI:
             queue = await broker.subscribe()
             try:
                 yield ': connected\n\n'
-                while True:
+                while not broker.closed:
                     try:
-                        message = await asyncio.wait_for(queue.get(), timeout=20.0)
-                        if message.get("tenant_id") and message.get("tenant_id") != record["tenant_id"]:
-                            continue
-                        yield f"data: {json.dumps(message)}\n\n"
+                        message = await asyncio.wait_for(queue.get(), timeout=5.0)
                     except asyncio.TimeoutError:
                         yield ': keepalive\n\n'
+                        continue
+                    if message is None:
+                        break
+                    if message.get("tenant_id") and message.get("tenant_id") != record["tenant_id"]:
+                        continue
+                    yield f"data: {json.dumps(message)}\n\n"
             finally:
                 broker.unsubscribe(queue)
 
@@ -1401,5 +1458,6 @@ def create_app(config: AppConfig) -> FastAPI:
         get_strict_readiness=lambda: get_coverage_registry().strict_readiness_report(),
         get_posture=lambda: evaluate_posture().to_dict(),
     )
+    register_threat_intelligence_routes(app, require=require, service=threat_service)
 
     return app

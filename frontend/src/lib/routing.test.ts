@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { eventIdFromSearch, hasPredictiveAnalysis, predictiveDeepLink } from './routing';
+import { eventIdFromSearch, hasPredictiveAnalysis, pageFromLocation, predictiveDeepLink, threatIntelligencePath, threatItemIdFromLocation } from './routing';
 
 describe('predictive deep-link routing', () => {
   it('parses stable event_id from search', () => {
@@ -21,5 +21,13 @@ describe('predictive deep-link routing', () => {
       }),
     ).toBe(true);
     expect(hasPredictiveAnalysis({ action: { metadata: {} } })).toBe(false);
+  });
+
+  it('routes threat intelligence list and investigation pages', () => {
+    expect(pageFromLocation('/ui/threat-intelligence')).toBe('threat-intelligence');
+    expect(threatItemIdFromLocation('/ui/threat-intelligence')).toBe(null);
+    expect(threatItemIdFromLocation('/ui/threat-intelligence/atlas%3AAML.T0051')).toBe('atlas:AML.T0051');
+    expect(threatIntelligencePath()).toBe('/ui/threat-intelligence');
+    expect(threatIntelligencePath('atlas:AML.T0051')).toBe('/ui/threat-intelligence/atlas%3AAML.T0051');
   });
 });

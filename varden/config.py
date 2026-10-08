@@ -45,6 +45,9 @@ class AppConfig:
     # Treat an invalid or missing policy file as fatal even in dev.
     # Always on outside env=dev.
     strict_policy: bool = False
+    # Threat Intelligence is advisory and off by default. The firewall does not
+    # consult it during enforcement. See docs/threat-intelligence.md.
+    threat_intel_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -87,6 +90,7 @@ class AppConfig:
             max_output_body_bytes=int(os.getenv("VARDEN_MAX_OUTPUT_BODY_BYTES", "450000")),
             bootstrap_admin_api_key=(os.getenv("VARDEN_BOOTSTRAP_ADMIN_API_KEY") or None),
             strict_policy=os.getenv("VARDEN_STRICT_POLICY", "false").lower() in {"1", "true", "yes"},
+            threat_intel_enabled=os.getenv("VARDEN_TI_ENABLED", "false").lower() in {"1", "true", "yes"},
         )
 
     @classmethod

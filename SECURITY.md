@@ -23,3 +23,10 @@ Varden's provenance subsystem treats client-supplied trust, delegation and
 approval claims as untrusted unless verified by the control plane. Missing
 or incomplete causal context is never silently labelled trusted. See
 [`docs/provenance-limitations.md`](docs/provenance-limitations.md).
+
+## Threat intelligence ingestion
+
+Downloaded threat intelligence is untrusted data. It cannot create rules, change
+configuration, or execute. Generated rules stay inactive until an operator
+approves them. Feeds are not required for enforcement. See
+[`docs/threat-intelligence.md`](docs/threat-intelligence.md).

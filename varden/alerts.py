@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, threading, time, urllib.request
+import json, threading, urllib.request
 from pathlib import Path
 
 class ConsoleSink:
@@ -32,14 +32,17 @@ class AlertEngine:
 class BackgroundWorker:
     def __init__(self, event_store, alert_engine, poll_interval: float = 2.0):
         self.event_store=event_store; self.alert_engine=alert_engine; self.poll_interval=poll_interval; self.running=False; self.thread=None; self.last_seen=0
+        self._wake = threading.Event()
     def start(self):
         if self.running: return
+        self._wake.clear()
         self.running=True; self.thread=threading.Thread(target=self._loop, daemon=True); self.thread.start()
     def stop(self):
         self.running=False
-        if self.thread: self.thread.join(timeout=1.0)
+        self._wake.set()
+        if self.thread: self.thread.join(timeout=2.0)
     def _loop(self):
-        while self.running:
+        while self.running and not self._wake.is_set():
             events=self.event_store.list_events(limit=100)
             for event in reversed(events):
                 eid=event.get("id",0)
@@ -48,4 +51,4 @@ class BackgroundWorker:
                     sinks=self.alert_engine.deliver(alert)
                     self.event_store.log_alert(alert, sinks)
                 self.last_seen=max(self.last_seen,eid)
-            time.sleep(self.poll_interval)
+            self._wake.wait(self.poll_interval)

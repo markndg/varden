@@ -1,0 +1,262 @@
+{
+  "started": 1791488904.156747,
+  "sources": {
+    "atlas": {
+      "status": "OK",
+      "elapsed_seconds": 1.111,
+      "health": "healthy",
+      "detail": "ok",
+      "source_version": "2026.09",
+      "etag": "\"0x8DF133A8EF4B094\"",
+      "content_hash": "dca1c15f1223e99dfb16c8ba5ae7fbcbe3569c49580566f49016f227b4a272ec",
+      "rollback": false,
+      "notes": [],
+      "check": [
+        {
+          "source": "atlas",
+          "fetched": true,
+          "unchanged": false,
+          "baseline": true,
+          "health": "healthy",
+          "items": 208,
+          "rollback": false
+        }
+      ],
+      "items_stored": 208,
+      "mapped_to_contract": 2,
+      "review_only_or_unmapped": 206,
+      "candidate_rules": 0,
+      "applicability": {
+        "REVIEW": 206,
+        "NOT_APPLICABLE": 2
+      },
+      "contracts": {
+        "untrusted-instruction-execution": 2
+      },
+      "cursor_keys": [
+        "bootstrapped",
+        "content_hash",
+        "etag",
+        "last_modified",
+        "source_version",
+        "technique_hashes",
+        "technique_ids"
+      ],
+      "cursor_technique_count": 208,
+      "cursor_index_count": 0,
+      "cursor_start_index": null,
+      "cursor_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    "cwe": {
+      "status": "OK",
+      "elapsed_seconds": 2.593,
+      "health": "healthy",
+      "detail": "ok",
+      "source_version": "4.20",
+      "etag": null,
+      "content_hash": "2ca428ae6ddc29a6a1c9512324ed44ffdac9c227c936ceda4c78e9dd7b68d91a",
+      "rollback": false,
+      "notes": [],
+      "check": [
+        {
+          "source": "cwe",
+          "fetched": true,
+          "unchanged": false,
+          "baseline": true,
+          "health": "healthy",
+          "items": 11,
+          "rollback": false
+        }
+      ],
+      "items_stored": 11,
+      "mapped_to_contract": 8,
+      "review_only_or_unmapped": 3,
+      "candidate_rules": 0,
+      "applicability": {
+        "NOT_APPLICABLE": 8,
+        "REVIEW": 3
+      },
+      "contracts": {
+        "unexpected-code-execution": 3,
+        "credential-exfiltration": 4,
+        "privilege-amplification": 1
+      },
+      "cursor_keys": [
+        "bootstrapped",
+        "content_hash",
+        "etag",
+        "index",
+        "last_modified",
+        "source_version"
+      ],
+      "cursor_technique_count": 0,
+      "cursor_index_count": 969,
+      "cursor_start_index": null,
+      "cursor_window": {
+        "start": null,
+        "end": null
+      }
+    },
+    "nvd": {
+      "status": "OK",
+      "elapsed_seconds": 0.57,
+      "health": "healthy",
+      "detail": "1 records, totalResults 1",
+      "source_version": "nvd-2.0",
+      "etag": null,
+      "content_hash": "a06395f48bae64b675f951b92fb0efc48ceb89437043c07d683f763b2333828f",
+      "rollback": false,
+      "notes": [],
+      "check": [
+        {
+          "source": "nvd",
+          "fetched": true,
+          "unchanged": false,
+          "baseline": false,
+          "health": "healthy",
+          "items": 1,
+          "rollback": false
+        }
+      ],
+      "items_stored": 1,
+      "mapped_to_contract": 0,
+      "review_only_or_unmapped": 1,
+      "candidate_rules": 0,
+      "applicability": {
+        "REVIEW": 1
+      },
+      "contracts": {},
+      "cursor_keys": [
+        "bootstrapped",
+        "etag",
+        "last_mod_start",
+        "last_modified",
+        "start_index",
+        "window_end"
+      ],
+      "cursor_technique_count": 0,
+      "cursor_index_count": 0,
+      "cursor_start_index": 0,
+      "cursor_window": {
+        "start": "2026-10-08T19:48:27.000",
+        "end": "2026-10-08T19:48:27.000"
+      }
+    },
+    "owasp": {
+      "status": "OK",
+      "elapsed_seconds": 0.008,
+      "health": "unsupported",
+      "detail": "No stable official machine-readable OWASP agentic feed is pinned. HTML and PDF are not scraped.",
+      "source_version": null,
+      "etag": null,
+      "content_hash": null,
+      "rollback": false,
+      "notes": [],
+      "check": [
+        {
+          "source": "owasp",
+          "fetched": false,
+          "health": "unsupported",
+          "detail": "No stable official machine-readable OWASP agentic feed is pinned. HTML and PDF are not scraped."
+        }
+      ],
+      "items_stored": 0,
+      "mapped_to_contract": 0,
+      "review_only_or_unmapped": 0,
+      "candidate_rules": 0,
+      "applicability": {},
+      "contracts": {},
+      "cursor_keys": [],
+      "cursor_technique_count": 0,
+      "cursor_index_count": 0,
+      "cursor_start_index": null,
+      "cursor_window": {
+        "start": null,
+        "end": null
+      }
+    }
+  },
+  "errors": [],
+  "nvd_catalog_probe": {
+    "status": "OK",
+    "elapsed_seconds": 0.489,
+    "totalResults": 403221,
+    "resultsPerPage": 1,
+    "retrieved_in_probe": 1,
+    "note": "Count probe only. These records were not ingested and were not treated as examined by the product query."
+  },
+  "owasp_adapter": {
+    "state": "unsupported",
+    "detail": "No stable official machine-readable OWASP agentic feed is pinned. HTML and PDF are not scraped."
+  },
+  "owasp_upstream_probe": [
+    {
+      "url": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
+      "status": 200,
+      "content_type": "text/html; charset=utf-8",
+      "starts": "<!DOCTYPE html><html data-dpl-id=\"dpl_8PCWjhqzwjnN1NgoLywp2ECCT67s\" lang=\"en\" tr"
+    },
+    {
+      "url": "https://genai.owasp.org/",
+      "status": "NOT_TESTED",
+      "error": "HTTPError: HTTP Error 403: Forbidden"
+    }
+  ],
+  "end_to_end": {
+    "status": "COMPLETE",
+    "label": "Official ATLAS identifier retrieved by the live adapter. Installation facts are controlled: this host has no agent coverage attestation, so applicability was evaluated against an explicit tools=ENFORCED posture, not against a production runtime.",
+    "source_id": "AML.T0051",
+    "title": "LLM Prompt Injection",
+    "source_version": "2026.09",
+    "upstream_url": "https://github.com/mitre-atlas/atlas-data/releases/download/v2026.09/stix-atlas.json",
+    "live_fetch_hash": "0f73c3044fc92376542f9fe5c9c43282ade7aebd369d480a04c2da990bb6ddec",
+    "contract_id": "untrusted-instruction-execution",
+    "applicability": "EXPOSED",
+    "lifecycle_before_approval": "AWAITING_APPROVAL",
+    "candidate_possible": true,
+    "rule_inactive_before_approval": true,
+    "approval": {
+      "item_id": "atlas:AML.T0051",
+      "lifecycle": "ENFORCED",
+      "result": {
+        "rule_id": "ti-untrusted-instruction-execution",
+        "bucket": "require_approval",
+        "already_present": false,
+        "snapshot_id": 1,
+        "policy_file": "/tmp/ti-rc-001/e2e/policy.json",
+        "written_at": 1791488909.6647701,
+        "enforcing": true
+      },
+      "idempotent": false,
+      "rule_active": true
+    },
+    "live_decision": "require_approval",
+    "decision_after_restart": "require_approval",
+    "second_approval": {
+      "item_id": "atlas:AML.T0051",
+      "lifecycle": "ENFORCED",
+      "result": {
+        "rule_id": "ti-untrusted-instruction-execution",
+        "already_present": true
+      },
+      "idempotent": true,
+      "rule_active": true
+    },
+    "rule_count": 1,
+    "ingest": {
+      "id": "atlas:AML.T0051",
+      "status": "awaiting_approval",
+      "lifecycle": "AWAITING_APPROVAL",
+      "applicability": "EXPOSED",
+      "rollback": false
+    }
+  },
+  "finished": 1791488909.668988,
+  "qualification_id": "TI-RC-001",
+  "branch": "feature/threat-intelligence",
+  "head": "e3c58fe5577835b1d13512d9567c22e699140142",
+  "isolated_db": "/tmp/ti-rc-001/ti.db"
+}

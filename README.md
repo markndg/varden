@@ -83,6 +83,10 @@ Varden tracks provenance so that untrusted information cannot silently borrow th
 
 Predictive Authority performs deterministic reachability analysis to identify dangerous authority states that become reachable if an action is permitted.
 
+### Watch external intelligence
+
+Threat Intelligence, off unless `VARDEN_TI_ENABLED=true`, watches configured external sources and turns structured records into security contracts. A contract is not a rule. A candidate rule does nothing until a person approves it through Varden's normal policy file. External text is untrusted data. See [docs/threat-intelligence.md](docs/threat-intelligence.md).
+
 **Varden observes, governs, predicts and audits agent activity at runtime.**
 
 **Varden is the thing watching.**

@@ -315,6 +315,45 @@ def main(argv: list[str] | None = None) -> int:
     audit_verify.add_argument('--db', default=None, help='Path to Varden SQLite database (default: ./varden.db or VARDEN_DB_PATH)')
     audit_verify.add_argument('--json', action='store_true')
 
+    intelligence = sub.add_parser('intelligence', help='External threat intelligence (advisory; approval required)')
+    intel_sub = intelligence.add_subparsers(dest='intelligence_command')
+    for name, help_text in (
+        ('status', 'Watcher health and summary counts'),
+        ('sources', 'Source health'),
+        ('check', 'Poll sources that are due, or one source'),
+        ('list', 'List normalised threats'),
+    ):
+        parser_i = intel_sub.add_parser(name, help=help_text)
+        parser_i.add_argument('--json', action='store_true')
+        parser_i.add_argument('--db', default=None)
+        parser_i.add_argument('--policy', default=None)
+        if name == 'check':
+            parser_i.add_argument('--source', default=None)
+        if name == 'list':
+            parser_i.add_argument('--status', default=None, help='Applicability: PROTECTED, EXPOSED, REVIEW, NOT_APPLICABLE')
+            parser_i.add_argument('--source', default=None)
+            parser_i.add_argument('--severity', default=None)
+            parser_i.add_argument('--lifecycle', default=None)
+            parser_i.add_argument('--surface', default=None)
+            parser_i.add_argument('--since', type=float, default=None)
+            parser_i.add_argument('--until', type=float, default=None)
+    for name, help_text in (
+        ('show', 'Show one threat and its reasoning chain'),
+        ('contract', 'Show the security contract'),
+        ('candidate', 'Show the candidate rule'),
+        ('replay', 'Replay the candidate against stored events'),
+        ('approve', 'Approve the candidate into the live policy'),
+        ('dismiss', 'Dismiss the threat'),
+        ('not-applicable', 'Mark the threat not applicable'),
+        ('review', 'Keep the threat in review'),
+    ):
+        parser_i = intel_sub.add_parser(name, help=help_text)
+        parser_i.add_argument('item_id')
+        parser_i.add_argument('--json', action='store_true')
+        parser_i.add_argument('--db', default=None)
+        parser_i.add_argument('--policy', default=None)
+        parser_i.add_argument('--actor', default=None)
+
     from .keys_cli import add_keys_parser
     add_keys_parser(sub)
 
@@ -372,6 +411,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'audit':
         from .audit_cli import audit_argv
         return audit_argv(args)
+    if args.command == 'intelligence':
+        from .threat_intelligence.cli import intelligence_argv
+        return intelligence_argv(args)
     if args.command == 'monitor':
         try:
             from varden_monitor.cli import monitor_argv
