@@ -38,11 +38,12 @@ def _enforcing(guard: Any) -> bool:
     """
     try:
         contract = get_coverage_registry().enforcement_contract()
-        if contract.get("mode_locked"):
-            mode = contract.get("mode")
-            return is_enforcing(mode) or mode == "enforce"
     except Exception:
-        pass
+        # Cannot read the lock. Do not trust mutable guard attributes.
+        return True
+    if contract.get("mode_locked"):
+        mode = contract.get("mode")
+        return is_enforcing(mode) or mode == "enforce"
     mode = getattr(guard, "product_mode", None) or getattr(guard, "mode", None)
     return is_enforcing(mode) or mode == "enforce"
 
@@ -50,10 +51,10 @@ def _enforcing(guard: Any) -> bool:
 def _fail_closed(guard: Any) -> bool:
     try:
         contract = get_coverage_registry().enforcement_contract()
-        if contract.get("mode_locked"):
-            return str(contract.get("fail_mode") or "").lower() == "closed"
     except Exception:
-        pass
+        return True
+    if contract.get("mode_locked"):
+        return str(contract.get("fail_mode") or "").lower() == "closed"
     return str(getattr(guard, "fail_mode", "") or "").lower() == "closed"
 
 

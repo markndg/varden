@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.0.3
+
+Security patch on top of 1.0.2. This fix is **not** in the published `v1.0.2` tag.
+
+### Security fixes
+
+- **A delivered deny could still run the tool.** The SDK and MCP gateway treated a guard response as a transport failure unless the status was HTTP 403 and `decision.action` was exactly `block` or `require_approval`. Reproduced on tags `v1.0.0`, `v1.0.1` and `v1.0.2`: HTTP 200 with `approval_required` executed the protected callable under `fail_mode=closed`, and a 503 body carrying `require_approval` executed it under `fail_mode=open`. Deny decisions are now read only from `decision.action` and `decision.effective_action` on the guard decision object (or that object inside one FastAPI `detail` wrapper). HTTP 403 always denies. A decision slot that is present but not a recognized policy action is not treated as allow. Echoed agent JSON under `args` or `metadata` is not a policy decision. `fail_mode=open` still proceeds when no decision was delivered (disconnect, timeout, unexpected error, or a body with no decision slot). `observe` still records a deny and does not prevent the side effect. `allow`, `warn`, `monitor` and `sanitise` still execute.
+- **An unreadable enforcement contract could fall through to mutable guard state.** If `enforcement_contract()` raises, interceptors now fail closed instead of consulting `product_mode` / `fail_mode` on the guard object.
+
 ## v1.0.2
 
 Security release. **Upgrade if you run Predictive Authority in `enforce` mode.**

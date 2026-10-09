@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 import httpx
 
 from varden.runtime.coverage import ENFORCED, NOT_ROUTED, OBSERVATIONAL, PARTIAL, UNCOVERED, format_startup_attestation, get_coverage_registry
+from varden.runtime.guard_response import guard_response_blocks, response_denies_execution
 from varden.runtime.modes import GUARDED, default_fail_mode, enforce_compat_mode, is_enforcing, normalize_mode
 from varden.runtime.boundary import enrich_action_runtime_metadata
 from varden_sdk import patches as _runtime_patches
@@ -92,7 +93,8 @@ class GuardResult:
     @property
     def blocked(self) -> bool:
         # require_approval is non-executable without a scoped server approval.
-        return (self.decision or {}).get('action') in {'block', 'require_approval'}
+        # Also recognises decision aliases and FastAPI's detail wrapper.
+        return response_denies_execution(self.decision)
 
     @property
     def warned(self) -> bool:
@@ -152,10 +154,18 @@ class VardenClient:
         self.ensure_credentials()
         resp = self._client.post(f'{self.base_url}/sdk/guard', headers=self.headers(), json=payload)
         data = _parse_json(resp)
-        if resp.status_code == 403:
-            detail = data.get('detail') if isinstance(data, dict) else str(data)
-            decision = data.get('detail') if isinstance(data, dict) and isinstance(data.get('detail'), dict) else data if isinstance(data, dict) else None
-            raise VardenBlockedError(detail or 'blocked by Varden', decision)
+        if not isinstance(data, dict):
+            data = {'detail': data}
+        # A delivered deny is not a transport failure. Honour it on every status,
+        # including 200 and 503, before fail-open handling can turn it into None.
+        # HTTP 403 always denies. An unreadable decision object is not an allow.
+        if guard_response_blocks(data, status_code=resp.status_code):
+            detail = data.get('detail') if isinstance(data.get('detail'), (dict, str)) else data
+            decision = data.get('detail') if isinstance(data.get('detail'), dict) else data
+            raise VardenBlockedError(
+                detail or 'blocked by Varden',
+                decision if isinstance(decision, dict) else None,
+            )
         resp.raise_for_status()
         return GuardResult(decision=data['decision'], action=data['action'], event_id=data.get('event_id'))
 
@@ -638,7 +648,11 @@ def _live_enforcing(guard: VardenGuard | None = None) -> bool:
     swapped live guard so attestation and interception cannot diverge after
     ``protect()``.
     """
-    contract = get_coverage_registry().enforcement_contract()
+    try:
+        contract = get_coverage_registry().enforcement_contract()
+    except Exception:
+        # Unreadable contract must not fall through to a poisoned observe guard.
+        return True
     if contract.get("mode_locked"):
         mode = contract.get("mode")
         return is_enforcing(mode) or mode == "enforce"
@@ -656,7 +670,10 @@ def _live_fail_closed(guard: VardenGuard | None = None) -> bool:
     a poisoned observe/open guard must not open the failure path of a locked
     guarded/strict (closed) runtime.
     """
-    contract = get_coverage_registry().enforcement_contract()
+    try:
+        contract = get_coverage_registry().enforcement_contract()
+    except Exception:
+        return True
     if contract.get("mode_locked"):
         return str(contract.get("fail_mode") or "").lower() == "closed"
     current = guard or _current_guard.get()

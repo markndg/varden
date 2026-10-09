@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from varden.runtime.guard_response import guard_response_blocks
+
 # Methods that must pass through the runtime boundary before forwarding.
 PRIVILEGED_METHODS = frozenset(
     {
@@ -193,9 +195,13 @@ class McpGatewaySession:
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(f"{self.base_url}/sdk/guard", headers=self._headers(), json=payload)
             data = resp.json() if resp.content else {}
-            if resp.status_code == 403:
+            if guard_response_blocks(data, status_code=resp.status_code):
                 detail = data.get("detail") if isinstance(data, dict) else data
-                return {"blocked": True, "status_code": 403, "detail": detail}
+                return {
+                    "blocked": True,
+                    "status_code": resp.status_code,
+                    "detail": detail if detail else data,
+                }
             resp.raise_for_status()
             return {"blocked": False, "result": data}
 
