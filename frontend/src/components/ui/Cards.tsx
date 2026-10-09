@@ -5,6 +5,7 @@ type MetricCardProps = {
   value: any;
   subtitle: string;
   tone?: string;
+  trend?: string;
   onClick?: () => void;
 };
 
@@ -12,13 +13,18 @@ function classNames(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(' ');
 }
 
-export function MetricCard({ title, value, subtitle, tone, onClick }: MetricCardProps) {
+export function MetricCard({ title, value, subtitle, tone, trend, onClick }: MetricCardProps) {
   const Tag: any = onClick ? 'button' : 'div';
   return (
-    <Tag className={classNames('metricCard', tone && `metricCard--${tone}`, onClick && 'metricCard--interactive')} onClick={onClick}>
+    <Tag
+      className={classNames('metricCard', tone && `metricCard--${tone}`, onClick && 'metricCard--interactive')}
+      onClick={onClick}
+      type={onClick ? 'button' : undefined}
+    >
       <div className="metricCard__title">{title}</div>
       <div className="metricCard__value">{value}</div>
       <div className="metricCard__subtitle">{subtitle}</div>
+      {trend ? <div className="metricCard__trend">{trend}</div> : null}
     </Tag>
   );
 }

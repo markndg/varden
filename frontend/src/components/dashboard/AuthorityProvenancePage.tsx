@@ -43,6 +43,33 @@ function displayDecision(incident: { decision?: string; display_decision?: strin
   return effectiveDecision(incident);
 }
 
+function incidentFacts(incident: Incident): Array<{ label: string; value: string }> {
+  const facts: Array<{ label: string; value: string }> = [];
+  const source = incident.provenance?.origins?.[0]
+    || incident.provenance?.source_types?.[0]
+    || (Array.isArray(incident.sources) && incident.sources[0]
+      ? (incident.sources[0].name || incident.sources[0].label || incident.sources[0].type || incident.sources[0].id)
+      : '');
+  if (source) facts.push({ label: 'Source', value: truncate(String(source), 42) });
+  if (incident.agent_name) facts.push({ label: 'Agent', value: truncate(String(incident.agent_name), 32) });
+  if (incident.tool || incident.action_type) facts.push({ label: 'Tool', value: truncate(String(incident.tool || incident.action_type), 36) });
+  const required = incident.authority?.required || incident.explanation?.required_authority || [];
+  if (required.length) facts.push({ label: 'Authority', value: truncate(required.slice(0, 2).join(', '), 42) });
+  return facts;
+}
+
+function IncidentFacts({ incident }: { incident: Incident }) {
+  const facts = incidentFacts(incident);
+  if (!facts.length) return null;
+  return (
+    <ul className="incidentCard__facts">
+      {facts.map((fact) => (
+        <li key={fact.label}><span className="muted">{fact.label}</span> {fact.value}</li>
+      ))}
+    </ul>
+  );
+}
+
 function AttackPathView({
   nodes,
   classNames,
@@ -254,6 +281,7 @@ function IncidentCard({
         </span>
       </div>
       <strong className="incidentCard__title">{incident.title || 'Incident'}</strong>
+      <IncidentFacts incident={incident} />
       {!quiet ? (
         <div className="incidentCard__action muted">
           {incident.tool || incident.action_type || 'action'}
@@ -797,10 +825,7 @@ export function AuthorityProvenancePage({
     <div className={classNames('stack', 'authorityPage', showInvestigation && 'authorityPage--split')}>
       <div className="card authorityPage__intro">
         <div className="sectionHeader sectionHeader--tight">
-          <div>
-            <div className="eyebrow">Authority & Provenance</div>
-            <h3>Causal authority investigation</h3>
-          </div>
+          <div className="eyebrow">Investigation views</div>
           <div className="toggleRow" role="tablist" aria-label="Authority views">
             {([
               ['overview', 'Overview'],
@@ -822,9 +847,6 @@ export function AuthorityProvenancePage({
             ))}
           </div>
         </div>
-        <p className="muted authorityPage__tagline">
-          Varden does not only ask whether an agent possesses a capability. It determines whether the causal chain influencing that action was authorised to exercise it.
-        </p>
         {error ? <div className="banner banner--error">{error}</div> : null}
         {loading && !summary ? <div className="muted">Loading provenance evidence…</div> : null}
       </div>
@@ -863,6 +885,7 @@ export function AuthorityProvenancePage({
                           <span className={classNames('badge', `badge--${decisionTone(story.decision)}`)}>{decisionLabel(story.decision)}</span>
                         </div>
                         <strong>{story.title}</strong>
+                        <IncidentFacts incident={story} />
                         <p className="muted">{story.summary}</p>
                         {(story.path_index?.text || (story.attack_path_preview || []).length) ? (
                           <div className="incidentCard__path">

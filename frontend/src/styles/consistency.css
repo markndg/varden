@@ -1,0 +1,334 @@
+/* Shared visual foundations. Loaded after app.css so these rules win the cascade.
+   Keep Varden's navy / teal / purple identity. Do not introduce a second theme. */
+
+:root {
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 22px;
+  --control-h: 36px;
+  --font-page: 22px;
+  --font-section: 18px;
+  --font-panel: 16px;
+  --font-kpi: 28px;
+  --font-body: 14px;
+  --font-support: 13px;
+  --font-meta: 12px;
+  --muted: #b7c6e4;
+  --line: rgba(163, 184, 255, 0.18);
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.32);
+  --focus-ring: 0 0 0 3px rgba(76, 224, 181, 0.35);
+}
+
+/* Pages size to their content. A short header must not absorb leftover viewport height
+   just because the sidebar is tall. */
+.shell { align-items: start; gap: var(--space-4); padding: var(--space-4); min-width: 0; }
+.main, .pageGrid, .stack, .card, .layout {
+  min-width: 0;
+  max-width: 100%;
+}
+.main {
+  align-content: start;
+  align-items: start;
+  gap: var(--space-4);
+}
+.stack, .pageGrid, .authorityPage, .paPage { align-content: start; }
+.main > .topbar,
+.main > .pageGrid,
+.main > .stack,
+.main > section { align-self: start; height: auto; }
+
+@media (min-width: 1181px) {
+  .shell { grid-template-columns: 272px minmax(0, 1fr); }
+  .sidebar { position: sticky; top: var(--space-4); }
+}
+
+.sidebar {
+  border-radius: var(--radius-xl);
+  padding: var(--space-4);
+  gap: 14px;
+}
+.brand { gap: 12px; padding: 4px 2px 12px; }
+.brand__icon { width: 64px; height: 64px; border-radius: 18px; }
+.brand__title { font-size: 26px; }
+.brand__eyebrow, .eyebrow {
+  font-size: var(--font-meta);
+  letter-spacing: 0.12em;
+}
+.nav { gap: 6px; }
+.nav__item {
+  padding: 10px 12px;
+  border-radius: 12px;
+  font-size: var(--font-body);
+}
+.nav__item:hover {
+  border-color: rgba(163, 184, 255, 0.28);
+  background: rgba(255, 255, 255, 0.06);
+}
+.nav__item:focus-visible { box-shadow: var(--focus-ring); }
+.sidebar__section { gap: 8px; }
+.tiIndicator { margin: 4px 0 0; }
+
+.card {
+  border-radius: var(--radius-xl);
+  padding: 16px 18px;
+  box-shadow: var(--shadow);
+}
+.topbar, .topbar--compact {
+  align-items: center;
+  padding: 14px 18px;
+  gap: 12px;
+}
+.topbar h1, .topbar--compact h1 {
+  margin: 2px 0 4px;
+  font-size: var(--font-page);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.topbar .muted, .topbar--compact .muted {
+  margin: 0;
+  max-width: 62rem;
+  font-size: var(--font-body);
+  line-height: 1.45;
+  color: #d5e2f8;
+}
+.sectionHeader { margin-bottom: 12px; gap: 12px; }
+.sectionHeader h2, .sectionHeader h3, .paPage__header h2 {
+  margin: 2px 0 0;
+  font-size: var(--font-section);
+  line-height: 1.25;
+}
+.muted { color: var(--muted); font-size: var(--font-support); line-height: 1.45; }
+.stat span, .kv span, .metricCard__title, .paMetric__k, .tiField span, .tiTable th, .tiDefs dt {
+  font-size: var(--font-meta);
+}
+.metricCard__subtitle, .eventRow__meta, .traceCard__meta, .tiMetric small, .paAbout {
+  font-size: var(--font-support);
+  color: #c9d6ef;
+}
+
+.metricsRow,
+.metricsRow--six,
+.authorityMetrics {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 168px), 1fr));
+  gap: 12px;
+}
+.metricCard {
+  width: 100%;
+  min-height: 104px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  color: inherit;
+}
+.metricCard__value {
+  font-size: var(--font-kpi);
+  line-height: 1.05;
+  margin: 8px 0 6px;
+}
+.metricCard__subtitle { margin-top: auto; }
+.metricCard--interactive { cursor: pointer; }
+.metricCard--interactive:hover { border-color: rgba(123, 97, 255, 0.45); }
+.metricCard__trend { margin-top: 6px; font-size: var(--font-meta); color: var(--accent-2); }
+
+.input, select.input, .button, .segmented {
+  min-height: var(--control-h);
+}
+.button, .segmented { padding: 8px 14px; border-radius: 12px; }
+.input { padding: 8px 12px; border-radius: 12px; }
+.button:focus-visible,
+.segmented:focus-visible,
+.input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+.nav__item:focus-visible,
+.metricCard:focus-visible,
+.eventRow:focus-visible,
+.incidentCard:focus-visible,
+.storyCard:focus-visible,
+.webshieldRow:focus-visible,
+.tiLink:focus-visible,
+.tiSort:focus-visible,
+.tiMetric:focus-visible {
+  outline: 2px solid var(--accent-2);
+  outline-offset: 2px;
+}
+
+.statusPill { padding: 8px 12px; font-size: var(--font-support); }
+.badge, .sevTag, .tiPill, .paPill { font-size: var(--font-meta); }
+
+.sankeyWrap { width: 100%; min-width: 0; }
+.sankeyScroller { width: 100%; overflow: auto; }
+.sankeyScroller svg {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+.card--signalHero, .card--riskPanel { min-height: 0; }
+
+.authorityPage__intro {
+  padding: 12px 14px;
+}
+.authorityPage__intro .sectionHeader { margin-bottom: 0; align-items: center; }
+.incidentCard__facts, .storyCard__facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #d5e2f8;
+  font-size: var(--font-support);
+}
+.incidentCard__facts li, .storyCard__facts li { min-width: 0; }
+.incidentCard.is-blocked, .incidentCard.is-danger, .storyCard.is-danger {
+  border-color: rgba(255, 107, 122, 0.38);
+}
+.incidentCard.is-warn, .storyCard.is-warn { border-color: rgba(255, 191, 90, 0.35); }
+.incidentCard.is-ok, .storyCard.is-ok { border-color: rgba(93, 225, 164, 0.28); }
+
+.webshieldIntro { padding-bottom: 12px; }
+.webshieldIntro .muted { margin: 0; max-width: 68rem; }
+.webshieldRow.is-active { box-shadow: inset 3px 0 0 var(--accent-2); }
+.webshieldList { max-height: 560px; }
+
+.impactTable__header {
+  font-size: var(--font-meta);
+  letter-spacing: 0.04em;
+}
+.impactRow.is-active {
+  background: rgba(123, 97, 255, 0.14);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+.impactSummaryRow { gap: 10px; }
+.bucketCard strong { font-size: 22px; }
+.unsavedBadge {
+  border-color: rgba(255, 191, 90, 0.45);
+  color: #ffe3b0;
+  background: rgba(255, 191, 90, 0.12);
+}
+
+.templateCard__secondary { display: grid; justify-items: end; gap: 10px; }
+.templateCard:not(.is-expanded) .templateCard__secondary { display: none; }
+.impactTable { overflow-x: auto; }
+.impactTable__header, .impactRow {
+  min-width: 640px;
+  grid-template-columns: minmax(140px, 1.5fr) minmax(88px, 0.8fr) minmax(108px, 0.9fr) 72px 64px 76px;
+}
+.coverageToolbar { flex-wrap: wrap; align-items: stretch; max-width: 100%; width: 100%; }
+.coverageToolbar__left, .coverageToolbar__right {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.coverageToolbar__right .input,
+.coverageToolbar__search {
+  flex: 1 1 140px;
+  min-width: 0;
+  max-width: 100%;
+  width: auto;
+}
+.templateCard__actions { min-width: 0 !important; }
+.templateCard.is-expanded .templateCard__actions { min-width: 172px; }
+
+.paNodeInner__title { font-size: 12px; }
+.paNodeInner__sub, .paNodeInner__top, .paNodeKind, .paNodeState, .paGateEyebrow, .paGateStop, .paStepBadgeText, .paGroupTitle {
+  font-size: 11px;
+}
+.paRegionLabel { font-size: 11px; }
+.paEdge { stroke: #c5d4ee; }
+.paEdge--potential { stroke: #e0c27a; opacity: 0.8; }
+.paTooltip { z-index: 4; font-size: 13px; }
+.paMetric { padding: 12px 14px; }
+.paMetric strong { font-size: 14px; }
+.paLayout > * { min-width: 0; }
+.paGraph, .paGraphPanel { max-width: 100%; min-width: 0; }
+.paInspector { min-height: 0; min-width: 0; overflow-wrap: anywhere; }
+.paDl { min-width: 0; }
+.paDl dd, .paTrajPath, .paPre { min-width: 0; overflow-wrap: anywhere; }
+.paPage__header { align-items: flex-start; }
+.paAbout { font-size: var(--font-support); color: #c9d6ef; }
+
+.tiPill--mapped {
+  color: #d9fff6;
+  border-color: rgba(76, 224, 181, 0.45);
+  background: rgba(76, 224, 181, 0.1);
+}
+.tiPill--protected, .tiPill--enforced {
+  color: #dbffef;
+  border-color: rgba(93, 225, 164, 0.5);
+  background: rgba(93, 225, 164, 0.16);
+}
+.tiPill--unmapped {
+  color: #d5e1ff;
+  border-style: dashed;
+  background: transparent;
+}
+.tiPill--review {
+  color: #efe8ff;
+  border-color: rgba(123, 97, 255, 0.55);
+  background: rgba(123, 97, 255, 0.18);
+}
+.tiPill--exposed, .tiPill--gap {
+  color: #fff3e0;
+  border-color: rgba(255, 191, 90, 0.5);
+  background: rgba(255, 191, 90, 0.14);
+}
+.tiToolbar { align-items: flex-end; }
+.tiField { max-width: 200px; }
+.tiTableWrap { max-width: 100%; }
+
+.emptyState {
+  display: grid;
+  gap: 6px;
+  padding: 8px 0 4px;
+}
+.emptyState strong { font-size: var(--font-body); }
+.banner { font-size: var(--font-body); }
+
+@media (max-width: 1280px) {
+  .coverageLayout { grid-template-columns: 1fr; }
+}
+@media (max-width: 1180px) {
+  .templatePanelTools, .templateCard__header { flex-direction: column; align-items: flex-start; }
+  .templateCard__badges { justify-content: flex-start; }
+}
+@media (max-width: 1024px) {
+  .shell { padding: 12px; gap: 12px; }
+  .authorityPage__body.has-investigation,
+  .layout--twoThirds,
+  .layout--impact,
+  .paLayout { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+  .topbar, .topbar--compact { flex-direction: column; align-items: stretch; }
+  .topbar__actions { width: 100%; }
+  .metricsRow, .metricsRow--six, .authorityMetrics {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  }
+  .storyGrid, .impactSummaryRow, .paDeltaStory__cols { grid-template-columns: 1fr; }
+  .tiField, .tiField--search, .tiField--view { max-width: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .brand__pulse { box-shadow: none; }
+}

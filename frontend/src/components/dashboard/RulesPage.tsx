@@ -313,13 +313,14 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, policy
     }
   };
   const parseError = (() => { try { JSON.parse(policyText); return ''; } catch (error: any) { return error?.message || 'Invalid JSON'; } })();
+  const unsaved = policyText.trim().length > 0 && policyText !== JSON.stringify(ensurePolicyDoc(policy), null, 2);
 
   return (
     <div className="pageGrid">
       <section className="layout layout--twoThirds rulesLayout">
         <div className="stack">
           <div className="card">
-            <div className="sectionHeader"><div><div className="eyebrow">Rule sets</div><h3>Interactive policy builder</h3></div><div className="toggleRow"><button type="button" className="button button--ghost" onClick={() => addRule()}>New rule</button><button type="button" className="button" onClick={onSave} disabled={loading || !!parseError}>{loading ? 'Saving…' : 'Validate & save'}</button></div></div>
+            <div className="sectionHeader"><div><div className="eyebrow">Rule sets</div><h3>Interactive policy builder</h3>{unsaved ? <div className="badge unsavedBadge" role="status">Unsaved changes</div> : <div className="badge badge--ok" role="status">Saved</div>}{parseError ? <div className="banner banner--error" role="alert">JSON error: {parseError}</div> : null}</div><div className="toggleRow"><button type="button" className="button button--ghost" onClick={() => addRule()}>New rule</button><button type="button" className="button" onClick={onSave} disabled={loading || !!parseError}>{loading ? 'Saving…' : 'Validate & save'}</button></div></div>
             <div className="bucketTabs">{POLICY_BUCKETS.map((bucket: string) => (<button type="button" key={bucket} className={classNames('bucketTab', bucket === BUDGET_RULES_BUCKET && 'bucketTab--budget', selectedBucket === bucket && 'is-active')} onClick={() => selectRule(bucket, 0)}><span>{bucket === BUDGET_RULES_BUCKET ? 'budget' : bucket}</span><strong>{getBucketRules(workingPolicy, bucket).length}</strong></button>))}</div>
             <div className="rulesSplit">
               <div className="ruleRail"><div className="ruleRail__header"><div><div className="subheading">{isBudgetBucket ? 'Token budget rules' : `${selectedBucket} rules`}</div><p className="muted">{isBudgetBucket ? 'LLM spend caps enforced on llm_call actions before execution and after SDK usage logging.' : 'Grouped the way analysts expect: block, warn, monitor, and allow.'}</p></div></div><div className="ruleList">{activeRules.map((rule: any, idx: number) => (<button type="button" key={idx} ref={(node) => { ruleItemRefs.current[ruleKey(selectedBucket, idx)] = node; }} className={classNames('ruleCard', idx === selectedRuleIndex && 'is-active', highlightedRuleKey === ruleKey(selectedBucket, idx) && 'is-highlighted')} onClick={() => selectRule(selectedBucket, idx)}><div><div className="ruleCard__title">{summarizeRule(rule)}</div><div className="ruleCard__meta">{isBudgetBucket ? `${rule.window || 'session'} · $${Number(rule.limit_usd || 0).toFixed(2)}` : `${rule.type || 'any type'}${rule.tool ? ` · ${rule.tool}` : ''}`}</div></div><div className="ruleCard__flags">{rule.enabled === false ? <span className="badge">disabled</span> : null}<span className={`badge badge--${bucketTone(selectedBucket)}`}>{isBudgetBucket ? 'budget' : selectedBucket}</span></div></button>))}{!activeRules.length ? <div className="emptyState"><strong>No {isBudgetBucket ? 'budget' : selectedBucket} rules yet</strong><p className="muted">{isBudgetBucket ? 'Add a token budget rule or import the llm-cost-governance pack.' : 'Create the first rule in this group and Varden will preserve the JSON under the hood.'}</p><button type="button" className="button" onClick={() => addRule(selectedBucket)}>Create {isBudgetBucket ? 'budget' : selectedBucket} rule</button></div> : null}</div></div>
@@ -405,17 +406,17 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, policy
                           </div>
                         ) : null}
                       </div>
-                      <div className="templateCard__actions" style={{ justifySelf: 'end', marginLeft: 'auto', minWidth: 172, display: 'grid', justifyItems: 'end', alignContent: 'start', gap: 10 }}>
+                      <div className="templateCard__actions" style={{ justifySelf: 'end', marginLeft: 'auto', display: 'grid', justifyItems: 'end', alignContent: 'start', gap: 10 }}>
                         {template.source === 'repository' ? (
-                          <>
-                            <button type="button" className="button button--tiny" style={{ width: 172, minWidth: 172 }} onClick={() => importRepositoryPack(template)} disabled={stats.implemented || importingPackId === template.pack_id}>{importingPackId === template.pack_id ? 'Importing…' : stats.implemented ? 'Already imported' : 'Import & save'}</button>
-                            <button type="button" className="button button--ghost button--tiny" style={{ width: 172, minWidth: 172 }} onClick={() => applyRepositoryPackToBuilder(template)} disabled={stats.implemented}>Preview in builder</button>
-                          </>
+                          <button type="button" className="button button--tiny" onClick={() => importRepositoryPack(template)} disabled={stats.implemented || importingPackId === template.pack_id}>{importingPackId === template.pack_id ? 'Importing…' : stats.implemented ? 'Already imported' : 'Import & save'}</button>
                         ) : (
-                          <button type="button" className="button button--tiny" style={{ width: 172, minWidth: 172 }} onClick={() => applyTemplateToBuilder(template)} disabled={stats.implemented}>{stats.implemented ? 'Already added' : 'Add to builder'}</button>
+                          <button type="button" className="button button--tiny" onClick={() => applyTemplateToBuilder(template)} disabled={stats.implemented}>{stats.implemented ? 'Already added' : 'Add to builder'}</button>
                         )}
-                        <button type="button" className="button button--ghost button--tiny" style={{ width: 172, minWidth: 172 }} onClick={() => removeTemplateFromBuilder(template)}>Remove from builder</button>
-                        {template.source === 'uploaded' ? <button type="button" className="button button--ghost button--tiny" style={{ width: 172, minWidth: 172 }} onClick={() => removeUploadedTemplate(template.name)}>Remove pack</button> : null}
+                        <div className="templateCard__secondary">
+                          {template.source === 'repository' ? <button type="button" className="button button--ghost button--tiny" onClick={() => applyRepositoryPackToBuilder(template)} disabled={stats.implemented}>Preview in builder</button> : null}
+                          <button type="button" className="button button--ghost button--tiny" onClick={() => removeTemplateFromBuilder(template)}>Remove from builder</button>
+                          {template.source === 'uploaded' ? <button type="button" className="button button--ghost button--tiny" onClick={() => removeUploadedTemplate(template.name)}>Remove pack</button> : null}
+                        </div>
                       </div>
                     </div>
                   </div>

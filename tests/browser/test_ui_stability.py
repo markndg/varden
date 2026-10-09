@@ -204,6 +204,10 @@ def test_predictive_graph_stays_inside_the_viewport(control_plane):
         bounds = _bounds(page)
         assert bounds["count"] >= 3, bounds
         assert bounds["escaped"] == [], bounds
+        doc_overflow = page.evaluate(
+            "() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 2"
+        )
+        assert doc_overflow, "predictive page overflows the viewport horizontally"
         page.screenshot(path=str(SHOTS / "predictive-desktop.png"), full_page=True)
 
         page.locator(".sidebar .nav__item").first.hover()
@@ -252,5 +256,72 @@ def test_predictive_graph_stays_inside_the_viewport(control_plane):
         )
         assert visible, "graph panel is outside the narrow viewport"
         page.screenshot(path=str(SHOTS / "predictive-narrow.png"), full_page=True)
+        assert not errors, errors
+        browser.close()
+
+
+ROUTES = [
+    ("/ui", "Trace and flow mission control"),
+    ("/ui/impact", "Rule impact intelligence"),
+    ("/ui/rules", "Policy workspace"),
+    ("/ui/coverage-gaps", "Policy coverage gaps"),
+    ("/ui/web-shield", "Web Shield"),
+    ("/ui/authority", "Authority & Provenance"),
+    ("/ui/predictive", "Predictive Authority"),
+    ("/ui/threat-intelligence", "Threat Intelligence"),
+]
+
+
+def test_page_headers_stay_content_sized(control_plane):
+    """Short titles must not stretch into empty header panels, and the page must not scroll sideways."""
+    shots = ROOT / "data" / "reports" / "ui-consistency" / "after"
+    shots.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        page = browser.new_context(viewport={"width": 1440, "height": 900}).new_page()
+        errors: list[str] = []
+        page.on("pageerror", lambda exc: errors.append(str(exc)))
+        for path, heading in ROUTES:
+            page.goto(f"{control_plane['base']}{path}", wait_until="load")
+            expect(page.locator("h1")).to_contain_text(heading, timeout=15000)
+            page.wait_for_timeout(250)
+            slug = path.strip("/").replace("/", "-") or "ui"
+            page.screenshot(path=str(shots / f"{slug}-1440.png"))
+            geometry = page.evaluate(
+                """() => {
+                  const header = document.querySelector('[data-testid="page-header"]');
+                  const box = header.getBoundingClientRect();
+                  const doc = document.documentElement;
+                  const kpis = [...document.querySelectorAll('.metricsRow .metricCard')];
+                  const tops = kpis.map((node) => Math.round(node.getBoundingClientRect().top));
+                  const sameRow = tops.length < 2 || Math.max(...tops) - Math.min(...tops) < 12;
+                  return {
+                    headerH: Math.round(box.height),
+                    overflow: doc.scrollWidth > doc.clientWidth + 2,
+                    scrollW: doc.scrollWidth,
+                    clientW: doc.clientWidth,
+                    kpiCount: kpis.length,
+                    kpiSameRow: sameRow,
+                  };
+                }"""
+            )
+            assert geometry["headerH"] < 180, (path, geometry)
+            assert not geometry["overflow"], (path, geometry)
+            if path == "/ui":
+                assert geometry["kpiCount"] == 5, geometry
+                assert geometry["kpiSameRow"], geometry
+        page.set_viewport_size({"width": 768, "height": 900})
+        for path, heading in ROUTES:
+            page.goto(f"{control_plane['base']}{path}", wait_until="load")
+            expect(page.locator("h1")).to_contain_text(heading, timeout=15000)
+            narrow = page.evaluate(
+                """() => {
+                  const header = document.querySelector('[data-testid="page-header"]').getBoundingClientRect();
+                  const doc = document.documentElement;
+                  return { headerH: Math.round(header.height), overflow: doc.scrollWidth > doc.clientWidth + 2 };
+                }"""
+            )
+            assert narrow["headerH"] < 240, (path, narrow)
+            assert not narrow["overflow"], (path, narrow)
         assert not errors, errors
         browser.close()

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles/app.css';
+import './styles/consistency.css';
 import { CoverageGapsPage } from './components/dashboard/CoverageGapsPage';
 import { ImpactPage as ImpactPageView } from './components/dashboard/ImpactPage';
 import { DecisionPage as DecisionPageView } from './components/dashboard/DecisionPage';
@@ -438,6 +439,8 @@ function Shell() {
   const [detail, setDetail] = useState<EventDetail | null>(null);
   const [policy, setPolicy] = useState<PolicyDoc>(ensurePolicyDoc({}));
   const [policyText, setPolicyText] = useState<string>('');
+  const pageRef = useRef(page);
+  const policyDirtyRef = useRef(false);
   const [templates, setTemplates] = useState<any[]>([]);
   const [policyPacks, setPolicyPacks] = useState<any[]>([]);
   const [mcpInventory, setMcpInventory] = useState<any>(null);
@@ -478,7 +481,15 @@ function Shell() {
 
   useEffect(() => {
     const handlePop = () => {
-      setPage(pageFromLocation(location.pathname));
+      const next = pageFromLocation(location.pathname);
+      if (policyDirtyRef.current && pageRef.current === 'rules' && next !== 'rules') {
+        const leave = window.confirm('You have unsaved policy changes. Leave the rules workspace without saving?');
+        if (!leave) {
+          history.pushState({}, '', '/ui/rules');
+          return;
+        }
+      }
+      setPage(next);
       setDetailId(detailIdFromLocation(location.pathname));
       setPredictiveEventId(eventIdFromSearch(location.search));
       setThreatItemId(threatItemIdFromLocation(location.pathname));
@@ -662,6 +673,10 @@ function Shell() {
   }, [token]);
 
   function navigate(next: string, path: string) {
+    if (policyDirtyRef.current && pageRef.current === 'rules' && next !== 'rules') {
+      const leave = window.confirm('You have unsaved policy changes. Leave the rules workspace without saving?');
+      if (!leave) return;
+    }
     history.pushState({}, '', path);
     setPage(next);
     setDetailId(detailIdFromLocation(path));
@@ -771,6 +786,29 @@ function Shell() {
   const currentScanMode = overview?.config?.scan_mode || 'deep';
   const topbarEventCount = globalAgentFilter ? (scopedOverview?.metrics?.total_events ?? 0) : (overview?.metrics?.total_events ?? 0);
   const topbarP95Ms = globalAgentFilter ? (scopedOverview?.metrics?.p95_decision_latency_ms ?? 0) : (overview?.metrics?.p95_decision_latency_ms ?? 0);
+  const canonicalPolicyText = JSON.stringify(ensurePolicyDoc(policy), null, 2);
+  const policyDirty = policyText.trim().length > 0 && policyText !== canonicalPolicyText;
+  pageRef.current = page;
+  policyDirtyRef.current = policyDirty;
+  const pageEyebrow = page === 'impact' || page === 'rules' || page === 'coverage'
+    ? 'Policy'
+    : page === 'webshield'
+      ? 'Runtime'
+      : page === 'authority' || page === 'predictive' || page === 'decision'
+        ? 'Investigation'
+        : page === 'threat-intelligence'
+          ? 'Intelligence'
+          : 'Operations';
+
+  useEffect(() => {
+    if (!policyDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [policyDirty]);
 
   return (
     <div className="shell">
@@ -906,11 +944,11 @@ function Shell() {
       </aside>
 
       <main className="main">
-        <header className={classNames('topbar', 'card', (page === 'authority' || page === 'webshield' || page === 'predictive' || page === 'threat-intelligence') && 'topbar--compact')}>
+        <header className="topbar topbar--compact card" data-testid="page-header">
           <div>
-            <div className="eyebrow">Live operations</div>
+            <div className="eyebrow">{pageEyebrow}</div>
             <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : page === 'predictive' ? 'Predictive Authority' : page === 'threat-intelligence' ? (threatItemId ? 'Threat investigation' : 'Threat Intelligence') : 'Trace and flow mission control'}</h1>
-            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : page === 'predictive' ? 'What authority this action would create, what becomes reachable, and where Varden interrupts the trajectory.' : page === 'threat-intelligence' ? 'External intelligence is untrusted data. Contracts and candidate rules stay inactive until you approve them.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where a false-positive proxy may be hiding.' : page === 'rules' ? 'Edit block, warn, monitor, allow, and budget rules. Changes stay in the builder until you validate and save.' : page === 'decision' ? 'Inspect one decision: the event, the matched rule, and the evidence behind the outcome.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : page === 'predictive' ? 'What authority this action would create, what becomes reachable, and where Varden interrupts the trajectory.' : page === 'threat-intelligence' ? 'External intelligence is untrusted data. Contracts and candidate rules stay inactive until you approve them.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
