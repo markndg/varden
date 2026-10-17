@@ -34,6 +34,7 @@ from .policy import PolicyEngine
 from .policy_packs import list_policy_packs, load_policy_pack, merge_policy_pack
 from .queue import SQLiteQueue
 from .redaction import redact
+from .server_owned import action_fingerprint, strip_untrusted_metadata
 from .ratelimit import BucketConfig, RateLimiter
 from .stores import EventStore, WorkflowStore
 from .token_budget import TokenBudgetStore, simulate_budget_trace
@@ -494,14 +495,7 @@ def create_app(config: AppConfig) -> FastAPI:
         return record
 
     def normalize_action(payload: dict[str, Any], tenant_id: str) -> Action:
-        metadata = payload.get("metadata") or {}
-        if isinstance(metadata, dict):
-            # Server-computed keys: a client must never be able to pre-set them.
-            # Agent-supplied Predictive Authority config or results could
-            # otherwise disable enforcement or forge audit/UI evidence.
-            metadata = {k: v for k, v in metadata.items() if k not in AGENT_RESERVED_METADATA_KEYS}
-        else:
-            metadata = {}
+        metadata = strip_untrusted_metadata(payload.get("metadata"))
         args = payload.get("args") or {}
         url = payload.get("url")
         domain = payload.get("domain") or (urlparse(url).netloc if url else None)
@@ -1069,6 +1063,12 @@ def create_app(config: AppConfig) -> FastAPI:
                 action.metadata = meta
 
         status = status_from_decision(decision.action)
+        meta["audit_binding"] = {
+            "principal_hash": record.get("key_hash"),
+            "tenant_id": record["tenant_id"],
+            "action_fingerprint": action_fingerprint(action.to_dict()),
+        }
+        action.metadata = meta
         audit_failed = False
         event_id = None
         try:
@@ -1138,6 +1138,29 @@ def create_app(config: AppConfig) -> FastAPI:
             )
         return response
 
+    def _bound_guard_event(guard_event_id, action: Action, record: dict) -> dict | None:
+        if guard_event_id is None:
+            return None
+        try:
+            event_id = int(guard_event_id)
+        except (TypeError, ValueError):
+            return None
+        event = event_store.get_event(event_id, tenant_id=record["tenant_id"])
+        if not event:
+            return None
+        stored_action = event.get("action") or {}
+        binding = ((stored_action.get("metadata") or {}).get("audit_binding") or {})
+        if binding.get("tenant_id") != record["tenant_id"]:
+            return None
+        if binding.get("principal_hash") != record.get("key_hash"):
+            return None
+        if binding.get("action_fingerprint") != action_fingerprint(action.to_dict()):
+            return None
+        decision = event.get("decision") or {}
+        if not isinstance(decision, dict) or not decision.get("action"):
+            return None
+        return {"id": event_id, "decision": decision, "status": event.get("status")}
+
     @app.post("/sdk/log")
     @app.post("/v1/actions/log")
     def sdk_log(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -1149,40 +1172,68 @@ def create_app(config: AppConfig) -> FastAPI:
         """
         record = require(x_api_key, authorization, "agent", scope="ingest")
         action_payload = payload.get("action") or {}
-        decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log (audit-only; not an enforcement decision)"}
         action = normalize_action(action_payload, record["tenant_id"])
         meta = dict(action.metadata or {})
-        meta["enforcement"] = {
-            "surface": "sdk_log",
-            "intercepted": False,
-            "pre_execution": False,
-            "side_effect_prevented": None,
-            "note": "Observational audit log — Varden cannot verify whether execution was prevented.",
-        }
+        client_status = payload.get("status")
+        guard_event_id = payload.get("guard_event_id")
+        bound = _bound_guard_event(guard_event_id, action, record)
+        if bound is None:
+            decision_payload = {
+                "action": "unverified_observation",
+                "reason": "no matching server guard event",
+                "effective_action": "unverified_observation",
+            }
+            status = "unverified"
+            meta["evidence_class"] = "unverified_observation"
+            meta["execution_outcome"] = {"reported_status": client_status, "authoritative": False}
+            meta["enforcement"] = {
+                "surface": "sdk_log",
+                "intercepted": False,
+                "pre_execution": False,
+                "side_effect_prevented": None,
+                "note": "Unverified client observation. This is not an allow, block, approval, or coverage decision.",
+            }
+        else:
+            decision_payload = bound["decision"]
+            status = bound["status"]
+            meta["evidence_class"] = "server_decision"
+            meta["guard_event_id"] = bound["id"]
+            meta["execution_outcome"] = {"reported_status": client_status, "authoritative": False}
+            meta["enforcement"] = {
+                "surface": "sdk_log",
+                "intercepted": False,
+                "pre_execution": False,
+                "side_effect_prevented": None,
+                "note": "Execution report bound to a server guard event. The decision is the server's.",
+            }
         action.metadata = meta
-        status = payload.get("status") or status_from_decision(decision_payload.get("action"))
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
-        if action.type == "llm_call" and status != "blocked":
-            try:
-                token_budget_store.post_record(
-                    action,
-                    input_payload=payload.get("input_payload"),
-                    output_payload=payload.get("output_payload"),
-                    rules=load_budget_rules(policy.get_policy()),
-                )
-            except PolicyViolation as exc:
-                raise HTTPException(
-                    status_code=403,
-                    detail={
-                        "logged": True,
-                        "event_id": event_id,
-                        "error": str(exc),
-                        "rule": exc.rule,
-                        "current_usd": exc.current_usd,
-                        "limit_usd": exc.limit_usd,
-                    },
-                )
-        return {"logged": True, "event_id": event_id}
+        accounted = False
+        if bound is not None and action.type == "llm_call" and bound["decision"].get("action") == "allow":
+            if token_budget_store.claim_usage_report(int(bound["id"])):
+                accounted = True
+                try:
+                    token_budget_store.post_record(
+                        action,
+                        input_payload=payload.get("input_payload"),
+                        output_payload=payload.get("output_payload"),
+                        rules=load_budget_rules(policy.get_policy()),
+                    )
+                except PolicyViolation as exc:
+                    raise HTTPException(
+                        status_code=403,
+                        detail={
+                            "logged": True,
+                            "event_id": event_id,
+                            "evidence_class": "server_decision",
+                            "usage_accounted": True,
+                            "error": str(exc),
+                            "rule": exc.rule,
+                            "current_usd": exc.current_usd,
+                            "limit_usd": exc.limit_usd,
+                        },
+                    )
+        return {"logged": True, "event_id": event_id, "evidence_class": meta["evidence_class"], "usage_accounted": accounted}
 
     @app.get("/token-budgets")
     def list_token_budgets(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):

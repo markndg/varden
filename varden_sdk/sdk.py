@@ -167,7 +167,10 @@ class VardenClient:
                 decision if isinstance(decision, dict) else None,
             )
         resp.raise_for_status()
-        return GuardResult(decision=data['decision'], action=data['action'], event_id=data.get('event_id'))
+        action = data.get('action') or {}
+        if isinstance(action, dict) and data.get('event_id') is not None:
+            action = {**action, 'guard_event_id': data.get('event_id')}
+        return GuardResult(decision=data['decision'], action=action, event_id=data.get('event_id'))
 
     def log_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.ensure_credentials()
@@ -497,6 +500,7 @@ class VardenGuard:
             'output_payload': _json_safe(output_payload),
             'status': _status_from_decision(decision),
             'error': error,
+            'guard_event_id': action.get('guard_event_id'),
         }
         try:
             result = self.client.log_result(payload)

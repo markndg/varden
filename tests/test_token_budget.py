@@ -127,13 +127,17 @@ def test_sdk_log_increments_budget(tmp_path):
         )
         with TestClient(create_app(cfg)) as client:
             key = client.get("/health").json()["bootstrap_api_key"]
+            action = {
+                "type": "llm_call",
+                "tool": "openai",
+                "trace_id": "log-trace",
+                "workflow_id": "log-wf",
+            }
+            guarded = client.post("/sdk/guard", headers={"x-api-key": key}, json={"action": action, "payload": {}})
+            assert guarded.status_code == 200
             body = {
-                "action": {
-                    "type": "llm_call",
-                    "tool": "openai",
-                    "trace_id": "log-trace",
-                    "workflow_id": "log-wf",
-                },
+                "guard_event_id": guarded.json()["event_id"],
+                "action": guarded.json()["action"],
                 "decision": {"action": "allow", "reason": "ok"},
                 "status": "allowed",
                 "output_payload": {

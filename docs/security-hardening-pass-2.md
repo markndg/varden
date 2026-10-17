@@ -2,6 +2,18 @@
 
 Phase 1 is critical containment for release 1.1.0. It is not a published release.
 
+## P0-6 — Audit evidence
+
+`/sdk/guard` returns `event_id` and stores an `audit_binding` of tenant, principal hash and action fingerprint. `/sdk/log` may cite that id. The server loads its own decision. The client's `decision`, approval id and coverage fields are not the record.
+
+A log that does not match is stored as `unverified_observation`. Incident views label it `OBSERVED` and do not claim the side effect was prevented. That is also how a pre-1.1.0 SDK log is treated. Upgrade the SDK so `record_result` sends `guard_event_id`.
+
+Token accounting for an allowed `llm_call` follows the guard event. Reporting `status=blocked` does not skip it. Reporting the same event twice does not charge it twice. If the agent never reports usage, the pre-check reservation remains and still counts toward the cap.
+
+### Residual risk
+
+Daily and monthly budget windows reset `reserved_usd` with `current_usd`. An estimate that was reserved and never reported is dropped at the window boundary rather than folded into the charged total. Session windows do not reset that way.
+
 ## P0-5 — Session contracts
 
 `varden session` now writes a signed contract (session id, principal hash, mode, fail mode, trace id, original PATH, expiry, contract id, key id) and removes `VARDEN_SIGNING_SECRET` from the child environment. The child gets a purpose-separated verification key (`varden-session-contract-v1`).

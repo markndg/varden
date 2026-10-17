@@ -4,6 +4,13 @@
 
 Critical containment. Not tagged or published.
 
+### P0-6 — Server-owned audit decisions
+
+- `POST /sdk/log` no longer stores a client-supplied decision, matched rule, approval or coverage claim as if the control plane had produced it.
+- A log is an authoritative execution report only when it names a guard `event_id` for the same tenant, the same credential, and the same action fingerprint. The stored decision is the one the server recorded at `/sdk/guard`. Anything else is an `unverified_observation`.
+- Client `status=blocked` no longer skips token-budget accounting. A repeated report for the same guard event is not charged twice. Omitting the report leaves the pre-check reservation in place, so it still counts against a hard cap.
+- An older SDK that logs without `guard_event_id` is accepted only as an unverified observation. It cannot create an allow, a block, an approval, or enforced coverage.
+
 ### P0-5 — Session fail-closed contracts
 
 - `varden session` set `VARDEN_FAIL_MODE=closed` while the shim read `VARDEN_MONITOR_FAIL_MODE`, which defaulted to `open`. A guarded command ran when the control plane was down.

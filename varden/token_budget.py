@@ -217,6 +217,23 @@ class TokenBudgetStore:
                 return decision
         return None
 
+    def claim_usage_report(self, guard_event_id: int) -> bool:
+        """Return True only the first time a guard event is accounted."""
+        init_db(self.db_path)
+        with connect(self.db_path) as conn:
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS token_usage_reports (
+                    guard_event_id INTEGER PRIMARY KEY,
+                    created_at REAL NOT NULL
+                )"""
+            )
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO token_usage_reports(guard_event_id, created_at) VALUES (?, ?)",
+                (int(guard_event_id), time.time()),
+            )
+            conn.commit()
+            return cur.rowcount == 1
+
     def post_record(
         self,
         action: Action,

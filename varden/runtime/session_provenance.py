@@ -32,13 +32,15 @@ class SessionProvenanceStore:
         trust = str(source.get("trust_level") or "unknown")
         if trust not in {"unknown", "untrusted", "hostile"}:
             raise ValueError("privileged trust is not client-assertable")
+        from varden.server_owned import strip_untrusted_metadata
+
         entry = {
             "source_type": source.get("source_type") or "unknown",
             "origin": source.get("origin") or "unknown",
             "principal": source.get("principal") or "",
             "trust_level": trust,
             "integrity": "unverified",
-            "metadata": source.get("metadata") or {},
+            "metadata": strip_untrusted_metadata(source.get("metadata") or {}),
             "observed_at": time.time(),
         }
         with connect(self.db_path) as conn:
