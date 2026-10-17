@@ -2,6 +2,10 @@
 
 ## 1.1.0 (unreleased) — Security hardening pass 2, phase 1
 
+### Budget reservations
+
+Token reservations are a ledger separate from the daily and monthly counters. A window reset does not drop an unreported hold. The hold stays on the window that created it, and the deadline charges that estimate if no verified usage arrives. Client `blocked` or `failed` reports do not cancel it.
+
 Critical containment. Not tagged or published.
 
 ### P0-7 — Unauthenticated disclosure
@@ -25,7 +29,7 @@ Leave both unset on a production host. Create the first operator key with `varde
 
 - `POST /sdk/log` no longer stores a client-supplied decision, matched rule, approval or coverage claim as if the control plane had produced it.
 - A log is an authoritative execution report only when it names a guard `event_id` for the same tenant, the same credential, and the same action fingerprint. The stored decision is the one the server recorded at `/sdk/guard`. Anything else is an `unverified_observation`.
-- Client `status=blocked` no longer skips token-budget accounting. A repeated report for the same guard event is not charged twice. Omitting the report leaves the pre-check reservation in place, so it still counts against a hard cap.
+- Client `status=blocked` no longer skips token-budget accounting. A repeated report for the same guard event is not charged twice. Omitting the report leaves a ledger reservation. A daily or monthly reset does not delete it; the deadline charges the estimate to the window that created it.
 - An older SDK that logs without `guard_event_id` is accepted only as an unverified observation. It cannot create an allow, a block, an approval, or enforced coverage.
 
 ### P0-5 — Session fail-closed contracts

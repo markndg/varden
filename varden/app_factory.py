@@ -683,9 +683,15 @@ def create_app(config: AppConfig) -> FastAPI:
         policy_doc = policy.get_policy()
         decision = policy.evaluate(action, policy_doc=policy_doc)
         budget_rules = load_budget_rules(policy_doc)
-        if action.type == "llm_call" and budget_rules:
+        budget_reservation_ids: list[int] = []
+        if action.type == "llm_call" and budget_rules and decision.action in {"allow", "monitor", "warn", "warned", "sanitise"}:
             try:
-                budget_decision = token_budget_store.pre_check(action, raw_payload, budget_rules)
+                budget_decision = token_budget_store.pre_check(
+                    action,
+                    raw_payload,
+                    budget_rules,
+                    reservation_ids=budget_reservation_ids,
+                )
             except PolicyViolation as exc:
                 decision = Decision(
                     action="block",
@@ -693,11 +699,15 @@ def create_app(config: AppConfig) -> FastAPI:
                     matched_rule=exc.rule or {"type": "token_budget"},
                     effective_action="block",
                 )
+                token_budget_store.release_verified(budget_reservation_ids, reason="pre_execution_denial")
+                budget_reservation_ids = []
             else:
                 if budget_decision and budget_decision.action == "warn" and decision.action in {"allow", "monitor"}:
                     decision = budget_decision
                 elif budget_decision and budget_decision.action == "block":
                     decision = budget_decision
+                    token_budget_store.release_verified(budget_reservation_ids, reason="pre_execution_denial")
+                    budget_reservation_ids = []
         # Predictive Authority: optional post-policy enrichment. Disabled by
         # default. Observe records recommendations without changing decisions;
         # enforce may strengthen but never weaken the existing decision.
@@ -716,6 +726,12 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception:
             # Predictive Authority must never bypass or break core enforcement.
             pass
+        from .token_budget import BUDGET_EXECUTES
+
+        if budget_reservation_ids and decision.action not in BUDGET_EXECUTES:
+            token_budget_store.release_verified(budget_reservation_ids, reason="pre_execution_denial")
+            budget_reservation_ids = []
+        action.budget_reservation_ids = budget_reservation_ids
         recent_events = event_store.list_events(limit=120, tenant_id=tenant_id)
         trace_events = event_store.list_trace_events(action.trace_id, tenant_id=tenant_id, limit=60) if action.trace_id else []
         action = intelligence.apply_decision_context(action, decision, recent_events=recent_events, trace_events=trace_events)
@@ -1143,6 +1159,17 @@ def create_app(config: AppConfig) -> FastAPI:
             )
             raise HTTPException(status_code=403, detail=response)
 
+        pending_reservations = list(getattr(action, "budget_reservation_ids", []) or [])
+        if event_id and pending_reservations and decision.action in {"allow", "warn", "warned", "monitor", "sanitise"}:
+            token_budget_store.bind_guard_event(
+                int(event_id),
+                tenant_id=record["tenant_id"],
+                principal_hash=str(record.get("key_hash") or ""),
+                reservation_ids=pending_reservations,
+            )
+        elif pending_reservations:
+            token_budget_store.release_verified(pending_reservations, reason="pre_execution_denial")
+
         if decision.action == "block":
             # Block wins even if audit write failed — never convert to allow.
             raise HTTPException(status_code=403, detail=response)
@@ -1231,14 +1258,17 @@ def create_app(config: AppConfig) -> FastAPI:
         accounted = False
         if bound is not None and action.type == "llm_call" and bound["decision"].get("action") == "allow":
             if token_budget_store.claim_usage_report(int(bound["id"])):
-                accounted = True
                 try:
-                    token_budget_store.post_record(
+                    accounted = bool(token_budget_store.post_record(
                         action,
                         input_payload=payload.get("input_payload"),
                         output_payload=payload.get("output_payload"),
                         rules=load_budget_rules(policy.get_policy()),
-                    )
+                        guard_event_id=int(bound["id"]),
+                        tenant_id=record["tenant_id"],
+                        principal_hash=str(record.get("key_hash") or ""),
+                        client_status=None if client_status is None else str(client_status),
+                    ))
                 except PolicyViolation as exc:
                     raise HTTPException(
                         status_code=403,

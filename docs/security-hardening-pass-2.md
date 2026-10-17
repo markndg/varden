@@ -29,9 +29,17 @@ A log that does not match is stored as `unverified_observation`. Incident views 
 
 Token accounting for an allowed `llm_call` follows the guard event. Reporting `status=blocked` does not skip it. Reporting the same event twice does not charge it twice. If the agent never reports usage, the pre-check reservation remains and still counts toward the cap.
 
+### Reservation ledger
+
+Each allowed `llm_call` writes a row in `token_budget_reservations` in the same transaction as the hold. The row keeps the tenant, principal, guard event, action fingerprint, originating window id, estimate, deadline and status (`reserved`, `reconciled`, `expired_charged`, `cancelled_verified`).
+
+A daily or monthly reset archives the open counter and starts the next allowance at zero. It does not delete reservation rows. Unresolved holds stay on the window that created them. At the deadline the reserved estimate is charged to that window. A later usage report adjusts that same window by the difference, once. A second report does not charge again.
+
+Client `blocked`, `failed` and `not_executed` do not cancel a hold. Only a server decision that prevents execution releases one, as `cancelled_verified`. An unknown outcome with no usage is charged at the reserved estimate. Settled rows older than 90 days can be deleted. Rows still `reserved` are not.
+
 ### Residual risk
 
-Daily and monthly budget windows reset `reserved_usd` with `current_usd`. An estimate that was reserved and never reported is dropped at the window boundary rather than folded into the charged total. Session windows do not reset that way.
+The live budget row is still keyed by policy and trace or workflow, which is the existing single-tenant layout. Cross-tenant reconciliation of a reservation is rejected. Two tenants that share one policy id still share that live counter.
 
 ## P0-5 — Session contracts
 
