@@ -107,7 +107,7 @@ _CATALOG: list[dict[str, Any]] = [
         "limitations": [
             "Saved pre-patch function references bypass monkeypatching.",
             "Native forks from extensions are outside Python hooks.",
-            "A PATH session shim is not an OS sandbox. The same user can replace the session contract, skip the shim, or execute the real binary. A verified contract does not make subprocess coverage ENFORCED.",
+            "A PATH session shim is not an OS sandbox. The same user can replace the session contract, the verification key in the child environment, the control-plane URL, skip the shim, or execute the real binary. A verified contract does not make subprocess coverage ENFORCED.",
         ],
     },
     {

@@ -41,7 +41,7 @@ Leave both unset on a production host. Create the first operator key with `varde
 - `varden session` set `VARDEN_FAIL_MODE=closed` while the shim read `VARDEN_MONITOR_FAIL_MODE`, which defaulted to `open`. A guarded command ran when the control plane was down.
 - Guarded and strict shims now execute only after a signed session contract verifies and the control plane confirms it. A missing, expired, mismatched or altered contract does not run the command. Environment variables cannot downgrade the contract mode or fail mode.
 - Observe mode, when that is the mode in the signed contract, still runs if the control plane is down.
-- The contract file is not an OS sandbox. The same user can replace it, skip the shim, or run the real binary. Subprocess coverage stays short of `ENFORCED` for that reason.
+- The contract file is not an OS sandbox. The verification key is in the child environment. The same user can replace that key and the contract, point the shim at another confirm URL, skip the shim, or run the real binary. Subprocess coverage stays short of `ENFORCED`.
 
 ### P0-3 — Provenance authority
 

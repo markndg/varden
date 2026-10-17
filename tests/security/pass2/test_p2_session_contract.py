@@ -169,6 +169,71 @@ def test_malformed_guard_response_does_not_execute(tmp_path, monkeypatch):
             server.shutdown()
 
 
+def test_attacker_signed_contract_is_rejected_with_the_real_verify_key(tmp_path, monkeypatch):
+    marker = tmp_path / "ran"
+    _arm(monkeypatch, tmp_path, marker)
+    forged = build_contract(
+        master_secret="attacker-signing-secret",
+        session_id="sess-1",
+        principal="tester",
+        mode="observe",
+        fail_mode="open",
+        trace_id="trace-1",
+        orig_path=str(tmp_path / "bin"),
+    )
+    (tmp_path / "contract.json").write_text(json.dumps(forged), encoding="utf-8")
+    assert _run() == 126
+    assert not marker.exists()
+
+
+def test_replacing_the_verify_key_does_not_make_the_real_contract_valid(tmp_path, monkeypatch):
+    marker = tmp_path / "ran"
+    _arm(monkeypatch, tmp_path, marker)
+    monkeypatch.setenv("VARDEN_SESSION_VERIFY_KEY", verify_key("attacker-signing-secret").hex())
+    assert _run() == 126
+    assert not marker.exists()
+
+
+def test_missing_verify_key_denies_execution(tmp_path, monkeypatch):
+    marker = tmp_path / "ran"
+    _arm(monkeypatch, tmp_path, marker)
+    monkeypatch.delenv("VARDEN_SESSION_VERIFY_KEY")
+    assert _run() == 126
+    assert not marker.exists()
+
+
+def test_direct_binary_execution_is_outside_the_shim(tmp_path):
+    marker = tmp_path / "ran"
+    _install_tool(tmp_path, marker)
+    import subprocess
+
+    completed = subprocess.run([str(tmp_path / "bin" / "markertool")], check=False)
+    assert completed.returncode == 0
+    assert marker.exists()
+    surface = next(item for item in _CATALOG if item["name"] == "subprocess")
+    assert surface["default_status"] != "ENFORCED"
+
+
+def test_same_user_replaced_key_can_mint_an_observe_contract(tmp_path, monkeypatch):
+    """Documented limitation: the child holds the key the shim trusts."""
+    marker = tmp_path / "ran"
+    _arm(monkeypatch, tmp_path, marker, mode="guarded")
+    forged = build_contract(
+        master_secret="attacker-signing-secret",
+        session_id="sess-1",
+        principal="tester",
+        mode="observe",
+        fail_mode="open",
+        trace_id="trace-1",
+        orig_path=str(tmp_path / "bin"),
+    )
+    (tmp_path / "contract.json").write_text(json.dumps(forged), encoding="utf-8")
+    monkeypatch.setenv("VARDEN_SESSION_VERIFY_KEY", verify_key("attacker-signing-secret").hex())
+    monkeypatch.setenv("VARDEN_MODE", "observe")
+    assert _run() == 0
+    assert marker.exists()
+
+
 def test_session_shim_is_not_reported_as_full_enforcement():
     surface = next(item for item in _CATALOG if item["name"] == "subprocess")
     assert surface["default_status"] != "ENFORCED"

@@ -13,8 +13,11 @@ Be candid:
   **TOCTOU** races between check and use, nor mediate unpatched APIs.
 * PATH wrappers in `varden session` are one layer — not a complete security boundary.
   A signed session contract fails closed when the control plane is unavailable,
-  and the child environment cannot downgrade it. The same user can still
-  replace the contract, skip the shim, or execute the real binary.
+  and the child environment cannot downgrade a contract the shim still verifies
+  with the original key. The verification key is placed in the child environment.
+  The same user can replace that key and the contract, point `VARDEN_BASE_URL`
+  at an endpoint that returns HTTP 200, skip the shim, or execute the real binary.
+  None of those are blocked by the signature check.
 * OS sandbox backends (namespaces, seccomp, eBPF, macOS sandbox, Windows job
   objects) are **not** claimed by this milestone.
 * Audit hash chaining provides **tamper evidence**, not confidentiality, and

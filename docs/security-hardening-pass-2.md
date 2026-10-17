@@ -59,7 +59,7 @@ Start a guarded session only when `VARDEN_SIGNING_SECRET` is set (at least 16 ch
 
 ### Residual risk
 
-A 0400 contract file is not immutable to another process running as the same user. That process can replace the contract and the verification key, invoke a binary outside the shim directory, or skip the shim. Subprocess coverage therefore does not become `ENFORCED` because a contract signature verified. See the subprocess limitations in `varden coverage`.
+A 0400 contract file is not immutable to another process running as the same user. The verification key is in the child environment. That process can replace the contract and the key, point `VARDEN_BASE_URL` at a server that returns HTTP 200, invoke a binary outside the shim directory, or skip the shim. A contract signed with the attacker's key is rejected only while the original verification key is still the one the shim uses. Subprocess coverage does not become `ENFORCED`. See the subprocess limitations in `varden coverage`.
 
 ## P0-3 — Provenance trust boundary
 

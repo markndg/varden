@@ -134,7 +134,12 @@ def _control_plane_confirms(contract: dict[str, Any]) -> bool:
 
 
 def _session_contract() -> dict[str, Any]:
-    """Enforcement values come from the signed contract, never from env overrides."""
+    """Enforcement values come from the signed contract, never from env overrides.
+
+    The verification key is in this process's environment. A same-user process
+    can replace the key, the contract file, and ``VARDEN_BASE_URL``. This check
+    is not an operating-system boundary.
+    """
     import json as _json
 
     from varden_monitor.session_contract import ContractError, verify_contract, weaker_mode
