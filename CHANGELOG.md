@@ -2,6 +2,10 @@
 
 ## 1.1.0 (unreleased) — Security hardening pass 2, phase 1
 
+### Predictive snapshots
+
+New Predictive Authority snapshots use the shared redactor and schema version 2. `content_hash` is the SHA-256 of the canonical bytes that are stored. Older snapshots still verify. Plaintext in those rows is withheld from APIs. Replacing one records the original hash; it does not wipe SQLite free pages.
+
 ### Budget reservations
 
 Token reservations are a ledger separate from the daily and monthly counters. A window reset does not drop an unreported hold. The hold stays on the window that created it, and the deadline charges that estimate if no verified usage arrives. Client `blocked` or `failed` reports do not cancel it.

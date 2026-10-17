@@ -87,7 +87,9 @@ Order of operations:
 2. Classifiers and policy run on that unredacted object.
 3. A separate redacted copy is what gets stored, hashed into the audit chain, and published on `/events`, event detail, traces and SSE.
 
-Predictive Authority snapshots are redacted by the snapshot builder before `content_hash` is stamped. They are not passed through the persistence redactor again afterwards, because that made the stored blob disagree with the hash on the audit event. The snapshot redactor matches secret-like key names and assignment-shaped values. It is narrower than the persistence engine (it does not apply the HMAC marker or the credential-format scan). Wallet, payment and identity field names used by Web Shield stay on the original `SENSITIVE_FIELD_RE`, and the persistence engine now treats those names as sensitive too.
+Predictive Authority snapshots are schema version 2. The builder runs the shared redactor, then stamps `content_hash` as the SHA-256 of those canonical bytes, and the store writes those bytes. Verification hashes the stored text. It does not redact again after the hash.
+
+Schema version 1 rows still verify against their original hash. If that body contains plaintext, the API returns a redacted projection and `redaction_status=historical_plaintext_withheld`. `PredictiveSnapshotStore.migrate_plaintext` writes a redacted replacement and a row in `predictive_snapshot_migrations` that links the original audit hash to the replacement. It does not rewrite the audit chain and it does not erase free pages.
 
 SDK HTTP interception drops `auth` and `cookies` objects and redacts sensitive header values before the guard request. The control plane still receives `metadata.credential_signals`, a list of field names, and treats that as a secrets classification. Subprocess interception sends `env_keys` and `env_changed` and does not send environment values.
 
