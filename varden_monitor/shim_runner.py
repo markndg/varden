@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -96,6 +97,74 @@ def _post_log(
         print(f"varden-monitor: log failed ({exc})", file=sys.stderr)
 
 
+def _record_override(contract: dict[str, Any], asserted_mode: str | None, asserted_fail: str | None) -> None:
+    dest = os.environ.get("VARDEN_SESSION_AUDIT")
+    if not dest:
+        return
+    line = {
+        "event": "override_rejected",
+        "contract_mode": contract.get("mode"),
+        "contract_fail_mode": contract.get("fail_mode"),
+        "asserted_mode": asserted_mode,
+        "asserted_fail_mode": asserted_fail,
+        "authoritative_decision": None,
+    }
+    with open(dest, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(line, sort_keys=True) + "\n")
+
+
+def _control_plane_confirms(contract: dict[str, Any]) -> bool:
+    import httpx
+
+    base = os.environ.get("VARDEN_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    headers = {"content-type": "application/json"}
+    api_key = os.environ.get("VARDEN_API_KEY")
+    if api_key:
+        headers["x-api-key"] = api_key
+    try:
+        response = httpx.post(
+            f"{base}/runtime/session/contract/confirm",
+            headers=headers,
+            json=contract,
+            timeout=2.0,
+        )
+    except Exception:
+        return False
+    return response.status_code == 200
+
+
+def _session_contract() -> dict[str, Any]:
+    """Enforcement values come from the signed contract, never from env overrides."""
+    import json as _json
+
+    from varden_monitor.session_contract import ContractError, verify_contract, weaker_mode
+
+    path = os.environ.get("VARDEN_SESSION_CONTRACT")
+    key_hex = os.environ.get("VARDEN_SESSION_VERIFY_KEY")
+    session_id = os.environ.get("VARDEN_SESSION_ID", "")
+    if not path or not key_hex:
+        raise ContractError("contract is missing")
+    try:
+        document = _json.loads(Path(path).read_text(encoding="utf-8"))
+        verified = verify_contract(document, raw_key=bytes.fromhex(key_hex), session_id=session_id)
+    except ContractError:
+        raise
+    except Exception as exc:
+        raise ContractError("contract is unreadable") from exc
+    asserted_mode = os.environ.get("VARDEN_MODE")
+    asserted_fail = os.environ.get("VARDEN_MONITOR_FAIL_MODE")
+    passive_downgrade = os.environ.get("VARDEN_SESSION_PASSIVE") == "1" and verified["mode"] != "observe"
+    downgraded = passive_downgrade or weaker_mode(asserted_mode, str(verified["mode"])) or (
+        verified.get("fail_mode") == "closed" and asserted_fail == "open"
+    )
+    if downgraded:
+        _record_override(verified, asserted_mode, asserted_fail)
+        raise ContractError("weaker enforcement assertion rejected")
+    if verified["mode"] != "observe" and not _control_plane_confirms(verified):
+        raise ContractError("control plane unavailable")
+    return verified
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print("shim_runner: missing tool name", file=sys.stderr)
@@ -112,8 +181,13 @@ def main() -> int:
         return 127
     exec_argv = [real] + forwarded
     cwd = os.getcwd()
-    passive = os.environ.get("VARDEN_SESSION_PASSIVE") == "1"
-    fail_mode = os.environ.get("VARDEN_MONITOR_FAIL_MODE", "open")
+    try:
+        contract = _session_contract()
+    except Exception as exc:
+        print(f"varden-monitor: session contract rejected ({exc})", file=sys.stderr)
+        return 126
+    fail_mode = contract["fail_mode"]
+    mode = contract["mode"]
     timeout = float(os.environ.get("VARDEN_MONITOR_TIMEOUT", "15"))
     stdout_cap = int(os.environ.get("VARDEN_MONITOR_STDOUT_CAP", "8000"))
     stderr_cap = int(os.environ.get("VARDEN_MONITOR_STDERR_CAP", "8000"))
@@ -122,11 +196,10 @@ def main() -> int:
     workflow = os.environ.get("VARDEN_WORKFLOW_ID")
     tenant = os.environ.get("VARDEN_TENANT_ID", "default")
     execution_surface = os.environ.get("VARDEN_EXECUTION_SURFACE", "varden_monitor")
-    mode = os.environ.get("VARDEN_MODE", "enforce")
 
     client = _client_from_env()
 
-    if passive:
+    if mode == "observe":
         action = build_shell_execute_action(
             exec_argv,
             cwd=cwd,

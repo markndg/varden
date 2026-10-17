@@ -1423,6 +1423,8 @@ def create_app(config: AppConfig) -> FastAPI:
         session_provenance_store=session_provenance_store,
         get_strict_readiness=lambda: get_coverage_registry().strict_readiness_report(),
         get_posture=lambda: evaluate_posture().to_dict(),
+        db_path=config.db_path,
+        signing_secret=config.signing_secret,
     )
 
     return app

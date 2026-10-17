@@ -12,6 +12,9 @@ Be candid:
   pre-use re-check, but Python-level interception cannot eliminate all
   **TOCTOU** races between check and use, nor mediate unpatched APIs.
 * PATH wrappers in `varden session` are one layer — not a complete security boundary.
+  A signed session contract fails closed when the control plane is unavailable,
+  and the child environment cannot downgrade it. The same user can still
+  replace the contract, skip the shim, or execute the real binary.
 * OS sandbox backends (namespaces, seccomp, eBPF, macOS sandbox, Windows job
   objects) are **not** claimed by this milestone.
 * Audit hash chaining provides **tamper evidence**, not confidentiality, and

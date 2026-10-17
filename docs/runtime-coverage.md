@@ -24,4 +24,8 @@ GET /runtime/coverage
 
 There is **no vanity protection percentage** unless a denominator is explicitly defined.
 
+A verified `varden session` contract does not change subprocess coverage to
+`ENFORCED`. The shim is one layer. Same-user replacement and direct execution
+of the real binary remain outside it.
+
 Strict readiness is `READY` / `NOT READY` with a list of missing required surfaces.

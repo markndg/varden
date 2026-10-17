@@ -17,6 +17,8 @@ def register_runtime_routes(
     session_provenance_store: Any | None = None,
     get_strict_readiness: Callable[[], dict[str, Any]] | None = None,
     get_posture: Callable[[], dict[str, Any]] | None = None,
+    db_path: str | None = None,
+    signing_secret: str | None = None,
 ) -> None:
     @app.get("/runtime/coverage")
     def runtime_coverage(
@@ -107,6 +109,40 @@ def register_runtime_routes(
         except ValueError:
             raise HTTPException(status_code=403, detail="privileged trust claim rejected") from None
         return {"recorded": True, "trace_id": trace_id}
+
+    @app.post("/runtime/session/contract")
+    def runtime_session_contract_register(
+        payload: dict,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        require(x_api_key, authorization, "agent", scope="ingest")
+        if not db_path or not signing_secret:
+            raise HTTPException(status_code=503, detail="session contracts unavailable")
+        from varden_monitor.session_contract import ContractError, register_persisted_contract
+
+        try:
+            register_persisted_contract(db_path, payload, master_secret=signing_secret)
+        except ContractError:
+            raise HTTPException(status_code=403, detail="contract rejected") from None
+        return {"registered": True, "contract_id": payload.get("contract_id")}
+
+    @app.post("/runtime/session/contract/confirm")
+    def runtime_session_contract_confirm(
+        payload: dict,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        require(x_api_key, authorization, "agent", scope="ingest")
+        if not db_path or not signing_secret:
+            raise HTTPException(status_code=503, detail="session contracts unavailable")
+        from varden_monitor.session_contract import ContractError, confirm_persisted_contract
+
+        try:
+            confirm_persisted_contract(db_path, payload, master_secret=signing_secret)
+        except ContractError:
+            raise HTTPException(status_code=403, detail="contract rejected") from None
+        return {"ok": True, "mode": payload.get("mode"), "fail_mode": payload.get("fail_mode")}
 
     @app.get("/runtime/session/provenance")
     def runtime_session_provenance_list(

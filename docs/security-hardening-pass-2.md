@@ -2,6 +2,26 @@
 
 Phase 1 is critical containment for release 1.1.0. It is not a published release.
 
+## P0-5 — Session contracts
+
+`varden session` now writes a signed contract (session id, principal hash, mode, fail mode, trace id, original PATH, expiry, contract id, key id) and removes `VARDEN_SIGNING_SECRET` from the child environment. The child gets a purpose-separated verification key (`varden-session-contract-v1`).
+
+Guarded and strict commands run only when:
+
+- the contract signature verifies
+- the session id matches
+- the contract is unexpired
+- the control plane has the contract registered and confirms it
+- the process has not asserted a weaker mode or `fail_mode=open`
+
+If the control plane is down, a guarded or strict command does not run. An observe contract still runs. A rejected downgrade is appended to the session audit file with `authoritative_decision: null`.
+
+Start a guarded session only when `VARDEN_SIGNING_SECRET` is set (at least 16 characters) and the control plane accepts `POST /runtime/session/contract`.
+
+### Residual risk
+
+A 0400 contract file is not immutable to another process running as the same user. That process can replace the contract and the verification key, invoke a binary outside the shim directory, or skip the shim. Subprocess coverage therefore does not become `ENFORCED` because a contract signature verified. See the subprocess limitations in `varden coverage`.
+
 ## P0-3 — Provenance trust boundary
 
 A protected agent must not be able to describe external content as internally trusted.

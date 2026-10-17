@@ -4,6 +4,13 @@
 
 Critical containment. Not tagged or published.
 
+### P0-5 — Session fail-closed contracts
+
+- `varden session` set `VARDEN_FAIL_MODE=closed` while the shim read `VARDEN_MONITOR_FAIL_MODE`, which defaulted to `open`. A guarded command ran when the control plane was down.
+- Guarded and strict shims now execute only after a signed session contract verifies and the control plane confirms it. A missing, expired, mismatched or altered contract does not run the command. Environment variables cannot downgrade the contract mode or fail mode.
+- Observe mode, when that is the mode in the signed contract, still runs if the control plane is down.
+- The contract file is not an OS sandbox. The same user can replace it, skip the shim, or run the real binary. Subprocess coverage stays short of `ENFORCED` for that reason.
+
 ### P0-3 — Provenance authority
 
 - Client-supplied provenance can no longer assert `internal`, `trusted`, `delegated` or any other privileged trust level. Those claims are recorded as `unknown` with `forged_trust_claim`. `unknown`, `untrusted` and `hostile` stay distinct.
