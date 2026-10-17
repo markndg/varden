@@ -4,11 +4,12 @@ import base64, hashlib, hmac, json, secrets, time, uuid
 OSS_TENANT_ID = "default"
 from .db import connect, init_db
 
-# "agent" is an ingest-only role for protected processes (SDK, MCP gateway,
-# session shims, browser extension). It can submit actions for a decision and
-# log results, and nothing else: it cannot read events, change policy or
-# approve anything. Give agents this role, never a human role.
-ROLES = {"agent": 0, "viewer": 1, "analyst": 2, "admin": 3}
+# "agent" is an ingest-only role for protected processes (SDK, session shims,
+# browser extension). It can submit actions for a decision and log results,
+# and nothing else. "gateway" is a separate ingest role that may record
+# session provenance observations. Neither role can grant elevated trust.
+# Give agents the agent role, never a human role.
+ROLES = {"agent": 0, "gateway": 0, "viewer": 1, "analyst": 2, "admin": 3}
 
 # Well-known development credentials. These strings are public (they are in the
 # README), so they are only ever valid while dev bootstrap is enabled. Starting

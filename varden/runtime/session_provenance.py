@@ -29,10 +29,9 @@ class SessionProvenanceStore:
     ) -> None:
         if not trace_id:
             raise ValueError("trace_id required")
-        # Never accept client-asserted trusted/delegated.
-        trust = str(source.get("trust_level") or "untrusted")
-        if trust in {"trusted", "delegated"}:
-            trust = "unknown"
+        trust = str(source.get("trust_level") or "unknown")
+        if trust not in {"unknown", "untrusted", "hostile"}:
+            raise ValueError("privileged trust is not client-assertable")
         entry = {
             "source_type": source.get("source_type") or "unknown",
             "origin": source.get("origin") or "unknown",

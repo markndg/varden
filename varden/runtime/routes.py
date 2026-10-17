@@ -89,18 +89,23 @@ def register_runtime_routes(
         authorization: str | None = Header(default=None),
     ):
         record = require(x_api_key, authorization, "agent", scope="ingest")
+        if record.get("role") != "gateway":
+            raise HTTPException(status_code=403, detail="session provenance requires a gateway credential")
         if session_provenance_store is None:
             raise HTTPException(status_code=503, detail="session provenance unavailable")
         trace_id = str(payload.get("trace_id") or "")
         source = payload.get("source") or {}
         if not trace_id or not isinstance(source, dict):
             raise HTTPException(status_code=400, detail="trace_id and source required")
-        session_provenance_store.append(
-            tenant_id=record["tenant_id"],
-            trace_id=trace_id,
-            session_id=payload.get("session_id"),
-            source=source,
-        )
+        try:
+            session_provenance_store.append(
+                tenant_id=record["tenant_id"],
+                trace_id=trace_id,
+                session_id=payload.get("session_id"),
+                source=source,
+            )
+        except ValueError:
+            raise HTTPException(status_code=403, detail="privileged trust claim rejected") from None
         return {"recorded": True, "trace_id": trace_id}
 
     @app.get("/runtime/session/provenance")

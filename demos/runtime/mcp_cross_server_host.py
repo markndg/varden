@@ -46,6 +46,11 @@ def main() -> int:
         client, app = make_app_client(tmpdir, policy=POLICY)
         # Merge runtime-boundary pack rules for realism.
         key = client.get("/health").json()["bootstrap_api_key"]
+        from varden.auth import OSS_TENANT_ID, LocalAuth
+
+        gateway = LocalAuth(str(Path(tmpdir) / "varden_auth.db"), "dev-secret").create_api_key(
+            tenant_id=OSS_TENANT_ID, role="gateway"
+        )["api_key"]
         guard = varden.protect(
             base_url="http://testserver",
             api_key=key,
@@ -138,7 +143,7 @@ def main() -> int:
             )
             client.post(
                 "/runtime/session/provenance",
-                headers={"x-api-key": key},
+                headers={"x-api-key": gateway},
                 json={
                     "trace_id": host.trace_id,
                     "session_id": host.session_id,

@@ -1008,14 +1008,18 @@ def create_app(config: AppConfig) -> FastAPI:
                     if not isinstance(src, dict):
                         continue
                     item = dict(src)
-                    if item.get("trust_level") in {"trusted", "delegated"}:
+                    claimed = str(item.get("trust_level") or "unknown")
+                    if claimed not in {"unknown", "untrusted", "hostile"}:
+                        item["claimed_trust_level"] = claimed[:64]
                         item["trust_level"] = "unknown"
+                        item["forged_trust_claim"] = True
+                    item["provenance_complete"] = False
                     cleaned.append(item)
                 for src in session_sources:
                     if src not in cleaned:
                         cleaned.append(src)
                 meta_in["provenance_sources"] = cleaned
-                meta_in["provenance_complete"] = True
+                meta_in.pop("provenance_complete", None)
         action_payload = {**action_payload, "metadata": meta_in}
 
         action, decision = evaluate_action(action_payload, raw_payload, record["tenant_id"])

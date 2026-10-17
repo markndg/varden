@@ -103,6 +103,11 @@ def test_mcp_host_cross_server_blocks_without_manual_provenance_injection():
         }
         client, _ = make_app_client(tmpdir, policy=policy)
         key = client.get("/health").json()["bootstrap_api_key"]
+        from varden.auth import OSS_TENANT_ID, LocalAuth
+
+        gateway = LocalAuth(str(Path(tmpdir) / "varden_auth.db"), "dev-secret").create_api_key(
+            tenant_id=OSS_TENANT_ID, role="gateway"
+        )["api_key"]
         guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
         wire_guard_to_app(guard, client)
         host = VardenMcpHost(base_url="http://testserver", api_key=key)
@@ -117,7 +122,7 @@ def test_mcp_host_cross_server_blocks_without_manual_provenance_injection():
         )
         client.post(
             "/runtime/session/provenance",
-            headers={"x-api-key": key},
+            headers={"x-api-key": gateway},
             json={
                 "trace_id": host.trace_id,
                 "source": {

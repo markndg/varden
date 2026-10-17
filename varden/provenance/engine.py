@@ -42,24 +42,34 @@ def _as_dict(action: Action | dict[str, Any]) -> dict[str, Any]:
     return dict(action or {})
 
 
-def _demote_client_source(src: ProvenanceSource) -> ProvenanceSource:
-    """Client-supplied provenance can never self-attest trust or user identity.
+_CLIENT_TRUST = frozenset({"unknown", "untrusted", "hostile"})
 
-    Any integrity=verified / trust=trusted / source_type=user claim arriving
-    via action metadata is treated as forgery and demoted. Verified user
-    sources may only be injected via server-side kwargs / store lookups.
+
+def _demote_client_source(src: ProvenanceSource) -> ProvenanceSource:
+    """Client-supplied provenance can never self-attest elevated trust.
+
+    ``unknown``, ``untrusted`` and ``hostile`` may be recorded. ``internal``,
+    ``trusted``, ``delegated`` and any other privileged level become
+    ``unknown`` with ``forged_trust_claim``. Completeness is computed by the
+    server: a client flag cannot mark a source complete.
     """
     src.integrity = "unverified"
     src.authenticated = False
+    claimed = str(src.trust_level or "unknown")
+    meta = dict(src.metadata or {})
     if src.source_type == "user":
         src.source_type = "unknown"
         src.trust_level = "unknown"
-        src.provenance_complete = False
-        src.metadata = {**(src.metadata or {}), "forged_user_claim": True}
-    elif src.trust_level in {"trusted", "delegated"}:
+        meta["forged_user_claim"] = True
+        if claimed not in _CLIENT_TRUST:
+            meta["forged_trust_claim"] = True
+            meta["claimed_trust_level"] = claimed[:64]
+    elif claimed not in _CLIENT_TRUST:
         src.trust_level = "unknown"
-        src.provenance_complete = False
-        src.metadata = {**(src.metadata or {}), "forged_trust_claim": True}
+        meta["forged_trust_claim"] = True
+        meta["claimed_trust_level"] = claimed[:64]
+    src.provenance_complete = False
+    src.metadata = meta
     return src
 
 
@@ -112,10 +122,11 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
     # Web Shield / MCP annotations on the action itself.
     if metadata.get("webmcp") or metadata.get("owner_origin"):
         trust = str(metadata.get("trust_state") or "unknown")
-        if trust in {"trusted", "locally_trusted", "pinned"}:
-            # Local Web Shield trust is "locally trusted origin", not global
-            # safety — map to internal, never trusted-for-authority.
-            mapped = "internal"
+        forged_trust = False
+        if trust in {"trusted", "locally_trusted", "pinned", "internal", "delegated"}:
+            # A client trust_state is not server evidence of internal authority.
+            mapped = "unknown"
+            forged_trust = True
         elif trust in {"blocked", "hostile"}:
             mapped = "hostile"
         elif trust in {"untrusted", "observed"}:
@@ -142,19 +153,21 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
                 # client self-attestation of user authority.
                 integrity="unverified",
                 authenticated=False,
-                provenance_complete=True,
-                metadata={"webshield": True, "findings_count": len(findings)},
+                provenance_complete=False,
+                metadata={
+                    "webshield": True,
+                    "findings_count": len(findings),
+                    **({"forged_trust_claim": True, "claimed_trust_level": trust[:64]} if forged_trust else {}),
+                },
             )
         )
 
     if metadata.get("mcp_server"):
         trust = str(metadata.get("mcp_trust") or "unknown")
-        if trust not in {"trusted", "untrusted", "hostile", "internal", "unknown", "delegated"}:
+        forged_mcp = False
+        if trust not in _CLIENT_TRUST:
+            forged_mcp = True
             trust = "unknown"
-        # MCP servers do not get to declare themselves trusted — including
-        # via a forged mcp_trust_integrity marker.
-        if trust in {"trusted", "delegated"}:
-            trust = "untrusted"
         sources.append(
             ProvenanceSource(
                 source_id=new_id("src"),
@@ -163,7 +176,8 @@ def _parse_sources_from_metadata(metadata: dict[str, Any]) -> list[ProvenanceSou
                 principal=str(metadata.get("mcp_server") or ""),
                 trust_level=trust,
                 integrity="unverified",
-                provenance_complete=bool(metadata.get("provenance_complete", True)),
+                provenance_complete=False,
+                metadata={"forged_trust_claim": True, "claimed_trust_level": str(metadata.get("mcp_trust"))[:64]} if forged_mcp else {},
             )
         )
 

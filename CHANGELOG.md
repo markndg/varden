@@ -4,6 +4,12 @@
 
 Critical containment. Not tagged or published.
 
+### P0-3 — Provenance authority
+
+- Client-supplied provenance can no longer assert `internal`, `trusted`, `delegated` or any other privileged trust level. Those claims are recorded as `unknown` with `forged_trust_claim`. `unknown`, `untrusted` and `hostile` stay distinct.
+- `provenance_complete` is computed by the server. A client flag cannot mark a source complete.
+- `POST /runtime/session/provenance` requires a `gateway` credential. An agent credential receives 403. A gateway that asserts privileged trust also receives 403. Continuity posts from the MCP gateway and host use `VARDEN_GATEWAY_API_KEY` and are skipped when that key is absent.
+
 ### P0-1 — Secret redaction
 
 - `redact()` now replaces secret **values** in nested objects. The previous implementation renamed keys such as `password` to `[REDACTED]` and left the value in place.

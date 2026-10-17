@@ -234,11 +234,15 @@ class McpGatewaySession:
             "metadata": {"method": method, "server_id": self.server_id, "tool": tool},
         }
         self.provenance_chain.append(entry)
+        gateway_key = os.environ.get("VARDEN_GATEWAY_API_KEY")
+        if not gateway_key:
+            return
+        headers = {"content-type": "application/json", "x-api-key": gateway_key}
         try:
             with httpx.Client(timeout=5.0) as client:
                 client.post(
                     f"{self.base_url}/runtime/session/provenance",
-                    headers=self._headers(),
+                    headers=headers,
                     json={
                         "trace_id": self.trace_id,
                         "session_id": os.environ.get("VARDEN_SESSION_ID"),
