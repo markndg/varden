@@ -95,13 +95,22 @@ SDK HTTP interception drops `auth` and `cookies` objects and redacts sensitive h
 
 ### Historical rows
 
-```bash
-VARDEN_SIGNING_SECRET=... varden audit redact-migrate --db varden.db
-```
+`varden audit redact-migrate` is a logical rewrite. It is safe to run on a stopped database: one transaction rewrites event rows, rebuilds the hash chain, and appends a signed manifest. A failure before commit rolls the transaction back and leaves the previous chain in place. Running it again is idempotent when the redactor does not change the rows; the replacement chain head stays the same.
 
-The command counts affected records, rebuilds the chain, and stores a signed manifest (`original_head`, `replacement_head`). Verify the new chain with `varden audit verify`.
+It is not secure deletion. The command does not vacuum the database, delete backups, or rotate keys.
 
-Rewriting a row does not wipe SQLite free pages, the WAL, rollback journals, backups or snapshots. Treat those as still sensitive until the storage is destroyed or the volume is securely wiped.
+1. Stop Varden so nothing writes the database during the rewrite.
+2. Copy the database, its `-wal` and `-shm` files, and any snapshots to protected storage. Keep that copy until credential rotation and retention review are finished. The copy still contains plaintext.
+3. Rotate every credential that may have been written into events, traces, logs, or those backups. Treat the old values as exposed.
+4. Run `VARDEN_SIGNING_SECRET=... varden audit redact-migrate --db varden.db`. The secret must be at least 16 characters. The command prints the affected count and a remanence notice. It does not print row contents.
+5. Run `varden audit verify --db varden.db` and confirm the chain is valid. The manifest signature covers `original_head` and `replacement_head`.
+6. Start Varden and check that ingest, `/events`, and a guarded action still behave as expected.
+7. SQLite may still hold old bytes in the WAL, the rollback journal, and free pages. Checkpointing or truncating the WAL shortens the file. It does not prove those bytes are gone from the disk.
+8. Find backups and snapshots that contain the pre-migration database and retire them on the retention schedule. Deleting a backup is an operator action.
+9. Start Varden only after the verify step succeeded.
+10. Submit a fresh action that contains a test credential and confirm `/events` and the database row show a `[REDACTED:...]` marker rather than the credential.
+
+The manifest records that history was rewritten. It does not claim the old plaintext was erased.
 
 ### Upgrade
 

@@ -314,7 +314,10 @@ def main(argv: list[str] | None = None) -> int:
     audit_verify = audit_sub.add_parser('verify', help='Verify the tamper-evident event hash chain')
     audit_verify.add_argument('--db', default=None, help='Path to Varden SQLite database (default: ./varden.db or VARDEN_DB_PATH)')
     audit_verify.add_argument('--json', action='store_true')
-    audit_migrate = audit_sub.add_parser('redact-migrate', help='Rewrite historical rows that contain secrets and rebuild the chain')
+    audit_migrate = audit_sub.add_parser(
+        'redact-migrate',
+        help='Rewrite logical audit rows and rebuild the chain. Does not erase WAL, free pages, or backups.',
+    )
     audit_migrate.add_argument('--db', default=None, help='Path to Varden SQLite database')
     audit_migrate.add_argument('--json', action='store_true')
 
