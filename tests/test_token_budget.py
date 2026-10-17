@@ -78,6 +78,8 @@ def test_token_budget_store_records_usage_after_log(tmp_path):
         input_payload={"kwargs": {"model": "gpt-4o"}},
         output_payload={"usage": {"input_tokens": 1000, "output_tokens": 500}, "model": "gpt-4o"},
         rules=rules,
+        tenant_id="default",
+        principal_hash="principal",
     )
     rows = store.list_active_budgets()
     assert rows

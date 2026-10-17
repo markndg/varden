@@ -4,6 +4,7 @@ import logging
 import asyncio
 import json
 import shutil
+import sqlite3
 import time
 from collections import Counter
 from contextlib import asynccontextmanager
@@ -287,7 +288,7 @@ def create_app(config: AppConfig) -> FastAPI:
             for rule in budget_rules
             if isinstance(rule, dict)
         }
-        active_rows = token_budget_store.list_active_budgets(policy_rules=rules_by_id)
+        active_rows = token_budget_store.list_active_budgets(policy_rules=rules_by_id, tenant_id=tenant_id)
         enriched_rows = []
         for row in active_rows:
             rule = rules_by_id.get(str(row.get("policy_id") or ""), {})
@@ -676,7 +677,12 @@ def create_app(config: AppConfig) -> FastAPI:
         })
         return event_id
 
-    def evaluate_action(payload: dict[str, Any], raw_payload: Any, tenant_id: str):
+    def evaluate_action(
+        payload: dict[str, Any],
+        raw_payload: Any,
+        tenant_id: str,
+        principal_hash: str | None = None,
+    ):
         action = normalize_action(payload, tenant_id)
         action = enrich_action(action, raw_payload)
         # One coherent policy snapshot for evaluate + budget + PA on this decision.
@@ -690,6 +696,8 @@ def create_app(config: AppConfig) -> FastAPI:
                     action,
                     raw_payload,
                     budget_rules,
+                    tenant_id=tenant_id,
+                    principal_hash=principal_hash,
                     reservation_ids=budget_reservation_ids,
                 )
             except PolicyViolation as exc:
@@ -1052,7 +1060,12 @@ def create_app(config: AppConfig) -> FastAPI:
                 meta_in.pop("provenance_complete", None)
         action_payload = {**action_payload, "metadata": meta_in}
 
-        action, decision = evaluate_action(action_payload, raw_payload, record["tenant_id"])
+        action, decision = evaluate_action(
+            action_payload,
+            raw_payload,
+            record["tenant_id"],
+            principal_hash=str(record.get("key_hash") or ""),
+        )
         # Stamp pre-execution enforcement evidence for the incident read model.
         # /sdk/guard intercepts before side effects; never invent this client-side.
         meta = dict(action.metadata or {})
@@ -1257,37 +1270,48 @@ def create_app(config: AppConfig) -> FastAPI:
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
         accounted = False
         if bound is not None and action.type == "llm_call" and bound["decision"].get("action") == "allow":
-            if token_budget_store.claim_usage_report(int(bound["id"])):
-                try:
-                    accounted = bool(token_budget_store.post_record(
-                        action,
-                        input_payload=payload.get("input_payload"),
-                        output_payload=payload.get("output_payload"),
-                        rules=load_budget_rules(policy.get_policy()),
-                        guard_event_id=int(bound["id"]),
-                        tenant_id=record["tenant_id"],
-                        principal_hash=str(record.get("key_hash") or ""),
-                        client_status=None if client_status is None else str(client_status),
-                    ))
-                except PolicyViolation as exc:
-                    raise HTTPException(
-                        status_code=403,
-                        detail={
-                            "logged": True,
-                            "event_id": event_id,
-                            "evidence_class": "server_decision",
-                            "usage_accounted": True,
-                            "error": str(exc),
-                            "rule": exc.rule,
-                            "current_usd": exc.current_usd,
-                            "limit_usd": exc.limit_usd,
-                        },
-                    )
+            try:
+                accounted = bool(token_budget_store.post_record(
+                    action,
+                    input_payload=payload.get("input_payload"),
+                    output_payload=payload.get("output_payload"),
+                    rules=load_budget_rules(policy.get_policy()),
+                    guard_event_id=int(bound["id"]),
+                    tenant_id=record["tenant_id"],
+                    principal_hash=str(record.get("key_hash") or ""),
+                    client_status=None if client_status is None else str(client_status),
+                ))
+            except PolicyViolation as exc:
+                raise HTTPException(
+                    status_code=403,
+                    detail={
+                        "logged": True,
+                        "event_id": event_id,
+                        "evidence_class": "server_decision",
+                        "usage_accounted": True,
+                        "error": str(exc),
+                        "rule": exc.rule,
+                        "current_usd": exc.current_usd,
+                        "limit_usd": exc.limit_usd,
+                    },
+                )
+            except sqlite3.OperationalError:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "logged": True,
+                        "event_id": event_id,
+                        "evidence_class": "server_decision",
+                        "usage_accounted": False,
+                        "retryable": True,
+                        "error": "budget accounting is locked",
+                    },
+                )
         return {"logged": True, "event_id": event_id, "evidence_class": meta["evidence_class"], "usage_accounted": accounted}
 
     @app.get("/token-budgets")
     def list_token_budgets(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
-        require(x_api_key, authorization, "analyst", scope="read")
+        record = require(x_api_key, authorization, "analyst", scope="read")
         policy_doc = policy.get_policy()
         rules_by_id = {
             str(rule.get("id") or ""): rule
@@ -1295,7 +1319,7 @@ def create_app(config: AppConfig) -> FastAPI:
             if isinstance(rule, dict)
         }
         items = []
-        for row in token_budget_store.list_active_budgets(policy_rules=rules_by_id):
+        for row in token_budget_store.list_active_budgets(policy_rules=rules_by_id, tenant_id=record["tenant_id"]):
             rule = rules_by_id.get(str(row.get("policy_id") or ""), {})
             limit_usd = float(rule.get("limit_usd") or row.get("limit_usd") or 0)
             current_usd = float(row.get("current_usd") or 0)

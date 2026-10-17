@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
@@ -17,8 +16,6 @@ from .rules.token_budget import (
     normalize_model_name,
     resolve_output_limit,
 )
-
-logger = logging.getLogger("varden.token_budget")
 
 _BUCKETS = ("block", "warn", "monitor", "allow")
 STATUS_RESERVED = "reserved"
@@ -183,25 +180,65 @@ class TokenBudgetStore:
     def _now(self) -> float:
         return float(self._clock())
 
-    def _budget_key(self, rule: TokenBudgetRule, action: Action) -> tuple[str | None, str | None]:
+    def _counter_scope(
+        self,
+        rule: TokenBudgetRule,
+        *,
+        tenant_id: str | None,
+        principal_hash: str | None,
+    ) -> tuple[str, str] | None:
+        """Server-owned counter identity.
+
+        A session limit is the authenticated principal's cumulative spend
+        inside one tenant. A daily or monthly limit is the tenant's calendar
+        spend, shared by every principal in that tenant. Trace and workflow
+        ids are correlation data and are not part of this identity.
+        """
+        tenant = (tenant_id or "").strip()
+        principal = (principal_hash or "").strip()
         if rule.window == "session":
-            return action.trace_id or action.workflow_id, None
-        return None, action.workflow_id or action.trace_id
+            if not tenant or not principal:
+                return None
+            return tenant, principal
+        if rule.window in {"daily", "monthly"}:
+            if not tenant:
+                return None
+            return tenant, ""
+        return None
+
+    def _scope_failure(self, rule: TokenBudgetRule, amount_usd: float) -> Decision:
+        detail = {**rule.to_dict(), "enforced": False, "scope": "missing"}
+        if rule.hard_cap:
+            raise PolicyViolation(
+                "token budget scope could not be established",
+                rule=detail,
+                projected_usd=amount_usd,
+                current_usd=0.0,
+                limit_usd=rule.limit_usd,
+            )
+        return Decision(
+            action="warn",
+            reason="token budget scope was not established; soft cap was not enforced",
+            matched_rule=detail,
+            effective_action="warn",
+        )
 
     @staticmethod
-    def _window_identity(window: str, now: float, trace_id: str | None, workflow_id: str | None) -> str:
+    def _window_identity(window: str, now: float, *, tenant_id: str = "", principal_hash: str = "") -> str:
         dt = datetime.fromtimestamp(now, tz=timezone.utc)
         if window == "daily":
             return dt.strftime("daily:%Y-%m-%d")
         if window == "monthly":
             return dt.strftime("monthly:%Y-%m")
-        return f"session:{trace_id or workflow_id or 'none'}"
+        return f"session:{tenant_id}:{principal_hash}"
 
     def _reset_row_if_due(self, conn: sqlite3.Connection, row: sqlite3.Row, now: float) -> sqlite3.Row:
         reset_at = row["reset_at"]
         window_id = row["window_id"] if "window_id" in row.keys() else None
+        tenant_key = row["tenant_id"] if "tenant_id" in row.keys() and row["tenant_id"] else ""
+        principal_key = row["principal_hash"] if "principal_hash" in row.keys() and row["principal_hash"] else ""
         if not window_id:
-            window_id = self._window_identity(row["window"], now, row["trace_id"], row["workflow_id"])
+            window_id = self._window_identity(row["window"], now, tenant_id=tenant_key, principal_hash=principal_key)
             conn.execute("UPDATE token_budgets SET window_id = ? WHERE id = ?", (window_id, row["id"]))
             row = conn.execute("SELECT * FROM token_budgets WHERE id = ?", (row["id"],)).fetchone()
         if reset_at is not None and now >= float(reset_at):
@@ -212,14 +249,16 @@ class TokenBudgetStore:
                 policy_id=row["policy_id"],
                 window=row["window"],
                 window_id=row["window_id"],
-                trace_id=row["trace_id"],
-                workflow_id=row["workflow_id"],
+                trace_id="",
+                workflow_id="",
+                tenant_id=tenant_key,
+                principal_hash=principal_key,
                 delta=float(row["current_usd"] or 0),
                 limit_usd=float(row["limit_usd"] or 0),
                 closed_at=now,
             )
             new_reset = _next_reset_at(row["window"], now)
-            new_window = self._window_identity(row["window"], now, row["trace_id"], row["workflow_id"])
+            new_window = self._window_identity(row["window"], now, tenant_id=tenant_key, principal_hash=principal_key)
             conn.execute(
                 """
                 UPDATE token_budgets
@@ -240,6 +279,8 @@ class TokenBudgetStore:
         window_id: str,
         trace_id: str | None,
         workflow_id: str | None,
+        tenant_id: str = "",
+        principal_hash: str = "",
         delta: float,
         limit_usd: float,
         closed_at: float | None = None,
@@ -249,14 +290,26 @@ class TokenBudgetStore:
         conn.execute(
             """
             INSERT INTO token_budget_window_charges(
-              policy_id, window, window_id, trace_id, workflow_id, charged_usd, limit_usd, closed_at
-            ) VALUES (?,?,?,?,?,?,?,?)
-            ON CONFLICT(policy_id, window, window_id, trace_id, workflow_id)
+              policy_id, window, window_id, trace_id, workflow_id,
+              tenant_id, principal_hash, charged_usd, limit_usd, closed_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(policy_id, window, window_id, trace_id, workflow_id, tenant_id, principal_hash)
             DO UPDATE SET
               charged_usd = charged_usd + excluded.charged_usd,
               closed_at = COALESCE(token_budget_window_charges.closed_at, excluded.closed_at)
             """,
-            (policy_id, window, window_id, trace_id or "", workflow_id or "", float(delta), float(limit_usd), closed_at),
+            (
+                policy_id,
+                window,
+                window_id,
+                trace_id or "",
+                workflow_id or "",
+                tenant_id or "",
+                principal_hash or "",
+                float(delta),
+                float(limit_usd),
+                closed_at,
+            ),
         )
 
     def _budget_row(
@@ -265,18 +318,26 @@ class TokenBudgetStore:
         *,
         policy_id: str,
         window: str,
-        trace_id: str | None,
-        workflow_id: str | None,
+        tenant_id: str,
+        principal_hash: str,
     ) -> sqlite3.Row | None:
         return conn.execute(
             """
             SELECT * FROM token_budgets
             WHERE policy_id = ? AND window = ?
-              AND COALESCE(trace_id, '') = COALESCE(?, '')
-              AND COALESCE(workflow_id, '') = COALESCE(?, '')
+              AND COALESCE(tenant_id, '') = ?
+              AND COALESCE(principal_hash, '') = ?
+              AND COALESCE(trace_id, '') = ''
+              AND COALESCE(workflow_id, '') = ''
             """,
-            (policy_id, window, trace_id, workflow_id),
+            (policy_id, window, tenant_id or "", principal_hash or ""),
         ).fetchone()
+
+    @staticmethod
+    def _counter_principal(window: str, principal_hash: str | None) -> str:
+        if window in {"daily", "monthly"}:
+            return ""
+        return principal_hash or ""
 
     def _settle(
         self,
@@ -313,12 +374,13 @@ class TokenBudgetStore:
         )
         if updated.rowcount != 1:
             return False
+        counter_principal = self._counter_principal(reservation["window"], reservation["principal_hash"])
         budget = self._budget_row(
             conn,
             policy_id=reservation["policy_id"],
             window=reservation["window"],
-            trace_id=reservation["trace_id"],
-            workflow_id=reservation["workflow_id"],
+            tenant_id=reservation["tenant_id"] or "",
+            principal_hash=counter_principal,
         )
         same_window = budget is not None and budget["window_id"] == reservation["window_id"]
         if same_window:
@@ -337,8 +399,10 @@ class TokenBudgetStore:
                 policy_id=reservation["policy_id"],
                 window=reservation["window"],
                 window_id=reservation["window_id"],
-                trace_id=reservation["trace_id"],
-                workflow_id=reservation["workflow_id"],
+                trace_id="",
+                workflow_id="",
+                tenant_id=reservation["tenant_id"] or "",
+                principal_hash=counter_principal,
                 delta=float(amount),
                 limit_usd=limit,
                 closed_at=now,
@@ -441,8 +505,8 @@ class TokenBudgetStore:
                     conn,
                     policy_id=row["policy_id"],
                     window=row["window"],
-                    trace_id=row["trace_id"],
-                    workflow_id=row["workflow_id"],
+                    tenant_id=row["tenant_id"] or "",
+                    principal_hash=self._counter_principal(row["window"], row["principal_hash"]),
                 )
                 if budget is not None and budget["window_id"] == row["window_id"]:
                     reserved_live = max(0.0, float(budget["reserved_usd"] or 0) - float(row["reserved_usd"] or 0))
@@ -515,12 +579,23 @@ class TokenBudgetStore:
             return False
         return True
 
-    def list_active_budgets(self, *, policy_rules: dict[str, dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    def list_active_budgets(
+        self,
+        *,
+        policy_rules: dict[str, dict[str, Any]] | None = None,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         now = self._now()
         with connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             self._expire_due(conn, now)
-            rows = conn.execute("SELECT * FROM token_budgets ORDER BY id DESC").fetchall()
+            if tenant_id is None:
+                rows = conn.execute("SELECT * FROM token_budgets ORDER BY id DESC").fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM token_budgets WHERE tenant_id = ? ORDER BY id DESC",
+                    (tenant_id,),
+                ).fetchall()
             out: list[dict[str, Any]] = []
             for row in rows:
                 row = self._reset_row_if_due(conn, row, now)
@@ -558,7 +633,7 @@ class TokenBudgetStore:
                 output_tokens=output_tokens,
                 tool_name=action.tool,
                 reserve=True,
-                tenant_id=tenant_id or action.tenant_id or "default",
+                tenant_id=tenant_id if tenant_id is not None else action.tenant_id,
                 principal_hash=principal_hash,
                 reservation_ids=reservation_ids,
             )
@@ -567,21 +642,13 @@ class TokenBudgetStore:
         return None
 
     def claim_usage_report(self, guard_event_id: int) -> bool:
-        """Return True only the first time a guard event is accounted."""
-        init_db(self.db_path)
-        with connect(self.db_path) as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS token_usage_reports (
-                    guard_event_id INTEGER PRIMARY KEY,
-                    created_at REAL NOT NULL
-                )"""
-            )
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO token_usage_reports(guard_event_id, created_at) VALUES (?, ?)",
-                (int(guard_event_id), time.time()),
-            )
-            conn.commit()
-            return cur.rowcount == 1
+        """Legacy helper. Accounting completion is the reservation transition.
+
+        This does not reserve the right to reconcile. ``post_record`` is
+        idempotent on the reservation row, inside one transaction.
+        """
+        del guard_event_id
+        return True
 
     def post_record(
         self,
@@ -597,11 +664,20 @@ class TokenBudgetStore:
     ) -> bool:
         if action.type != "llm_call" or not rules:
             return False
+        resolved_tenant = tenant_id if tenant_id is not None else action.tenant_id
         fallback_model = extract_model_from_payload(action, input_payload)
-        usage = extract_usage_from_log_payload(output_payload, input_payload, fallback_model=fallback_model)
-        accounted = False
+        malformed = False
+        try:
+            usage = extract_usage_from_log_payload(output_payload, input_payload, fallback_model=fallback_model)
+        except (TypeError, ValueError):
+            usage = None
+            malformed = True
+        prepared: list[dict[str, Any]] = []
         for rule in rules:
             if not rule.enabled:
+                continue
+            if self._counter_scope(rule, tenant_id=resolved_tenant, principal_hash=principal_hash) is None:
+                self._scope_failure(rule, 0.0)
                 continue
             estimate_model, est_in, est_out, estimate_cost = estimate_llm_cost(action, input_payload or action.args, rule)
             if usage:
@@ -614,28 +690,251 @@ class TokenBudgetStore:
                 )
             else:
                 model, input_tokens, output_tokens, cost = estimate_model, est_in, est_out, estimate_cost
-            result = self._check_rule(
-                rule,
-                action,
-                cost,
-                post=True,
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                tool_name=action.tool,
-                reserve=False,
-                estimate_cost=estimate_cost,
-                guard_event_id=guard_event_id,
+            prepared.append(
+                {
+                    "rule": rule,
+                    "cost": cost,
+                    "estimate_cost": estimate_cost,
+                    "model": model,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                }
+            )
+        if not prepared:
+            return False
+        violation: PolicyViolation | None = None
+        accounted = False
+        for attempt in range(3):
+            try:
+                with connect(self.db_path) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    now = self._now()
+                    self._expire_due(conn, now)
+                    outcomes: list[str | None] = []
+                    pending: PolicyViolation | None = None
+                    for item in prepared:
+                        outcome, pending_violation = self._apply_post(
+                            conn,
+                            rule=item["rule"],
+                            action=action,
+                            amount_usd=float(item["cost"]),
+                            estimate_cost=float(item["estimate_cost"]),
+                            model=item["model"],
+                            input_tokens=int(item["input_tokens"]),
+                            output_tokens=int(item["output_tokens"]),
+                            tenant_id=resolved_tenant,
+                            principal_hash=principal_hash,
+                            guard_event_id=guard_event_id,
+                            client_status=client_status,
+                            usage_present=usage is not None,
+                            usage_malformed=malformed,
+                            now=now,
+                        )
+                        outcomes.append(outcome)
+                        if outcome == "rejected":
+                            break
+                        if pending_violation is not None and pending is None:
+                            pending = pending_violation
+                    if "rejected" in outcomes:
+                        conn.rollback()
+                        return False
+                    conn.commit()
+                violation = pending
+                accounted = "accounted" in outcomes
+                break
+            except sqlite3.OperationalError:
+                if attempt < 2:
+                    continue
+                raise
+        if violation is not None:
+            raise violation
+        return accounted
+
+    def _apply_post(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        rule: TokenBudgetRule,
+        action: Action,
+        amount_usd: float,
+        estimate_cost: float,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        tenant_id: str | None,
+        principal_hash: str | None,
+        guard_event_id: int | None,
+        client_status: str | None,
+        usage_present: bool,
+        usage_malformed: bool,
+        now: float,
+    ) -> tuple[str | None, PolicyViolation | None]:
+        """Apply one rule's reconciliation. The caller commits or rolls back."""
+        scope = self._counter_scope(rule, tenant_id=tenant_id, principal_hash=principal_hash)
+        if scope is None:
+            self._scope_failure(rule, amount_usd)
+            return "ignored", None
+        tenant_key, principal_key = scope
+        row = self._ensure_budget_row(conn, rule, tenant_key, principal_key, now)
+        if row is None:
+            return None, None
+        current_usd = float(row["current_usd"])
+        found = self._lookup_reservation(
+            conn,
+            rule,
+            trace_id=action.trace_id,
+            workflow_id=action.workflow_id,
+            guard_event_id=guard_event_id,
+            tenant_id=tenant_id,
+            principal_hash=principal_hash,
+        )
+        evidence_base = {
+            "client_status": client_status,
+            "usage_present": usage_present,
+            "usage_malformed": usage_malformed,
+        }
+        if found == "rejected":
+            return "rejected", None
+        if found is not None and not usage_present and str(client_status or "") in _UNTRUSTED_RELEASE:
+            evidence = {
+                **evidence_base,
+                "accepted": False,
+                "reason": "client execution claim is not server evidence",
+            }
+            conn.execute(
+                """
+                UPDATE token_budget_reservations
+                SET evidence_json = ?
+                WHERE id = ? AND status = ?
+                """,
+                (json.dumps(evidence, sort_keys=True), found["id"], STATUS_RESERVED),
+            )
+            return "ignored", None
+        if found is not None and found["status"] == STATUS_RESERVED:
+            self._record_usage_event(
+                conn, action, now, model, input_tokens, output_tokens, amount_usd, action.tool,
+                tenant_id=tenant_key, principal_hash=principal_hash,
+            )
+            self._settle(
+                conn,
+                found,
+                float(amount_usd),
+                STATUS_RECONCILED,
+                now,
+                {**evidence_base, "policy": "charge_verified_or_estimate"},
+                expected_status=STATUS_RESERVED,
+                reported_usd=float(amount_usd) if usage_present else None,
+            )
+            return "accounted", None
+        if (
+            found is not None
+            and found["status"] == STATUS_EXPIRED_CHARGED
+            and usage_present
+            and found["reported_usd"] is None
+        ):
+            delta = float(amount_usd) - float(found["charged_usd"] or 0)
+            self._record_usage_event(
+                conn, action, now, model, input_tokens, output_tokens, amount_usd, action.tool,
+                tenant_id=tenant_key, principal_hash=principal_hash,
+            )
+            self._settle(
+                conn,
+                found,
+                delta,
+                STATUS_RECONCILED,
+                now,
+                {**evidence_base, "policy": "late_report_replaces_estimate"},
+                expected_status=STATUS_EXPIRED_CHARGED,
+                reported_usd=float(amount_usd),
+            )
+            return "accounted", None
+        if found is not None:
+            return "ignored", None
+        if guard_event_id is not None:
+            return None, None
+        # No ledger row matches this report. Do not spend another call's hold.
+        open_hold = conn.execute(
+            """
+            SELECT id FROM token_budget_reservations
+            WHERE policy_id = ? AND window = ? AND status = ? AND tenant_id = ?
+              AND COALESCE(principal_hash, '') = COALESCE(?, '')
+            LIMIT 1
+            """,
+            (rule.id, rule.window, STATUS_RESERVED, tenant_key, principal_hash or ""),
+        ).fetchone()
+        if open_hold is not None:
+            return "ignored", None
+        self._record_usage_event(
+            conn, action, now, model, input_tokens, output_tokens, amount_usd, action.tool,
+            tenant_id=tenant_key, principal_hash=principal_hash,
+        )
+        new_current = current_usd + amount_usd
+        conn.execute(
+            """
+            UPDATE token_budgets
+            SET current_usd = ?, limit_usd = ?
+            WHERE id = ?
+            """,
+            (new_current, rule.limit_usd, row["id"]),
+        )
+        violation = None
+        if rule.hard_cap and new_current > float(rule.limit_usd):
+            violation = PolicyViolation(
+                "token budget exceeded after usage recorded",
+                rule=rule.to_dict(),
+                projected_usd=amount_usd,
+                current_usd=new_current,
+                limit_usd=rule.limit_usd,
+            )
+        return "accounted", violation
+
+    def _ensure_budget_row(
+        self,
+        conn: sqlite3.Connection,
+        rule: TokenBudgetRule,
+        tenant_id: str,
+        principal_hash: str,
+        now: float,
+    ) -> sqlite3.Row | None:
+        row = self._budget_row(
+            conn,
+            policy_id=rule.id,
+            window=rule.window,
+            tenant_id=tenant_id,
+            principal_hash=principal_hash,
+        )
+        if row is None:
+            reset_at = _next_reset_at(rule.window, now)
+            window_id = self._window_identity(rule.window, now, tenant_id=tenant_id, principal_hash=principal_hash)
+            conn.execute(
+                """
+                INSERT INTO token_budgets(
+                  policy_id, trace_id, workflow_id, window, limit_usd,
+                  current_usd, reserved_usd, reset_at, window_id, tenant_id, principal_hash
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (rule.id, None, None, rule.window, rule.limit_usd, 0.0, 0.0, reset_at, window_id, tenant_id, principal_hash),
+            )
+            row = self._budget_row(
+                conn,
+                policy_id=rule.id,
+                window=rule.window,
                 tenant_id=tenant_id,
                 principal_hash=principal_hash,
-                client_status=client_status,
-                usage_present=usage is not None,
             )
-            if result == "rejected":
-                return False
-            if result == "accounted":
-                accounted = True
-        return accounted
+        if row is None:
+            return None
+        row = self._reset_row_if_due(conn, row, now)
+        if float(row["limit_usd"]) != float(rule.limit_usd):
+            conn.execute("UPDATE token_budgets SET limit_usd = ? WHERE id = ?", (rule.limit_usd, row["id"]))
+            row = self._budget_row(
+                conn,
+                policy_id=rule.id,
+                window=rule.window,
+                tenant_id=tenant_id,
+                principal_hash=principal_hash,
+            )
+        return row
 
     def _lookup_reservation(
         self,
@@ -703,13 +1002,16 @@ class TokenBudgetStore:
         client_status: str | None = None,
         usage_present: bool = False,
     ) -> Decision | str | None:
-        trace_id, workflow_id = self._budget_key(rule, action)
-        if rule.window == "session" and not trace_id:
-            logger.warning("session budget %s skipped: missing trace_id/workflow_id", rule.id)
-            return None
-        if rule.window in {"daily", "monthly"} and not workflow_id:
-            logger.warning("%s budget %s skipped: missing workflow_id/trace_id", rule.window, rule.id)
-            return None
+        scope = self._counter_scope(
+            rule,
+            tenant_id=tenant_id if tenant_id is not None else action.tenant_id,
+            principal_hash=principal_hash,
+        )
+        if scope is None:
+            return self._scope_failure(rule, amount_usd)
+        tenant_key, principal_key = scope
+        if post:
+            raise RuntimeError("usage reconciliation is performed by post_record")
 
         for attempt in range(3):
             try:
@@ -717,157 +1019,20 @@ class TokenBudgetStore:
                     conn.execute("BEGIN IMMEDIATE")
                     now = self._now()
                     self._expire_due(conn, now)
-                    row = self._budget_row(
-                        conn,
-                        policy_id=rule.id,
-                        window=rule.window,
-                        trace_id=trace_id,
-                        workflow_id=workflow_id,
-                    )
-                    if row is None:
-                        reset_at = _next_reset_at(rule.window, now)
-                        window_id = self._window_identity(rule.window, now, trace_id, workflow_id)
-                        conn.execute(
-                            """
-                            INSERT INTO token_budgets(
-                              policy_id, trace_id, workflow_id, window, limit_usd,
-                              current_usd, reserved_usd, reset_at, window_id
-                            ) VALUES (?,?,?,?,?,?,?,?,?)
-                            """,
-                            (rule.id, trace_id, workflow_id, rule.window, rule.limit_usd, 0.0, 0.0, reset_at, window_id),
-                        )
-                        row = self._budget_row(
-                            conn,
-                            policy_id=rule.id,
-                            window=rule.window,
-                            trace_id=trace_id,
-                            workflow_id=workflow_id,
-                        )
+                    row = self._ensure_budget_row(conn, rule, tenant_key, principal_key, now)
                     if row is None:
                         conn.commit()
                         return None
 
-                    row = self._reset_row_if_due(conn, row, now)
-                    if float(row["limit_usd"]) != float(rule.limit_usd):
-                        conn.execute(
-                            "UPDATE token_budgets SET limit_usd = ? WHERE id = ?",
-                            (rule.limit_usd, row["id"]),
-                        )
-                        row = self._budget_row(
-                            conn,
-                            policy_id=rule.id,
-                            window=rule.window,
-                            trace_id=trace_id,
-                            workflow_id=workflow_id,
-                        )
-
                     current_usd = float(row["current_usd"])
                     reserved_usd = float(row["reserved_usd"] if "reserved_usd" in row.keys() else 0)
-
-                    if post:
-                        found = self._lookup_reservation(
-                            conn,
-                            rule,
-                            trace_id=trace_id,
-                            workflow_id=workflow_id,
-                            guard_event_id=guard_event_id,
-                            tenant_id=tenant_id,
-                            principal_hash=principal_hash,
-                        )
-                        if found == "rejected":
-                            conn.commit()
-                            return "rejected"
-                        if found is not None and not usage_present and str(client_status or "") in _UNTRUSTED_RELEASE:
-                            evidence = {
-                                "client_status": client_status,
-                                "accepted": False,
-                                "reason": "client execution claim is not server evidence",
-                            }
-                            conn.execute(
-                                """
-                                UPDATE token_budget_reservations
-                                SET evidence_json = ?
-                                WHERE id = ? AND status = ?
-                                """,
-                                (json.dumps(evidence, sort_keys=True), found["id"], STATUS_RESERVED),
-                            )
-                            conn.commit()
-                            return "ignored"
-                        if found is not None and found["status"] == STATUS_RESERVED:
-                            self._record_usage_event(
-                                conn, action, trace_id, workflow_id, now, model, input_tokens, output_tokens, amount_usd, tool_name
-                            )
-                            self._settle(
-                                conn,
-                                found,
-                                float(amount_usd),
-                                STATUS_RECONCILED,
-                                now,
-                                {
-                                    "client_status": client_status,
-                                    "usage_present": usage_present,
-                                    "policy": "charge_verified_or_estimate",
-                                },
-                                expected_status=STATUS_RESERVED,
-                                reported_usd=float(amount_usd) if usage_present else None,
-                            )
-                            conn.commit()
-                            return "accounted"
-                        if (
-                            found is not None
-                            and found["status"] == STATUS_EXPIRED_CHARGED
-                            and usage_present
-                            and found["reported_usd"] is None
-                        ):
-                            delta = float(amount_usd) - float(found["charged_usd"] or 0)
-                            self._record_usage_event(
-                                conn, action, trace_id, workflow_id, now, model, input_tokens, output_tokens, amount_usd, tool_name
-                            )
-                            self._settle(
-                                conn,
-                                found,
-                                delta,
-                                STATUS_RECONCILED,
-                                now,
-                                {"client_status": client_status, "policy": "late_report_replaces_estimate"},
-                                expected_status=STATUS_EXPIRED_CHARGED,
-                                reported_usd=float(amount_usd),
-                            )
-                            conn.commit()
-                            return "accounted"
-                        if found is not None:
-                            conn.commit()
-                            return "ignored"
-                        if guard_event_id is not None:
-                            conn.commit()
-                            return None
-                        self._record_usage_event(
-                            conn, action, trace_id, workflow_id, now, model, input_tokens, output_tokens, amount_usd, tool_name
-                        )
-                        release = min(float(estimate_cost or amount_usd), reserved_usd)
-                        conn.execute(
-                            """
-                            UPDATE token_budgets
-                            SET current_usd = ?, reserved_usd = ?, limit_usd = ?
-                            WHERE id = ?
-                            """,
-                            (current_usd + amount_usd, max(0.0, reserved_usd - release), rule.limit_usd, row["id"]),
-                        )
-                        conn.commit()
-                        if rule.hard_cap and (current_usd + amount_usd) > float(rule.limit_usd):
-                            raise PolicyViolation(
-                                "token budget exceeded after usage recorded",
-                                rule=rule.to_dict(),
-                                projected_usd=amount_usd,
-                                current_usd=current_usd + amount_usd,
-                                limit_usd=rule.limit_usd,
-                            )
-                        return "accounted"
 
                     projected_total = current_usd + reserved_usd + amount_usd
                     if projected_total <= float(rule.limit_usd):
                         if reserve:
-                            window_id = row["window_id"] or self._window_identity(rule.window, now, trace_id, workflow_id)
+                            window_id = row["window_id"] or self._window_identity(
+                                rule.window, now, tenant_id=tenant_key, principal_hash=principal_key
+                            )
                             conn.execute(
                                 "UPDATE token_budgets SET reserved_usd = ?, limit_usd = ?, window_id = ? WHERE id = ?",
                                 (reserved_usd + amount_usd, rule.limit_usd, window_id, row["id"]),
@@ -882,13 +1047,13 @@ class TokenBudgetStore:
                                 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                                 """,
                                 (
-                                    tenant_id or action.tenant_id or "default",
+                                    tenant_key,
                                     principal_hash,
                                     rule.id,
                                     rule.window,
                                     window_id,
-                                    trace_id,
-                                    workflow_id,
+                                    action.trace_id,
+                                    action.workflow_id,
                                     fingerprint,
                                     float(amount_usd),
                                     0.0,
@@ -929,30 +1094,34 @@ class TokenBudgetStore:
         self,
         conn: sqlite3.Connection,
         action: Action,
-        trace_id: str | None,
-        workflow_id: str | None,
         now: float,
         model: str,
         input_tokens: int,
         output_tokens: int,
         amount_usd: float,
         tool_name: str | None,
+        *,
+        tenant_id: str | None = None,
+        principal_hash: str | None = None,
     ) -> None:
         conn.execute(
             """
             INSERT INTO token_events(
-              trace_id, workflow_id, timestamp, model, input_tokens, output_tokens, cost_usd, tool_name
-            ) VALUES (?,?,?,?,?,?,?,?)
+              trace_id, workflow_id, timestamp, model, input_tokens, output_tokens,
+              cost_usd, tool_name, tenant_id, principal_hash
+            ) VALUES (?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                action.trace_id or trace_id or "",
-                action.workflow_id or workflow_id,
+                action.trace_id or "",
+                action.workflow_id,
                 now,
                 model,
                 input_tokens,
                 output_tokens,
                 amount_usd,
                 tool_name,
+                tenant_id,
+                principal_hash,
             ),
         )
 
@@ -982,13 +1151,10 @@ def simulate_budget_trace(
         for rule in rules:
             if not rule.enabled:
                 continue
-            store = TokenBudgetStore.__new__(TokenBudgetStore)
-            trace_id, workflow_id = store._budget_key(rule, action)
-            if rule.window == "session" and not trace_id:
-                continue
-            if rule.window in {"daily", "monthly"} and not workflow_id:
-                continue
-            key = (rule.id, rule.window, trace_id or "", workflow_id or "")
+            # Preview uses the same scope as enforcement: one bucket per rule
+            # window, not a client trace or workflow id.
+            key = (rule.id, rule.window, "authenticated", "")
+            trace_id, workflow_id = action.trace_id, action.workflow_id
             if usage:
                 model, in_tok, out_tok = usage
                 cost = compute_cost_usd(

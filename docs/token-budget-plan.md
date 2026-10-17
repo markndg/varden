@@ -48,10 +48,12 @@ sequenceDiagram
 
 ### Session keys for budgets
 
-- **`window: "session"`** → budget row keyed by `(policy_id, trace_id)`
-- **`window: "daily" | "monthly"`** → budget row keyed by `(policy_id, workflow_id)`
-- **`reset_at`** is wall-clock UTC only (midnight UTC / first-of-month UTC), independent of workflow lifetime
-- **`token_events`** always stores **both** `trace_id` and `workflow_id` for aggregation in either direction
+Enforcement does not use a client trace or workflow id as the budget key. See `docs/security-hardening-pass-2.md`.
+
+- **`window: "session"`** → authenticated tenant + API-key hash. Cumulative. No calendar reset.
+- **`window: "daily" | "monthly"`** → authenticated tenant, shared by principals in that tenant.
+- **`reset_at`** is wall-clock UTC only for daily and monthly windows (midnight UTC / first-of-month UTC).
+- **`token_events`** still stores `trace_id` and `workflow_id` as correlation, plus the authenticated tenant and principal.
 
 ### PolicyViolation
 

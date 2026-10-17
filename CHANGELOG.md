@@ -10,6 +10,8 @@ New Predictive Authority snapshots use the shared redactor and schema version 2.
 
 Token reservations are a ledger separate from the daily and monthly counters. A window reset does not drop an unreported hold. The hold stays on the window that created it, and the deadline charges that estimate if no verified usage arrives. Client `blocked` or `failed` reports do not cancel it.
 
+Reconciliation of a usage report is one SQLite transaction across every applicable rule. A failure rolls back, so the same guard event can be reported again without a second charge. Session caps are per authenticated principal. Daily and monthly caps are per authenticated tenant. Omitting or rotating a client trace or workflow id does not skip or reset a hard cap. Schema 14 adds those identities to the counters. Older rows keep a null tenant and are not reassigned.
+
 Critical containment. Not tagged or published.
 
 ### P0-7 — Unauthenticated disclosure

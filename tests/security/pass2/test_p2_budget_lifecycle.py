@@ -170,7 +170,7 @@ def test_concurrent_reservations_cannot_exceed_the_hard_cap(tmp_path):
         local = TokenBudgetStore(store.db_path, clock=lambda: _box_now(), reservation_ttl=3600)
         barrier.wait(timeout=5)
         try:
-            local.pre_check(_action("shared-cap"), _payload(), rules, tenant_id="default", principal_hash=name)
+            local.pre_check(_action("shared-cap"), _payload(), rules, tenant_id="default", principal_hash="shared")
             results.append("ok")
         except PolicyViolation:
             results.append("blocked")

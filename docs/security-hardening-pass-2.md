@@ -29,6 +29,8 @@ A log that does not match is stored as `unverified_observation`. Incident views 
 
 Token accounting for an allowed `llm_call` follows the guard event. Reporting `status=blocked` does not skip it. Reporting the same event twice does not charge it twice. If the agent never reports usage, the pre-check reservation remains and still counts toward the cap.
 
+Usage reconciliation for one guard event is a single SQLite transaction: every applicable rule settles, or none of them do. The reservation status is the completion record. A failed or interrupted reconciliation leaves the hold `reserved`, so a retry can apply the actual usage. A repeated or concurrent report for a settled event does not charge it again. A client `failed` / `blocked` / `not_executed` report without usage does not settle the hold and does not prevent a later usage report from doing so. Missing or non-numeric usage is charged at the reserved estimate once (`reported_usd` stays empty). If SQLite stays locked, accounting raises and `/sdk/log` returns HTTP 503 with `usage_accounted: false`. The model call is not run again.
+
 ### Reservation ledger
 
 Each allowed `llm_call` writes a row in `token_budget_reservations` in the same transaction as the hold. The row keeps the tenant, principal, guard event, action fingerprint, originating window id, estimate, deadline and status (`reserved`, `reconciled`, `expired_charged`, `cancelled_verified`).
@@ -37,9 +39,25 @@ A daily or monthly reset archives the open counter and starts the next allowance
 
 Client `blocked`, `failed` and `not_executed` do not cancel a hold. Only a server decision that prevents execution releases one, as `cancelled_verified`. An unknown outcome with no usage is charged at the reserved estimate. Settled rows older than 90 days can be deleted. Rows still `reserved` are not.
 
+### Budget scope
+
+Trace and workflow ids are correlation fields. They do not open a new allowance.
+
+| Window | Counter | Lifetime |
+| --- | --- | --- |
+| `session` | authenticated tenant + API-key hash | Cumulative. It does not reset when the client changes `trace_id`, and it has no calendar reset. An unreported hold still expires at its deadline. |
+| `daily` | authenticated tenant | UTC calendar day, shared by every principal in that tenant. |
+| `monthly` | authenticated tenant | UTC calendar month, shared by every principal in that tenant. |
+
+The tenant and principal come from the authenticated credential. A client-supplied tenant, principal, trace, or workflow id is not the key. A hard cap whose tenant (or, for a session cap, principal) cannot be established is denied before execution. The block reason is `token budget scope could not be established`. A soft cap in that state returns a warning with `enforced: false` and does not reserve. The decision is the audit record. It does not contain credentials.
+
+Schema 14 adds `tenant_id` and `principal_hash` to the live counter, historical charges, and token events. The old policy/trace unique index is replaced by one that includes the authenticated scope. Rows that already existed keep a null tenant. They are not given to `default` or to any other tenant, and new traffic does not update them. `GET /token-budgets` and the dashboard return only the caller's tenant. `varden budget status` reads the local database, including those legacy rows.
+
 ### Residual risk
 
-The live budget row is still keyed by policy and trace or workflow, which is the existing single-tenant layout. Cross-tenant reconciliation of a reservation is rejected. Two tenants that share one policy id still share that live counter.
+The OSS authentication helper stamps every accepted request with the single OSS tenant id. Two API keys in this build therefore share a daily or monthly cap. They do not share a session cap: that follows the key hash. The ledger isolates tenants when the server passes two tenant ids; this build's HTTP layer does not present a second tenant.
+
+A session counter does not reset on a clock. Changing the policy limit is how an operator clears it. Python interception is not an operating-system sandbox.
 
 ## P0-5 — Session contracts
 
