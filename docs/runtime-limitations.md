@@ -18,5 +18,8 @@ Be candid:
   cannot alone prove against an attacker replacing or truncating the entire
   audit store and any trusted chain head without an external checkpoint.
 * Do not describe the audit chain as “tamper-proof”.
+* `varden audit redact-migrate` rewrites logical event rows and rebuilds hash
+  commitments. It does **not** securely erase prior plaintext from SQLite WAL
+  files, rollback journals, free pages, backups or filesystem snapshots.
 
 Coverage attestation exists specifically so these gaps are visible.

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0 (unreleased) — Security hardening pass 2, phase 1
+
+Critical containment. Not tagged or published.
+
+### P0-1 — Secret redaction
+
+- `redact()` now replaces secret **values** in nested objects. The previous implementation renamed keys such as `password` to `[REDACTED]` and left the value in place.
+- Markers look like `[REDACTED:authorization:3f9a]`. The suffix is an HMAC under a purpose-separated key, scoped by tenant, so it is not a truncated hash of the secret.
+- Guard decisions are still made on the unredacted in-memory action. The stored event, its hash-chain preimage, `/events`, event detail, traces and the SSE payload are the redacted copy.
+- The SDK no longer sends HTTP authentication objects, cookie objects or raw header secrets to the control plane. It sends `credential_signals` (field names only). Subprocess interception sends `env_keys` and `env_changed`, not environment values.
+- `varden audit redact-migrate` rewrites historical logical rows, rebuilds the hash chain, and writes a signed manifest linking the previous chain head to the replacement head. SQLite WAL files, rollback journals, free pages, backups and snapshots can still hold the old plaintext. The command does not securely erase that data.
+
 ## v1.0.3
 
 Security patch on top of 1.0.2. This fix is **not** in the published `v1.0.2` tag.

@@ -55,6 +55,7 @@ from .predictive_authority.routes import register_predictive_authority_routes
 class EventStreamBroker:
     def __init__(self):
         self._subscribers: set[asyncio.Queue] = set()
+        self.last_message: dict[str, Any] | None = None
 
     async def subscribe(self):
         queue: asyncio.Queue = asyncio.Queue()
@@ -65,6 +66,7 @@ class EventStreamBroker:
         self._subscribers.discard(queue)
 
     def publish(self, message: dict[str, Any]):
+        self.last_message = message
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(message)
@@ -172,6 +174,7 @@ def create_app(config: AppConfig) -> FastAPI:
             background.stop()
 
     app = FastAPI(title="Varden Integrated Platform", version="3.0.0", lifespan=lifespan)
+    app.state.event_broker = broker
 
     # Pre-parse body-size enforcement (docs/web-shield-hardening-review.md #8).
     # Must be the outermost user middleware so oversized bodies are rejected
@@ -534,6 +537,13 @@ def create_app(config: AppConfig) -> FastAPI:
             # Always compute lightweight base risk so warned/blocked actions are never shown as riskless.
             action = intelligence.enrich(action)
             meta["scan"]["depth"] = "fast"
+        # Derived signal from a minimized SDK payload. The secret itself is
+        # not present; the field name is enough for the secrets classifier.
+        signals = meta.get("credential_signals")
+        if isinstance(signals, list) and signals:
+            action.classifiers = dict(action.classifiers or {})
+            action.classifiers["secrets"] = True
+            action.classifiers["sensitive"] = True
         # Provenance-aware authority-flow enrichment. Missing provenance becomes
         # explicit unknown — never silent trust. Runs before PolicyEngine.
         action.metadata = meta
@@ -588,9 +598,18 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception:
             pass
 
+        tenant = str(action.tenant_id or "default")
+        secret = config.signing_secret
+        action_dict = redact(action_dict, tenant_id=tenant, master_secret=secret)
+        decision_dict = decision.to_dict() if hasattr(decision, "to_dict") else decision
+        decision_dict = redact(decision_dict, tenant_id=tenant, master_secret=secret)
+        input_payload = redact(input_payload, tenant_id=tenant, master_secret=secret)
+        output_payload = redact(output_payload, tenant_id=tenant, master_secret=secret)
+        error = redact(error, tenant_id=tenant, master_secret=secret) if error is not None else None
+
         event_id = event_store.log(EventRecord.new(
             action=action_dict,
-            decision=decision.to_dict() if hasattr(decision, 'to_dict') else decision,
+            decision=decision_dict,
             status=status,
             input_payload=input_payload,
             output_payload=output_payload,
