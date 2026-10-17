@@ -599,9 +599,13 @@ def _apply_migrations(conn):
     if 13 not in versions:
         # Budget reservations are a ledger. Window counters may reset; the
         # ledger row is the debt and is charged to the window that created it.
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(token_budgets)").fetchall()}
-        if "window_id" not in cols:
-            conn.execute("ALTER TABLE token_budgets ADD COLUMN window_id TEXT")
+        budget_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_budgets'"
+        ).fetchone()
+        if budget_table:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(token_budgets)").fetchall()}
+            if "window_id" not in cols:
+                conn.execute("ALTER TABLE token_budgets ADD COLUMN window_id TEXT")
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS token_budget_reservations (
