@@ -26,7 +26,7 @@ def make_client(tmpdir: str):
 def test_sdk_guard_endpoint_allows_and_logs():
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir)
-        key = client.get('/health').json()['bootstrap_api_key']
+        key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
         body = {
             'action': {'type': 'tool_call', 'tool': 'list_files', 'args': {'path': '/tmp'}, 'agent_name': 'sdk-test'},
             'payload': {'path': '/tmp'},

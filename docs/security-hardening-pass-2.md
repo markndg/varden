@@ -2,6 +2,25 @@
 
 Phase 1 is critical containment for release 1.1.0. It is not a published release.
 
+## P0-7 — Endpoint exposure
+
+Unauthenticated `GET /health` is `{"status":"ok"}`. `GET /sdk/bootstrap` returns `base_url` and the OSS `tenant_id`. It does not return policy rules, API keys, or signing secrets.
+
+A development credential is added to that response only when all of the following hold:
+
+- `VARDEN_ENV=dev`
+- `VARDEN_ENABLE_DEV_BOOTSTRAP=true`
+- the TCP peer is loopback (`127.0.0.1`, `::1`, `localhost`, or the in-process test client)
+- `VARDEN_UNSAFE_DEV_BIND` is not set
+
+`X-Forwarded-For` is not a loopback proof. It is read only when the direct peer is listed in `VARDEN_TRUSTED_PROXY_HOSTS`.
+
+`AppConfig.from_env` defaults to production and leaves bootstrap off. Binding dev mode to `0.0.0.0` fails startup unless `VARDEN_UNSAFE_DEV_BIND=true`, and that flag still does not publish the admin key.
+
+Interactive API docs are disabled outside development unless `VARDEN_ENABLE_API_DOCS=true`.
+
+`tests/security/pass2/test_p2_endpoint_exposure.py` keeps the allowlist of unauthenticated routes. A new route that does not call `require` fails that test until the allowlist is updated on purpose.
+
 ## P0-6 — Audit evidence
 
 `/sdk/guard` returns `event_id` and stores an `audit_binding` of tenant, principal hash and action fingerprint. `/sdk/log` may cite that id. The server loads its own decision. The client's `decision`, approval id and coverage fields are not the record.
@@ -59,6 +78,8 @@ Order of operations:
 1. The raw action is received and canonicalised.
 2. Classifiers and policy run on that unredacted object.
 3. A separate redacted copy is what gets stored, hashed into the audit chain, and published on `/events`, event detail, traces and SSE.
+
+Predictive Authority snapshots are redacted by the snapshot builder before `content_hash` is stamped. They are not passed through the persistence redactor again afterwards, because that made the stored blob disagree with the hash on the audit event. The snapshot redactor matches secret-like key names and assignment-shaped values. It is narrower than the persistence engine (it does not apply the HMAC marker or the credential-format scan). Wallet, payment and identity field names used by Web Shield stay on the original `SENSITIVE_FIELD_RE`, and the persistence engine now treats those names as sensitive too.
 
 SDK HTTP interception drops `auth` and `cookies` objects and redacts sensitive header values before the guard request. The control plane still receives `metadata.credential_signals`, a list of field names, and treats that as a secrets classification. Subprocess interception sends `env_keys` and `env_changed` and does not send environment values.
 

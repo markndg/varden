@@ -30,7 +30,7 @@ def make_client(tmpdir: str):
 def test_demo_endpoint_and_policy_simulation():
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir)
-        headers = {'x-api-key': client.get('/health').json()['bootstrap_api_key']}
+        headers = {'x-api-key': client.get('/sdk/bootstrap').json()['bootstrap_api_key']}
         seeded = client.post('/demo/run', headers=headers)
         assert seeded.status_code == 200
         payload = seeded.json()

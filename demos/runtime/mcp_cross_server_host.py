@@ -45,7 +45,7 @@ def main() -> int:
     with TemporaryDirectory() as tmpdir:
         client, app = make_app_client(tmpdir, policy=POLICY)
         # Merge runtime-boundary pack rules for realism.
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         from varden.auth import OSS_TENANT_ID, LocalAuth
 
         gateway = LocalAuth(str(Path(tmpdir) / "varden_auth.db"), "dev-secret").create_api_key(

@@ -36,7 +36,7 @@ def test_root_redirects_to_ui():
 def test_blocked_demo_returns_403():
     with TemporaryDirectory() as tmpdir:
         with make_client(tmpdir) as client:
-            key = client.get('/health').json()['bootstrap_api_key']
+            key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
             r = client.post('/demo/tool?tool_name=delete_database', headers={'x-api-key': key}, json={'args': [], 'kwargs': {'target': 'prod'}})
             assert r.status_code == 403
             assert 'BLOCKED' in r.text
@@ -45,7 +45,7 @@ def test_blocked_demo_returns_403():
 def test_dashboard_overview_returns_metrics():
     with TemporaryDirectory() as tmpdir:
         with make_client(tmpdir) as client:
-            key = client.get('/health').json()['bootstrap_api_key']
+            key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
             client.post('/demo/tool?tool_name=list_files', headers={'x-api-key': key}, json={'args': [], 'kwargs': {'path': '/tmp'}})
             r = client.get('/dashboard/overview', headers={'x-api-key': key})
             assert r.status_code == 200
@@ -56,7 +56,7 @@ def test_dashboard_overview_returns_metrics():
 def test_event_detail_endpoint_returns_explainability():
     with TemporaryDirectory() as tmpdir:
         with make_client(tmpdir) as client:
-            key = client.get('/health').json()['bootstrap_api_key']
+            key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
             client.post('/demo/tool?tool_name=list_files', headers={'x-api-key': key}, json={'args': [], 'kwargs': {'path': '/tmp'}})
             events = client.get('/events', headers={'x-api-key': key}).json()['items']
             event_id = events[0]['id']
@@ -71,7 +71,7 @@ def test_event_detail_endpoint_returns_explainability():
 def test_trace_endpoint_returns_graph():
     with TemporaryDirectory() as tmpdir:
         with make_client(tmpdir) as client:
-            key = client.get('/health').json()['bootstrap_api_key']
+            key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
             trace_id = 'trace-demo-1'
             body1 = {'action': {'type': 'tool_call', 'tool': 'list_files', 'args': {'path': '/tmp'}, 'agent_name': 'sdk-test', 'trace_id': trace_id}, 'payload': {'path': '/tmp'}}
             r1 = client.post('/sdk/guard', headers={'x-api-key': key}, json=body1)
@@ -90,7 +90,7 @@ def test_trace_endpoint_returns_graph():
 def test_dashboard_overview_includes_rule_labels_for_non_allow_decisions():
     with TemporaryDirectory() as tmpdir:
         with make_client(tmpdir) as client:
-            key = client.get('/health').json()['bootstrap_api_key']
+            key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
             seeded = client.post('/demo/run', headers={'x-api-key': key})
             assert seeded.status_code == 200
             overview = client.get('/dashboard/overview', headers={'x-api-key': key})

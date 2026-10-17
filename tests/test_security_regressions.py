@@ -50,8 +50,10 @@ def test_prod_config_rejects_published_demo_keys(tmp_path):
     assert cfg.validate() == []
     client = TestClient(create_app(cfg))
     health = client.get("/health").json()
-    assert health["bootstrap_api_key"] is None
-    assert health["bootstrap_bearer_token"] is None
+    assert health == {"status": "ok"}
+    bootstrap = client.get("/sdk/bootstrap").json()
+    assert "bootstrap_api_key" not in bootstrap
+    assert "default_policy" not in bootstrap
     for key in (DEV_ADMIN_API_KEY, DEV_AGENT_API_KEY):
         assert client.get("/policy", headers={"x-api-key": key}).status_code == 403
         assert client.put("/policy", headers={"x-api-key": key}, json=ALLOW_ALL).status_code == 403
@@ -66,7 +68,7 @@ def test_demo_keys_revoked_when_dev_db_is_reused_in_prod(tmp_path):
 
 def test_dev_bearer_token_invalid_after_secret_rotation(tmp_path):
     dev = TestClient(create_app(_cfg(tmp_path, signing_secret="change-me")))
-    token = dev.get("/health").json()["bootstrap_bearer_token"]
+    token = dev.get("/sdk/bootstrap").json()["bootstrap_bearer_token"]
     assert dev.get("/policy", headers={"Authorization": f"Bearer {token}"}).status_code == 200
     prod = TestClient(create_app(_prod(tmp_path)))
     assert prod.get("/policy", headers={"Authorization": f"Bearer {token}"}).status_code == 403
@@ -177,7 +179,8 @@ def test_userinfo_exfil_url_is_guarded_end_to_end(tmp_path, monkeypatch):
 def test_agent_role_can_ingest_but_not_administer(tmp_path):
     client = TestClient(create_app(_cfg(tmp_path)))
     boot = client.get("/sdk/bootstrap").json()
-    assert boot["bootstrap_api_key"] == DEV_AGENT_API_KEY and boot["bootstrap_role"] == "agent"
+    assert boot["bootstrap_agent_api_key"] == DEV_AGENT_API_KEY
+    assert boot["bootstrap_api_key"] == DEV_ADMIN_API_KEY
     h = {"x-api-key": DEV_AGENT_API_KEY}
     guard = client.post("/sdk/guard", headers=h, json={"action": {"type": "tool_call", "tool": "ls"}, "payload": {}})
     assert guard.status_code == 200

@@ -22,10 +22,13 @@ MAX_DEPTH = 32
 MAX_NODES = 8_000
 MAX_STRING = 8_192
 
-# Used by Web Shield capability inference. Kept stable so field detection
-# does not change as a side effect of persistence redaction.
+# Shared with Web Shield capability inference. Do not narrow this pattern:
+# capability mismatch depends on it, including wallet and payment fields.
 SENSITIVE_FIELD_RE = re.compile(
-    r"(password|secret|api[_-]?key|private[_-]?key|credit\s*card|token)",
+    r"(wallet|private[_\-]?key|seed[_\-]?phrase|mnemonic|password|passwd|secret|api[_\-]?key|"
+    r"auth(entication)?[_\-]?token|access[_\-]?token|session[_\-]?token|cookie|"
+    r"credit[_\-]?card|card[_\-]?number|cvv|cvc|ssn|social[_\-]?security|bank[_\-]?account|"
+    r"routing[_\-]?number|iban|swift|clipboard)",
     re.IGNORECASE,
 )
 
@@ -123,7 +126,9 @@ def sensitive_key(key: str) -> bool:
         return False
     if text in _KEY_EXACT:
         return True
-    return _KEY_PATTERN.search(text) is not None
+    if SENSITIVE_FIELD_RE.search(text) or _KEY_PATTERN.search(text):
+        return True
+    return False
 
 
 def _entropy(value: str) -> float:

@@ -4,6 +4,23 @@
 
 Critical containment. Not tagged or published.
 
+### P0-7 — Unauthenticated disclosure
+
+- `GET /health` returns `{"status":"ok"}`. Operational detail is on `GET /health/detail` and requires a viewer credential. It does not return keys or signing material.
+- `GET /sdk/bootstrap` no longer returns the policy. Development credentials are returned only for an explicit dev bootstrap on a loopback connection. `X-Forwarded-For` is ignored unless `VARDEN_TRUSTED_PROXY_HOSTS` lists the direct peer.
+- Process startup (`AppConfig.from_env`) defaults to `VARDEN_ENV=production` with dev bootstrap off. Local development sets `VARDEN_ENV=dev` and `VARDEN_ENABLE_DEV_BOOTSTRAP=true`.
+- Dev mode refuses a non-loopback bind unless `VARDEN_UNSAFE_DEV_BIND=true`. That override does not enable unauthenticated credential disclosure.
+- `/docs`, `/redoc` and `/openapi.json` are off outside development unless `VARDEN_ENABLE_API_DOCS=true`.
+
+### Upgrade
+
+```text
+VARDEN_ENV=dev
+VARDEN_ENABLE_DEV_BOOTSTRAP=true
+```
+
+Leave both unset on a production host. Create the first operator key with `varden keys create` or `VARDEN_BOOTSTRAP_ADMIN_API_KEY`.
+
 ### P0-6 — Server-owned audit decisions
 
 - `POST /sdk/log` no longer stores a client-supplied decision, matched rule, approval or coverage claim as if the control plane had produced it.

@@ -56,7 +56,7 @@ def _stored_decision(client, key, event_id):
 
 def test_forged_decisions_are_not_authoritative(tmp_path):
     client, _app = make_app_client(str(tmp_path), policy=_policy())
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     auth = LocalAuth(str(Path(tmp_path) / "varden_auth.db"), "dev-secret")
     agent_a = auth.create_api_key(tenant_id=OSS_TENANT_ID, role="agent")["api_key"]
     agent_b = auth.create_api_key(tenant_id=OSS_TENANT_ID, role="agent")["api_key"]
@@ -107,7 +107,7 @@ def test_forged_decisions_are_not_authoritative(tmp_path):
 
 def test_other_tenant_event_is_not_bound(tmp_path):
     client, _app = make_app_client(str(tmp_path), policy=_policy())
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     foreign = EventStore(str(Path(tmp_path) / "varden.db")).log(
         {
             "timestamp": 1.0,
@@ -127,7 +127,7 @@ def test_other_tenant_event_is_not_bound(tmp_path):
 
 def test_client_status_cannot_skip_or_duplicate_budget_accounting(tmp_path):
     client, _app = make_app_client(str(tmp_path), policy=_policy(0.5))
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     action = {
         "type": "llm_call",
         "tool": "openai.responses.create",
@@ -177,7 +177,7 @@ def test_client_status_cannot_skip_or_duplicate_budget_accounting(tmp_path):
 
 def test_omitted_usage_report_still_holds_the_reservation(tmp_path):
     client, _app = make_app_client(str(tmp_path), policy=_policy(0.4))
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     action = {
         "type": "llm_call",
         "tool": "openai.responses.create",

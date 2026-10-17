@@ -39,7 +39,7 @@ def _client(tmp_path: Path, policy: dict | None = None) -> TestClient:
 
 def test_gauntlet_agent_cannot_put_policy(tmp_path):
     client = _client(tmp_path)
-    boot = client.get("/health").json()
+    boot = client.get("/sdk/bootstrap").json()
     agent_key = boot["bootstrap_agent_api_key"]
     weak = {
         "block": [],
@@ -64,7 +64,7 @@ def test_gauntlet_agent_cannot_put_policy(tmp_path):
 
 def test_gauntlet_malformed_policy_rejected_preserves_prior(tmp_path):
     client = _client(tmp_path)
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     prior = client.get("/policy", headers={"x-api-key": admin}).json()
     bad = {"block": "not-a-list", "warn": [], "monitor": [], "allow": []}
     r = client.put("/policy", headers={"x-api-key": admin}, json=bad)
@@ -148,8 +148,8 @@ def test_gauntlet_concurrent_policy_update_uses_coherent_snapshot(tmp_path):
 
 def test_gauntlet_legitimate_admin_policy_update_still_works(tmp_path):
     client = _client(tmp_path)
-    admin = client.get("/health").json()["bootstrap_api_key"]
-    agent = client.get("/health").json()["bootstrap_agent_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    agent = client.get("/sdk/bootstrap").json()["bootstrap_agent_api_key"]
     # Initially blocked
     assert client.post(
         "/sdk/guard",
@@ -176,8 +176,8 @@ def test_gauntlet_legitimate_admin_policy_update_still_works(tmp_path):
 
 def test_gauntlet_vacuous_put_refused_preserves_prior(tmp_path):
     client = _client(tmp_path)
-    admin = client.get("/health").json()["bootstrap_api_key"]
-    agent = client.get("/health").json()["bootstrap_agent_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+    agent = client.get("/sdk/bootstrap").json()["bootstrap_agent_api_key"]
     prior = client.get("/policy", headers={"x-api-key": admin}).json()
     vacuous = {"block": [], "warn": [], "monitor": [], "allow": []}
     r = client.put("/policy", headers={"x-api-key": admin}, json=vacuous)
@@ -193,7 +193,7 @@ def test_gauntlet_vacuous_put_refused_preserves_prior(tmp_path):
 
 def test_gauntlet_partial_put_missing_bucket_refused(tmp_path):
     client = _client(tmp_path)
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     # Omitting allow (client treating PUT as PATCH) must not wipe
     partial = {"block": [], "warn": [], "monitor": []}
     r = client.put("/policy", headers={"x-api-key": admin}, json=partial)
@@ -203,7 +203,7 @@ def test_gauntlet_partial_put_missing_bucket_refused(tmp_path):
 
 def test_gauntlet_explicit_vacuous_opt_in_allowed(tmp_path):
     client = _client(tmp_path)
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     vacuous = {
         "block": [],
         "warn": [],
@@ -218,7 +218,7 @@ def test_gauntlet_explicit_vacuous_opt_in_allowed(tmp_path):
 
 def test_gauntlet_deny_by_default_empty_buckets_allowed(tmp_path):
     client = _client(tmp_path)
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     deny = {
         "block": [],
         "warn": [],

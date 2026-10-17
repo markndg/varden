@@ -97,7 +97,7 @@ def test_sdk_guard_blocks_llm_call_when_budget_exceeded():
             rate_limit_per_minute=1000,
         )
         with TestClient(create_app(cfg)) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             body = {
                 "action": {
                     "type": "llm_call",
@@ -126,7 +126,7 @@ def test_sdk_log_increments_budget(tmp_path):
             rate_limit_per_minute=1000,
         )
         with TestClient(create_app(cfg)) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             action = {
                 "type": "llm_call",
                 "tool": "openai",

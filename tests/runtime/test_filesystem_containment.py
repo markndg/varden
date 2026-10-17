@@ -182,7 +182,7 @@ def test_interceptor_blocks_secret_via_symlink(tmp_path):
     }
     with TemporaryDirectory() as td:
         client, _app = make_app_client(td, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         ws = Path(td) / "ws"
         ws.mkdir()
         outside = Path(td) / "outside"
@@ -217,7 +217,7 @@ def test_interceptor_rename_destination_ci(tmp_path):
     }
     with TemporaryDirectory() as td:
         client, _app = make_app_client(td, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         ws = Path(td) / "ws"
         workflows = ws / ".github" / "workflows"
         workflows.mkdir(parents=True)
@@ -241,7 +241,7 @@ def test_normal_workspace_write_still_allowed_when_not_sensitive(tmp_path):
 
     with TemporaryDirectory() as td:
         client, _app = make_app_client(td)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         ws = Path(td) / "ws"
         ws.mkdir()
         prev = os.getcwd()
@@ -271,7 +271,7 @@ def test_delete_secret_blocked(tmp_path):
     }
     with TemporaryDirectory() as td:
         client, _app = make_app_client(td, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         ws = Path(td) / "ws"
         ws.mkdir()
         secret = ws / "id_rsa"

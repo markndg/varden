@@ -45,7 +45,7 @@ def _client(tmpdir: str, **overrides) -> TestClient:
 
 
 def _bootstrap_headers(client: TestClient) -> dict:
-    key = client.get("/health").json()["bootstrap_api_key"]
+    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     return {"x-api-key": key}
 
 

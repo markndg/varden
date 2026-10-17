@@ -27,7 +27,7 @@ def test_approval_race_exactly_one_consumes():
                 "allow": [],
             },
         )
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         headers = {"x-api-key": key}
         action = {"type": "tool_call", "tool": "needs_approval", "args": {"t": 1}, "trace_id": "race"}
         first = client.post("/sdk/guard", headers=headers, json={"action": action, "payload": action["args"]})
@@ -50,7 +50,7 @@ def test_approval_race_exactly_one_consumes():
 def test_coverage_forgery_ignored():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         action = {
             "type": "tool_call",
             "tool": "list_files",
@@ -77,7 +77,7 @@ def test_coverage_forgery_ignored():
 def test_interceptor_tamper_downgrades_coverage():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         original = requests.sessions.Session.request
         guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
         wire_guard_to_app(guard, client)
@@ -102,7 +102,7 @@ def test_mcp_host_cross_server_blocks_without_manual_provenance_injection():
             "allow": [],
         }
         client, _ = make_app_client(tmpdir, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         from varden.auth import OSS_TENANT_ID, LocalAuth
 
         gateway = LocalAuth(str(Path(tmpdir) / "varden_auth.db"), "dev-secret").create_api_key(
@@ -193,7 +193,7 @@ def test_strict_allow_uncovered_mcp():
 def test_mode_lock_rejects_silent_downgrade():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             varden.protect(
                 mode="strict",
@@ -228,7 +228,7 @@ def test_db_audit_failure_does_not_convert_block_to_allow():
                 "allow": [],
             },
         )
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         with patch.object(EventStore, "log", side_effect=RuntimeError("db down")):
             r = client.post(
                 "/sdk/guard",

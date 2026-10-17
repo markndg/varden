@@ -188,7 +188,7 @@ def test_control_plane_rejects_an_unregistered_or_forged_contract(tmp_path):
         orig_path=str(tmp_path),
     )
     client, _app = make_app_client(str(tmp_path))
-    key = client.get("/health").json()["bootstrap_api_key"]
+    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     forged = dict(contract)
     forged["signature"] = "0" * 64
     rejected = client.post("/runtime/session/contract", headers={"x-api-key": key}, json=forged)

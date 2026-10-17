@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -174,7 +174,15 @@ def create_app(config: AppConfig) -> FastAPI:
         finally:
             background.stop()
 
-    app = FastAPI(title="Varden Integrated Platform", version="3.0.0", lifespan=lifespan)
+    publish_docs = config.env == "dev" or config.enable_api_docs
+    app = FastAPI(
+        title="Varden Integrated Platform",
+        version="3.0.0",
+        lifespan=lifespan,
+        docs_url="/docs" if publish_docs else None,
+        redoc_url="/redoc" if publish_docs else None,
+        openapi_url="/openapi.json" if publish_docs else None,
+    )
     app.state.event_broker = broker
 
     # Pre-parse body-size enforcement (docs/web-shield-hardening-review.md #8).
@@ -735,32 +743,44 @@ def create_app(config: AppConfig) -> FastAPI:
     def root():
         return RedirectResponse(url="/ui")
 
+    _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+    def _peer_host(request: Request) -> str:
+        peer = request.client.host if request.client else ""
+        if peer in set(config.trusted_proxy_hosts or ()):
+            forwarded = request.headers.get("x-forwarded-for", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+        return peer
+
+    def _dev_credentials_visible(request: Request) -> bool:
+        if config.env != "dev" or not config.enable_dev_bootstrap or config.unsafe_dev_bind:
+            return False
+        return _peer_host(request) in _LOOPBACK_HOSTS
+
     @app.get("/health")
     def health_summary():
+        return {"status": "ok"}
+
+    @app.get("/health/detail")
+    def health_detail(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "viewer", scope="read")
         return {
             "status": "ok",
-            "bootstrap_api_key": bootstrap_key["api_key"] if config.enable_dev_bootstrap else None,
-            "bootstrap_bearer_token": bootstrap_token if config.enable_dev_bootstrap else None,
-            "bootstrap_agent_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
-            "tenant_id": OSS_TENANT_ID,
-            "metrics": event_store.metrics(OSS_TENANT_ID),
-            "public_base_url": config.public_base_url,
-            "auth_mode": config.auth_mode,
             "env": config.env,
+            "auth_mode": config.auth_mode,
             "scan_mode": current_scan_mode["value"],
+            "public_base_url": config.public_base_url,
         }
 
     @app.get("/sdk/bootstrap")
-    def sdk_bootstrap():
-        return {
-            "base_url": config.public_base_url,
-            # Protected processes get the ingest-only agent key, never an admin key.
-            "bootstrap_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
-            "bootstrap_role": "agent" if config.enable_dev_bootstrap else None,
-            "tenant_id": OSS_TENANT_ID,
-            "default_policy": policy.get_policy(),
-            "scan_mode": current_scan_mode["value"],
-        }
+    def sdk_bootstrap(request: Request):
+        body = {"base_url": config.public_base_url, "tenant_id": OSS_TENANT_ID}
+        if _dev_credentials_visible(request):
+            body["bootstrap_api_key"] = bootstrap_key["api_key"]
+            body["bootstrap_agent_api_key"] = bootstrap_agent_key["api_key"]
+            body["bootstrap_bearer_token"] = bootstrap_token
+        return body
 
     @app.get("/auth/whoami")
     def auth_whoami(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -848,14 +868,14 @@ def create_app(config: AppConfig) -> FastAPI:
         return dashboard_bootstrap_payload(record["tenant_id"])
 
     @app.get("/ui/bootstrap")
-    def ui_bootstrap(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+    def ui_bootstrap(request: Request, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
         """Return everything the UI needs in one shaped payload.
 
         In local/dev bootstrap mode the UI can start with no prior token and receive a
         bootstrap API key plus the initial dashboard snapshot in a single round-trip.
         In normal mode this endpoint behaves like the authenticated dashboard bootstrap.
         """
-        if config.enable_dev_bootstrap and not x_api_key and not authorization:
+        if _dev_credentials_visible(request) and not x_api_key and not authorization:
             # Dev/demo only — AppConfig.validate() refuses enable_dev_bootstrap
             # when env != "dev". Production must not expose bootstrap credentials.
             payload = dashboard_bootstrap_payload(OSS_TENANT_ID)

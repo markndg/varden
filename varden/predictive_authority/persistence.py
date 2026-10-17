@@ -159,9 +159,6 @@ def persist_predictive_snapshot(
     content_hash = expected or snapshot.get("content_hash")
     store = PredictiveSnapshotStore(db_path)
     tid = tenant_id or getattr(action, "tenant_id", None)
-    from varden.redaction import redact
-
-    snapshot = redact(snapshot, tenant_id=str(tid or "default"))
     return store.save(
         event_id=int(event_id),
         tenant_id=str(tid) if tid is not None else None,

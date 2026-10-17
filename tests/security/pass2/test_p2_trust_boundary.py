@@ -104,7 +104,7 @@ def test_agent_cannot_write_session_provenance_and_gateway_cannot_elevate():
                 "allow": [],
             },
         )
-        admin = client.get("/health").json()["bootstrap_api_key"]
+        admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         auth = LocalAuth(str(Path(tmp) / "varden_auth.db"), "dev-secret")
         agent = auth.create_api_key(tenant_id=OSS_TENANT_ID, role="agent")["api_key"]
         gateway = auth.create_api_key(tenant_id=OSS_TENANT_ID, role="gateway")["api_key"]

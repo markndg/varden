@@ -117,7 +117,7 @@ def test_http_canary_does_not_reach_storage_or_sse():
     try:
         with TemporaryDirectory() as tmp:
             client, app = make_app_client(tmp)
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
             wire_guard_to_app(guard, client)
             import httpx
@@ -145,7 +145,7 @@ def test_http_canary_does_not_reach_storage_or_sse():
 def test_subprocess_environment_values_are_not_transmitted():
     with TemporaryDirectory() as tmp:
         client, _app = make_app_client(tmp)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
         wire_guard_to_app(guard, client)
         marker = Path(tmp) / "ran"

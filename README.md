@@ -1288,7 +1288,9 @@ See:
 - `deploy/self_hosting.md`
 - `deploy/operations.md`
 
-Local defaults use SQLite.
+Local defaults use SQLite. Process startup defaults to production.
+For a laptop with the published demo keys, set `VARDEN_ENV=dev` and
+`VARDEN_ENABLE_DEV_BOOTSTRAP=true`, and keep the bind address on loopback.
 
 Outside:
 

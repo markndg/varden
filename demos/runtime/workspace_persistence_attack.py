@@ -25,7 +25,7 @@ def main() -> int:
         (ws / "src" / "example.py").write_text("print('ok')\n", encoding="utf-8")
 
         client, app = make_app_client(tmpdir, policy=pack)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         headers = {"x-api-key": key}
         guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
         wire_guard_to_app(guard, client)
