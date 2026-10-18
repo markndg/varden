@@ -86,7 +86,7 @@ def test_strict_missing_coverage_fails_startup():
 def test_coverage_endpoint():
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         r = client.get("/runtime/coverage", headers={"x-api-key": key})
         assert r.status_code == 200
         body = r.json()
@@ -98,7 +98,7 @@ def test_approval_issue_retry_consume_replay():
     """Invariants 2–4: approval required, scoped, single-use."""
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         headers = {"x-api-key": key}
         action = {
             "type": "tool_call",
@@ -159,7 +159,7 @@ def test_approval_issue_retry_consume_replay():
 def test_client_cannot_forge_approval_flag():
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         action = {
             "type": "tool_call",
             "tool": "needs_approval",
@@ -182,7 +182,7 @@ def test_blocked_http_never_sends_body():
             "allow": [],
         }
         client, app = make_app_client(tmpdir, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         sent = {"called": False}
         try:
             guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)

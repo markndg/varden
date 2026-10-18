@@ -19,7 +19,7 @@ def main() -> int:
     print("STRICT DOWNGRADE ATTACK")
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         guard = varden.protect(
             mode="strict",
             fail_mode="closed",

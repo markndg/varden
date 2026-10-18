@@ -167,7 +167,7 @@ def test_api_rejects_misspelled_policy(tmp_path):
     cfg = AppConfig(env="dev", db_path=str(tmp_path / "v.db"), auth_db_path=str(tmp_path / "a.db"),
                     policy_file=str(policy), signing_secret="dev-secret", rate_limit_per_minute=10_000)
     client = TestClient(create_app(cfg))
-    key = client.get("/health").json()["bootstrap_api_key"]
+    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     r = client.put("/policy", headers={"x-api-key": key}, json={"block": [{"classifier:secret": True}]})
     assert r.status_code == 400
     assert "secrets" in json.dumps(r.json())
@@ -179,7 +179,7 @@ def test_imported_pack_blocks_reordered_flags_end_to_end(tmp_path):
     cfg = AppConfig(env="dev", db_path=str(tmp_path / "v.db"), auth_db_path=str(tmp_path / "a.db"),
                     policy_file=str(policy), signing_secret="dev-secret", rate_limit_per_minute=10_000)
     client = TestClient(create_app(cfg))
-    admin = client.get("/health").json()["bootstrap_api_key"]
+    admin = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     r = client.post("/policy/import-pack", headers={"x-api-key": admin},
                     json={"pack_id": "destructive-tools-and-infra", "mode": "merge"})
     assert r.status_code == 200, r.text

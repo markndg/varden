@@ -47,7 +47,7 @@ def test_merge_policy_pack_adds_rules_without_duplicates():
 def test_policy_pack_api_list_get_and_import():
     with TemporaryDirectory() as tmpdir:
         with _client(tmpdir) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             headers = {"x-api-key": key}
             listed = client.get("/policy/packs", headers=headers)
             assert listed.status_code == 200

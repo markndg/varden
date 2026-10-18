@@ -78,6 +78,8 @@ def test_token_budget_store_records_usage_after_log(tmp_path):
         input_payload={"kwargs": {"model": "gpt-4o"}},
         output_payload={"usage": {"input_tokens": 1000, "output_tokens": 500}, "model": "gpt-4o"},
         rules=rules,
+        tenant_id="default",
+        principal_hash="principal",
     )
     rows = store.list_active_budgets()
     assert rows
@@ -97,7 +99,7 @@ def test_sdk_guard_blocks_llm_call_when_budget_exceeded():
             rate_limit_per_minute=1000,
         )
         with TestClient(create_app(cfg)) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             body = {
                 "action": {
                     "type": "llm_call",
@@ -126,14 +128,18 @@ def test_sdk_log_increments_budget(tmp_path):
             rate_limit_per_minute=1000,
         )
         with TestClient(create_app(cfg)) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
+            action = {
+                "type": "llm_call",
+                "tool": "openai",
+                "trace_id": "log-trace",
+                "workflow_id": "log-wf",
+            }
+            guarded = client.post("/sdk/guard", headers={"x-api-key": key}, json={"action": action, "payload": {}})
+            assert guarded.status_code == 200
             body = {
-                "action": {
-                    "type": "llm_call",
-                    "tool": "openai",
-                    "trace_id": "log-trace",
-                    "workflow_id": "log-wf",
-                },
+                "guard_event_id": guarded.json()["event_id"],
+                "action": guarded.json()["action"],
                 "decision": {"action": "allow", "reason": "ok"},
                 "status": "allowed",
                 "output_payload": {

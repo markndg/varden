@@ -1,5 +1,66 @@
 # Changelog
 
+## 1.1.0 (unreleased) — Security hardening pass 2, phase 1
+
+### Predictive snapshots
+
+New Predictive Authority snapshots use the shared redactor and schema version 2. `content_hash` is the SHA-256 of the canonical bytes that are stored. Older snapshots still verify. Plaintext in those rows is withheld from APIs. Replacing one records the original hash; it does not wipe SQLite free pages.
+
+### Budget reservations
+
+Token reservations are a ledger separate from the daily and monthly counters. A window reset does not drop an unreported hold. The hold stays on the window that created it, and the deadline charges that estimate if no verified usage arrives. Client `blocked` or `failed` reports do not cancel it.
+
+Reconciliation of a usage report is one SQLite transaction across every applicable rule. A failure rolls back, so the same guard event can be reported again without a second charge. Session caps are per authenticated principal. Daily and monthly caps are per authenticated tenant. Omitting or rotating a client trace or workflow id does not skip or reset a hard cap. Schema 14 adds those identities to the counters. Older rows keep a null tenant and are not reassigned.
+
+Each guard decision now stores server-owned `budget_evidence` on the audit event, and the reservation stores the rule snapshot used for the estimate. Usage is reconciled from that evidence. Deleting, disabling, or repricing a rule afterwards does not change the hold. A rule added later does not apply to a guard that was recorded as unbudgeted. A missing reservation that the evidence says should exist is `accounting_integrity_failure` (HTTP 409) and is recorded in `token_budget_accounting_findings` (schema 15). It is not reported as successful accounting. A guard with no applicable rule is `legitimately_unbudgeted`. A historical guard with no evidence is `legacy_evidence_insufficient` and is not backfilled. `/sdk/log` returns `accounting_status` next to `usage_accounted`. An SDK that omits `guard_event_id` stays an unverified observation and is not charged. `log_result` returns a 409 integrity body instead of raising, so the model call is not repeated.
+
+Critical containment. Not tagged or published.
+
+### P0-7 — Unauthenticated disclosure
+
+- `GET /health` returns `{"status":"ok"}`. Operational detail is on `GET /health/detail` and requires a viewer credential. It does not return keys or signing material.
+- `GET /sdk/bootstrap` no longer returns the policy. Development credentials are returned only for an explicit dev bootstrap on a loopback connection. `X-Forwarded-For` is ignored unless `VARDEN_TRUSTED_PROXY_HOSTS` lists the direct peer.
+- Process startup (`AppConfig.from_env`) defaults to `VARDEN_ENV=production` with dev bootstrap off. Local development sets `VARDEN_ENV=dev` and `VARDEN_ENABLE_DEV_BOOTSTRAP=true`.
+- Dev mode refuses a non-loopback bind unless `VARDEN_UNSAFE_DEV_BIND=true`. That override does not enable unauthenticated credential disclosure.
+- `/docs`, `/redoc` and `/openapi.json` are off outside development unless `VARDEN_ENABLE_API_DOCS=true`.
+
+### Upgrade
+
+```text
+VARDEN_ENV=dev
+VARDEN_ENABLE_DEV_BOOTSTRAP=true
+```
+
+Leave both unset on a production host. Create the first operator key with `varden keys create` or `VARDEN_BOOTSTRAP_ADMIN_API_KEY`.
+
+### P0-6 — Server-owned audit decisions
+
+- `POST /sdk/log` no longer stores a client-supplied decision, matched rule, approval or coverage claim as if the control plane had produced it.
+- A log is an authoritative execution report only when it names a guard `event_id` for the same tenant, the same credential, and the same action fingerprint. The stored decision is the one the server recorded at `/sdk/guard`. Anything else is an `unverified_observation`.
+- Client `status=blocked` no longer skips token-budget accounting. A repeated report for the same guard event is not charged twice. Omitting the report leaves a ledger reservation. A daily or monthly reset does not delete it; the deadline charges the estimate to the window that created it.
+- An older SDK that logs without `guard_event_id` is accepted only as an unverified observation. It cannot create an allow, a block, an approval, or enforced coverage.
+
+### P0-5 — Session fail-closed contracts
+
+- `varden session` set `VARDEN_FAIL_MODE=closed` while the shim read `VARDEN_MONITOR_FAIL_MODE`, which defaulted to `open`. A guarded command ran when the control plane was down.
+- Guarded and strict shims now execute only after a signed session contract verifies and the control plane confirms it. A missing, expired, mismatched or altered contract does not run the command. Environment variables cannot downgrade the contract mode or fail mode.
+- Observe mode, when that is the mode in the signed contract, still runs if the control plane is down.
+- The contract file is not an OS sandbox. The verification key is in the child environment. The same user can replace that key and the contract, point the shim at another confirm URL, skip the shim, or run the real binary. Subprocess coverage stays short of `ENFORCED`.
+
+### P0-3 — Provenance authority
+
+- Client-supplied provenance can no longer assert `internal`, `trusted`, `delegated` or any other privileged trust level. Those claims are recorded as `unknown` with `forged_trust_claim`. `unknown`, `untrusted` and `hostile` stay distinct.
+- `provenance_complete` is computed by the server. A client flag cannot mark a source complete.
+- `POST /runtime/session/provenance` requires a `gateway` credential. An agent credential receives 403. A gateway that asserts privileged trust also receives 403. Continuity posts from the MCP gateway and host use `VARDEN_GATEWAY_API_KEY` and are skipped when that key is absent.
+
+### P0-1 — Secret redaction
+
+- `redact()` now replaces secret **values** in nested objects. The previous implementation renamed keys such as `password` to `[REDACTED]` and left the value in place.
+- Markers look like `[REDACTED:authorization:3f9a]`. The suffix is an HMAC under a purpose-separated key, scoped by tenant, so it is not a truncated hash of the secret.
+- Guard decisions are still made on the unredacted in-memory action. The stored event, its hash-chain preimage, `/events`, event detail, traces and the SSE payload are the redacted copy.
+- The SDK no longer sends HTTP authentication objects, cookie objects or raw header secrets to the control plane. It sends `credential_signals` (field names only). Subprocess interception sends `env_keys` and `env_changed`, not environment values.
+- `varden audit redact-migrate` rewrites historical logical rows, rebuilds the hash chain, and writes a signed manifest linking the previous chain head to the replacement head. A failure before commit rolls back. A second run does not move the chain head again. SQLite WAL files, rollback journals, free pages, backups and snapshots can still hold the old plaintext. The command does not securely erase that data. The operator steps are in `docs/security-hardening-pass-2.md`.
+
 ## v1.0.3
 
 Security patch on top of 1.0.2. This fix is **not** in the published `v1.0.2` tag.

@@ -91,7 +91,7 @@ def test_agent_cannot_forge_predictive_audit_metadata(tmp_path, monkeypatch):
     r = client.post("/sdk/guard", headers=AGENT, json={
         "action": {"type": "tool_call", "tool": "ls", "trace_id": "forge", "metadata": forged}, "payload": {}})
     assert r.status_code == 200
-    admin = {"x-api-key": client.get("/health").json()["bootstrap_api_key"]}
+    admin = {"x-api-key": client.get("/sdk/bootstrap").json()["bootstrap_api_key"]}
     event = client.get(f"/events/{r.json()['event_id']}", headers=admin).json()
     stored_meta = (event.get("action") or {}).get("metadata") or {}
     assert "predictive_authority" not in stored_meta
@@ -209,7 +209,7 @@ def test_read_routes_refuse_foreign_tenant_but_allow_own_and_demo(tmp_path):
 def test_sanitised_webshield_output_is_not_claimed_prevented(tmp_path):
     client = _client(tmp_path, {"block": [], "require_approval": [], "sanitise": [{"type": "webmcp.tool_output_scanned"}],
                                 "warn": [], "monitor": [], "allow": []})
-    admin = {"x-api-key": client.get("/health").json()["bootstrap_api_key"]}
+    admin = {"x-api-key": client.get("/sdk/bootstrap").json()["bootstrap_api_key"]}
     tool = {"name": "weather", "description": "Get weather", "inputSchema": {"type": "object", "properties": {}}}
     reg = client.post("/webshield/registrations", headers=admin,
                       json={"session_id": "s", "owner_origin": "https://docs.test", "tool": tool}).json()

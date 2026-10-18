@@ -45,7 +45,7 @@ def _client(tmpdir: str, **overrides) -> TestClient:
 
 
 def _bootstrap_headers(client: TestClient) -> dict:
-    key = client.get("/health").json()["bootstrap_api_key"]
+    key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
     return {"x-api-key": key}
 
 
@@ -376,7 +376,8 @@ def test_invocation_request_creates_approval_for_mutating_first_seen_tool():
             # Secrets must never be persisted verbatim.
             approvals = client.get("/webshield/approvals", headers=headers).json()["items"]
             stored_args = json.loads(approvals[0]["args_summary_json"])
-            assert stored_args["password"] == "[REDACTED]"
+            assert str(stored_args["password"]).startswith("[REDACTED:")
+            assert "hunter2" not in str(stored_args["password"])
 
             request_id = body["approval"]["request_id"]
             resolved = client.post(f"/webshield/approvals/{request_id}/resolve", json={"decision": "trust_origin"}, headers=headers)

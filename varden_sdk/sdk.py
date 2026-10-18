@@ -167,12 +167,22 @@ class VardenClient:
                 decision if isinstance(decision, dict) else None,
             )
         resp.raise_for_status()
-        return GuardResult(decision=data['decision'], action=data['action'], event_id=data.get('event_id'))
+        action = data.get('action') or {}
+        if isinstance(action, dict) and data.get('event_id') is not None:
+            action = {**action, 'guard_event_id': data.get('event_id')}
+        return GuardResult(decision=data['decision'], action=action, event_id=data.get('event_id'))
 
     def log_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.ensure_credentials()
         resp = self._client.post(f'{self.base_url}/sdk/log', headers=self.headers(), json=payload)
         data = _parse_json(resp)
+        # Accounting failed after the log was stored. The model call already
+        # happened; surfacing this as a transport error would invite a retry
+        # of that side effect.
+        if resp.status_code == 409 and isinstance(data, dict):
+            detail = data.get('detail') if isinstance(data.get('detail'), dict) else data
+            if detail.get('logged') and detail.get('accounting_status') == 'accounting_integrity_failure':
+                return detail
         resp.raise_for_status()
         return data
 
@@ -497,6 +507,7 @@ class VardenGuard:
             'output_payload': _json_safe(output_payload),
             'status': _status_from_decision(decision),
             'error': error,
+            'guard_event_id': action.get('guard_event_id'),
         }
         try:
             result = self.client.log_result(payload)
@@ -1003,6 +1014,19 @@ def _is_control_plane_request(url: str | None, guard: VardenGuard) -> bool:
         return not base_path or target_path == base_path or target_path.startswith(base_path + '/')
     except Exception:
         return False
+def _minimize_http_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    from varden.redaction import minimize_http_for_transport
+
+    return minimize_http_for_transport(payload)
+
+
+def _minimize_subprocess_payload(args: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    from varden.redaction import minimize_subprocess_env
+
+    safe_kwargs = minimize_subprocess_env(_json_safe(kwargs) if isinstance(kwargs, dict) else {})
+    return {"args": _json_safe(args), "kwargs": safe_kwargs}
+
+
 def _patch_requests(guard: VardenGuard) -> None:
     try:
         import requests
@@ -1019,8 +1043,8 @@ def _patch_requests(guard: VardenGuard) -> None:
             body = kwargs.get('json')
             if body is None:
                 body = _decode_body_value(kwargs.get('data'))
-            payload = {'args': list(args), 'kwargs': _json_safe(kwargs), 'body': _json_safe(body)}
-            result = current.guarded_action(type='http_request', tool='requests', url=url, method=method.upper(), args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}})
+            payload = _minimize_http_payload({'args': list(args), 'kwargs': _json_safe(kwargs), 'body': _json_safe(body)})
+            result = current.guarded_action(type='http_request', tool='requests', url=url, method=method.upper(), args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})})
             if result and result.blocked and _live_enforcing(current):
                 raise VardenBlockedError(f'HTTP request to {url} blocked', result.decision)
             try:
@@ -1053,8 +1077,8 @@ def _patch_httpx(guard: VardenGuard) -> None:
             if _is_control_plane_request(request_url, current):
                 return original(self, request, *args, **kwargs)
             body = _extract_httpx_body(request)
-            payload = {'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)}
-            result = current.guarded_action(type='http_request', tool='httpx', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}})
+            payload = _minimize_http_payload({'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)})
+            result = current.guarded_action(type='http_request', tool='httpx', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})})
             if result and result.blocked and _live_enforcing(current):
                 raise VardenBlockedError(f'HTTPX request to {request.url} blocked', result.decision)
             try:
@@ -1085,8 +1109,8 @@ def _patch_httpx(guard: VardenGuard) -> None:
             if _is_control_plane_request(request_url, current):
                 return await original(self, request, *args, **kwargs)
             body = _extract_httpx_body(request)
-            payload = {'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)}
-            result = current.guarded_action(type='http_request', tool='httpx_async', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}})
+            payload = _minimize_http_payload({'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)})
+            result = current.guarded_action(type='http_request', tool='httpx_async', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})})
             if result and result.blocked and _live_enforcing(current):
                 raise VardenBlockedError(f'HTTPX request to {request.url} blocked', result.decision)
             try:
@@ -1212,7 +1236,7 @@ def _patch_subprocess(guard: VardenGuard) -> None:
         class GuardedPopen(original):  # type: ignore[misc,valid-type]
             def __init__(self, args, *pargs, **kwargs):
                 current = current_guard() or guard
-                payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
+                payload = _minimize_subprocess_payload(args, kwargs)
                 result = current.guarded_action(type='tool_call', tool='subprocess.Popen', args=payload, payload=payload, metadata={'execution_surface': 'subprocess'})
                 if result and result.blocked and _live_enforcing(current):
                     raise VardenBlockedError('Subprocess execution blocked', result.decision)
@@ -1235,7 +1259,7 @@ def _patch_subprocess(guard: VardenGuard) -> None:
         @functools.wraps(original)
         def run_wrapper(*popenargs, **kwargs):
             current = current_guard() or guard
-            payload = {'args': _json_safe(list(popenargs)), 'kwargs': _json_safe(kwargs)}
+            payload = _minimize_subprocess_payload(list(popenargs), kwargs)
             result = current.guarded_action(type='tool_call', tool='subprocess.run', args=payload, payload=payload, metadata={'execution_surface': 'subprocess'})
             if result and result.blocked and _live_enforcing(current):
                 raise VardenBlockedError('Subprocess execution blocked', result.decision)

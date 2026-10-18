@@ -19,7 +19,7 @@ def test_saved_subprocess_reference_bypass_is_documented():
 
     with TemporaryDirectory() as tmpdir:
         client, app = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
             wire_guard_to_app(guard, client)
@@ -37,7 +37,7 @@ def test_saved_subprocess_reference_bypass_is_documented():
 def test_raw_socket_reported_uncovered():
     with TemporaryDirectory() as tmpdir:
         client, app = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
             wire_guard_to_app(guard, client)
@@ -61,7 +61,7 @@ def test_import_before_and_after_protect():
             "allow": [],
         }
         client, app = make_app_client(tmpdir, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
             wire_guard_to_app(guard, client)
@@ -82,7 +82,7 @@ def test_observe_mode_does_not_raise_from_guarded_action():
             "allow": [],
         }
         client, app = make_app_client(tmpdir, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = varden.protect(
                 base_url="http://testserver",

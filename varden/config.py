@@ -45,17 +45,33 @@ class AppConfig:
     # Treat an invalid or missing policy file as fatal even in dev.
     # Always on outside env=dev.
     strict_policy: bool = False
+    # Hosts allowed to supply X-Forwarded-For. Empty means ignore that header.
+    trusted_proxy_hosts: tuple[str, ...] = ()
+    # Explicit operator override for binding dev to a non-loopback address.
+    # Never enables unauthenticated credential disclosure.
+    unsafe_dev_bind: bool = False
+    enable_api_docs: bool = False
 
     @classmethod
     def from_env(cls) -> "AppConfig":
 
         host = os.getenv("VARDEN_HOST", "127.0.0.1")
         port = os.getenv("VARDEN_PORT", "8000")
+        env_name = os.getenv("VARDEN_ENV", "production")
+        bootstrap_flag = os.getenv("VARDEN_ENABLE_DEV_BOOTSTRAP")
+        if bootstrap_flag is None:
+            enable_dev_bootstrap = False
+        else:
+            enable_dev_bootstrap = bootstrap_flag.lower() == "true"
+        unsafe_dev_bind = os.getenv("VARDEN_UNSAFE_DEV_BIND", "").lower() in {"1", "true", "yes"}
+        proxies = tuple(
+            item.strip() for item in os.getenv("VARDEN_TRUSTED_PROXY_HOSTS", "").split(",") if item.strip()
+        )
 
         blaze = os.getenv("VARDEN_BLAZE_COMMAND", "").strip()
         blaze_cmd = blaze.split(" ") if blaze else None
         return cls(
-            env=os.getenv("VARDEN_ENV", "dev"),
+            env=env_name,
             db_path=os.getenv("VARDEN_DB_PATH", "varden.db"),
             auth_db_path=os.getenv("VARDEN_AUTH_DB_PATH", "varden_auth.db"),
             policy_file=os.getenv("VARDEN_POLICY_FILE", "policy.json"),
@@ -81,7 +97,10 @@ class AppConfig:
             webhook_signing_secret=os.getenv("VARDEN_WEBHOOK_SIGNING_SECRET", "change-me-webhook"),
             public_base_url = os.getenv("VARDEN_PUBLIC_BASE_URL",f"http://{host}:{port}"),
             backup_dir=os.getenv("VARDEN_BACKUP_DIR", "backups"),
-            enable_dev_bootstrap=os.getenv("VARDEN_ENABLE_DEV_BOOTSTRAP", "true").lower() == "true",
+            enable_dev_bootstrap=enable_dev_bootstrap,
+            trusted_proxy_hosts=proxies,
+            unsafe_dev_bind=unsafe_dev_bind,
+            enable_api_docs=os.getenv("VARDEN_ENABLE_API_DOCS", "").lower() in {"1", "true", "yes"},
             scan_mode=os.getenv("VARDEN_SCAN_MODE", "fast").lower(),
             max_request_body_bytes=int(os.getenv("VARDEN_MAX_REQUEST_BODY_BYTES", "250000")),
             max_output_body_bytes=int(os.getenv("VARDEN_MAX_OUTPUT_BODY_BYTES", "450000")),
@@ -124,6 +143,11 @@ class AppConfig:
                 errors.append("VARDEN_BOOTSTRAP_ADMIN_API_KEY must be at least 32 characters")
         if self.env != "dev" and self.enable_dev_bootstrap:
             errors.append("disable dev bootstrap outside dev")
+        loopback_bind = self.host in {"127.0.0.1", "::1", "localhost"}
+        if self.env == "dev" and not loopback_bind and not self.unsafe_dev_bind:
+            errors.append(
+                "dev mode refuses a non-loopback bind; set VARDEN_UNSAFE_DEV_BIND=true only for an isolated lab"
+            )
         if self.scan_mode not in {"fast", "deep"}:
             errors.append("scan_mode must be fast or deep")
         if min(self.read_rate_limit_per_minute, self.write_rate_limit_per_minute, self.ingest_rate_limit_per_minute, self.stream_connect_rate_limit_per_minute) <= 0:

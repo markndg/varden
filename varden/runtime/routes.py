@@ -17,6 +17,8 @@ def register_runtime_routes(
     session_provenance_store: Any | None = None,
     get_strict_readiness: Callable[[], dict[str, Any]] | None = None,
     get_posture: Callable[[], dict[str, Any]] | None = None,
+    db_path: str | None = None,
+    signing_secret: str | None = None,
 ) -> None:
     @app.get("/runtime/coverage")
     def runtime_coverage(
@@ -89,19 +91,58 @@ def register_runtime_routes(
         authorization: str | None = Header(default=None),
     ):
         record = require(x_api_key, authorization, "agent", scope="ingest")
+        if record.get("role") != "gateway":
+            raise HTTPException(status_code=403, detail="session provenance requires a gateway credential")
         if session_provenance_store is None:
             raise HTTPException(status_code=503, detail="session provenance unavailable")
         trace_id = str(payload.get("trace_id") or "")
         source = payload.get("source") or {}
         if not trace_id or not isinstance(source, dict):
             raise HTTPException(status_code=400, detail="trace_id and source required")
-        session_provenance_store.append(
-            tenant_id=record["tenant_id"],
-            trace_id=trace_id,
-            session_id=payload.get("session_id"),
-            source=source,
-        )
+        try:
+            session_provenance_store.append(
+                tenant_id=record["tenant_id"],
+                trace_id=trace_id,
+                session_id=payload.get("session_id"),
+                source=source,
+            )
+        except ValueError:
+            raise HTTPException(status_code=403, detail="privileged trust claim rejected") from None
         return {"recorded": True, "trace_id": trace_id}
+
+    @app.post("/runtime/session/contract")
+    def runtime_session_contract_register(
+        payload: dict,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        require(x_api_key, authorization, "agent", scope="ingest")
+        if not db_path or not signing_secret:
+            raise HTTPException(status_code=503, detail="session contracts unavailable")
+        from varden_monitor.session_contract import ContractError, register_persisted_contract
+
+        try:
+            register_persisted_contract(db_path, payload, master_secret=signing_secret)
+        except ContractError:
+            raise HTTPException(status_code=403, detail="contract rejected") from None
+        return {"registered": True, "contract_id": payload.get("contract_id")}
+
+    @app.post("/runtime/session/contract/confirm")
+    def runtime_session_contract_confirm(
+        payload: dict,
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        require(x_api_key, authorization, "agent", scope="ingest")
+        if not db_path or not signing_secret:
+            raise HTTPException(status_code=503, detail="session contracts unavailable")
+        from varden_monitor.session_contract import ContractError, confirm_persisted_contract
+
+        try:
+            confirm_persisted_contract(db_path, payload, master_secret=signing_secret)
+        except ContractError:
+            raise HTTPException(status_code=403, detail="contract rejected") from None
+        return {"ok": True, "mode": payload.get("mode"), "fail_mode": payload.get("fail_mode")}
 
     @app.get("/runtime/session/provenance")
     def runtime_session_provenance_list(

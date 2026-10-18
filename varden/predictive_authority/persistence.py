@@ -112,7 +112,13 @@ def load_historical_predictive_event(
 
     stored_hash = str(snapshot.get("content_hash") or "")
     if expected_hash and stored_hash and str(expected_hash) != stored_hash:
-        return {
+        linked = store.migration_links(
+            int(event_id),
+            original_hash=str(expected_hash),
+            replacement_hash=stored_hash,
+        )
+        if not linked:
+            return {
             "event_id": int(event_id),
             "availability": "integrity_failed",
             "trusted": False,

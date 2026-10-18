@@ -26,7 +26,7 @@ def make_client(tmpdir: str, *, scan_mode: str = 'fast'):
 def test_admin_endpoints_are_not_exposed_in_oss():
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir)
-        key = client.get('/health').json()['bootstrap_api_key']
+        key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
         for path in ['/admin/config', '/admin/users', '/admin/tenants', '/admin/service-accounts', '/admin/backup/export']:
             r = client.get(path, headers={'x-api-key': key})
             assert r.status_code == 404
@@ -35,8 +35,8 @@ def test_admin_endpoints_are_not_exposed_in_oss():
 def test_health_reports_scan_mode_and_overview_latency():
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir, scan_mode='fast')
-        key = client.get('/health').json()['bootstrap_api_key']
-        health = client.get('/health').json()
+        key = client.get('/sdk/bootstrap').json()['bootstrap_api_key']
+        health = client.get('/health/detail', headers={'x-api-key': key}).json()
         assert health['scan_mode'] == 'fast'
         client.post('/demo/tool?tool_name=list_files', headers={'x-api-key': key}, json={'args': [], 'kwargs': {'path': '/tmp'}})
         overview = client.get('/dashboard/overview', headers={'x-api-key': key}).json()
@@ -48,9 +48,9 @@ def test_health_reports_scan_mode_and_overview_latency():
 def test_oss_uses_default_tenant_everywhere():
     with TemporaryDirectory() as tmpdir:
         client = make_client(tmpdir)
-        health = client.get("/health").json()
-        assert health["tenant_id"] == "default"
-        key = health["bootstrap_api_key"]
+        boot = client.get("/sdk/bootstrap").json()
+        assert boot["tenant_id"] == "default"
+        key = boot["bootstrap_api_key"]
         headers = {"x-api-key": key}
         block = client.post("/demo/tool?tool_name=delete_database", headers=headers, json={"args": [], "kwargs": {}})
         assert block.status_code == 403

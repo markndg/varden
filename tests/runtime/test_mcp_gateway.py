@@ -59,7 +59,7 @@ def test_gateway_blocks_privileged_call_via_policy():
         )
         app = create_app(cfg)
         client = TestClient(app)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
 
         action = {
             "type": "mcp_call",

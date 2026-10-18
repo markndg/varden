@@ -41,7 +41,7 @@ def test_dashboard_overview_includes_token_budget_summary():
     }
     with TemporaryDirectory() as tmpdir:
         with _client(tmpdir, policy) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             overview = client.get("/dashboard/overview", headers={"x-api-key": key}).json()
             assert "token_budgets" in overview
             assert overview["token_budgets"]["rules_configured"] == 1
@@ -66,7 +66,7 @@ def test_token_budgets_endpoint_lists_configured_rules():
     }
     with TemporaryDirectory() as tmpdir:
         with _client(tmpdir, policy) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             payload = client.get("/token-budgets", headers={"x-api-key": key}).json()
             assert payload["summary"]["rules_configured"] == 1
             assert payload["rules"][0]["id"] == "api-cap"

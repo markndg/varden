@@ -25,7 +25,7 @@ def main() -> int:
             "allow": [],
         }
         client, _ = make_app_client(tmpdir, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         headers = {"x-api-key": key}
         action = {
             "type": "tool_call",

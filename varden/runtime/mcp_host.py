@@ -106,11 +106,15 @@ class VardenMcpHost:
             "principal": server_id,
             "metadata": {"server_id": server_id, "tool": tool, "host": "VardenMcpHost"},
         }
+        gateway_key = os.environ.get("VARDEN_GATEWAY_API_KEY") or getattr(self, "gateway_api_key", None)
+        if not gateway_key:
+            return origin
+        headers = {"content-type": "application/json", "x-api-key": gateway_key}
         try:
             with httpx.Client(timeout=5.0) as client:
                 client.post(
                     f"{self.base_url}/runtime/session/provenance",
-                    headers=self._headers(),
+                    headers=headers,
                     json={
                         "trace_id": self.trace_id,
                         "session_id": self.session_id,

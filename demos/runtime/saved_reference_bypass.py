@@ -19,7 +19,7 @@ from varden.runtime.coverage import get_coverage_registry
 def main() -> int:
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         guard = varden.protect(base_url="http://testserver", api_key=key, emit_attestation=False)
         wire_guard_to_app(guard, client)
         proc = saved_popen(["/usr/bin/true"], stdout=-1, stderr=-1)

@@ -20,7 +20,7 @@ def test_predictive_api_demo_and_status(tmp_path):
     policy.write_text('{"block":[],"warn":[],"monitor":[],"allow":[]}\n')
     app = create_app(AppConfig(db_path=str(db), policy_file=str(policy), enable_dev_bootstrap=True))
     client = TestClient(app)
-    key = client.get("/health").json().get("bootstrap_api_key") or "admin-demo-key"
+    key = client.get("/sdk/bootstrap").json().get("bootstrap_api_key") or "admin-demo-key"
     headers = {"x-api-key": key}
     demo = client.post("/predictive/demo?mode=enforce", headers=headers)
     assert demo.status_code == 200
