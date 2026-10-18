@@ -130,7 +130,7 @@ def test_late_report_adjusts_the_charged_estimate_once(tmp_path):
         guard_event_id=1,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     charged = float(store.list_active_budgets()[0]["current_usd"])
     assert charged == pytest.approx(3000 * 10.0 / 1_000_000)
     assert charged != pytest.approx(reserved)
@@ -143,7 +143,7 @@ def test_late_report_adjusts_the_charged_estimate_once(tmp_path):
         tenant_id="default",
         principal_hash="p",
     )
-    assert again is False
+    assert again.usage_accounted is False
     assert float(store.list_active_budgets()[0]["current_usd"]) == pytest.approx(charged)
 
 
@@ -156,7 +156,7 @@ def test_duplicate_reports_do_not_double_charge(tmp_path):
     usage = {"usage": {"input_tokens": 1000, "output_tokens": 1000}, "model": "gpt-4o"}
     assert store.post_record(action, input_payload=_payload(), output_payload=usage, rules=rules, guard_event_id=7, tenant_id="default", principal_hash="p")
     first = float(store.list_active_budgets()[0]["current_usd"])
-    assert store.post_record(action, input_payload=_payload(), output_payload=usage, rules=rules, guard_event_id=7, tenant_id="default", principal_hash="p") is False
+    assert store.post_record(action, input_payload=_payload(), output_payload=usage, rules=rules, guard_event_id=7, tenant_id="default", principal_hash="p").usage_accounted is False
     assert float(store.list_active_budgets()[0]["current_usd"]) == pytest.approx(first)
 
 
@@ -336,16 +336,16 @@ def test_tenant_and_principal_boundaries(tmp_path):
     assert store.post_record(
         action, input_payload=_payload(), output_payload=usage, rules=rules,
         guard_event_id=9, tenant_id="tenant-b", principal_hash="principal-a",
-    ) is False
+    ).usage_accounted is False
     assert store.post_record(
         action, input_payload=_payload(), output_payload=usage, rules=rules,
         guard_event_id=9, tenant_id="tenant-a", principal_hash="principal-b",
-    ) is False
+    ).usage_accounted is False
     assert store.list_reservations()[0]["status"] == "reserved"
     assert store.post_record(
         action, input_payload=_payload(), output_payload=usage, rules=rules,
         guard_event_id=9, tenant_id="tenant-a", principal_hash="principal-a",
-    ) is True
+    ).usage_accounted is True
 
 
 def test_foreign_guard_event_is_rejected(tmp_path):
@@ -358,7 +358,7 @@ def test_foreign_guard_event_is_rejected(tmp_path):
     assert store.post_record(
         action, input_payload=_payload(), output_payload=usage, rules=rules,
         guard_event_id=99, tenant_id="default", principal_hash="p",
-    ) is False
+    ).usage_accounted is False
     assert store.list_reservations()[0]["status"] == "reserved"
     with sqlite3.connect(store.db_path) as conn:
         charged = conn.execute("SELECT COALESCE(SUM(current_usd), 0) FROM token_budgets").fetchone()[0]

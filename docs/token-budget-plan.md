@@ -50,6 +50,8 @@ sequenceDiagram
 
 Enforcement does not use a client trace or workflow id as the budget key. See `docs/security-hardening-pass-2.md`.
 
+A guard decision and a budget reservation are different records. The guard event stores `metadata.budget_evidence`: which rules were evaluated, the immutable rule snapshot, and the reservation id if a hold was taken. `/sdk/log` reconciles that evidence. It does not re-read the live policy to decide what was owed. No evidence on an older event means the accounting status is unknown (`legacy_evidence_insufficient`), not that the call was free. Evidence that says no rule applied is `legitimately_unbudgeted`. A reservation named by that evidence and missing from the ledger is `accounting_integrity_failure` (HTTP 409), not a success. An SDK that does not send `guard_event_id` is not accounted.
+
 - **`window: "session"`** → authenticated tenant + API-key hash. Cumulative. No calendar reset.
 - **`window: "daily" | "monthly"`** → authenticated tenant, shared by principals in that tenant.
 - **`reset_at`** is wall-clock UTC only for daily and monthly windows (midnight UTC / first-of-month UTC).

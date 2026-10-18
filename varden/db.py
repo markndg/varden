@@ -739,6 +739,25 @@ def _apply_migrations(conn):
                 conn.execute("ALTER TABLE token_events ADD COLUMN principal_hash TEXT")
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (14)")
 
+    if 15 not in versions:
+        # Integrity findings are not backfilled onto old guard events.
+        # Absence of guard-time budget evidence stays "unknown", not "unbudgeted".
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS token_budget_accounting_findings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              guard_event_id INTEGER NOT NULL,
+              tenant_id TEXT NOT NULL,
+              principal_hash TEXT,
+              status TEXT NOT NULL,
+              detail_json TEXT NOT NULL DEFAULT '{}',
+              created_at REAL NOT NULL,
+              UNIQUE(guard_event_id, status)
+            );
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (15)")
+
 
 class _AutoCloseConnection(sqlite3.Connection):
     """sqlite3.Connection used as a context manager only commits/rolls back

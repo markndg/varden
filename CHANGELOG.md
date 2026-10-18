@@ -12,6 +12,8 @@ Token reservations are a ledger separate from the daily and monthly counters. A 
 
 Reconciliation of a usage report is one SQLite transaction across every applicable rule. A failure rolls back, so the same guard event can be reported again without a second charge. Session caps are per authenticated principal. Daily and monthly caps are per authenticated tenant. Omitting or rotating a client trace or workflow id does not skip or reset a hard cap. Schema 14 adds those identities to the counters. Older rows keep a null tenant and are not reassigned.
 
+Each guard decision now stores server-owned `budget_evidence` on the audit event, and the reservation stores the rule snapshot used for the estimate. Usage is reconciled from that evidence. Deleting, disabling, or repricing a rule afterwards does not change the hold. A rule added later does not apply to a guard that was recorded as unbudgeted. A missing reservation that the evidence says should exist is `accounting_integrity_failure` (HTTP 409) and is recorded in `token_budget_accounting_findings` (schema 15). It is not reported as successful accounting. A guard with no applicable rule is `legitimately_unbudgeted`. A historical guard with no evidence is `legacy_evidence_insufficient` and is not backfilled. `/sdk/log` returns `accounting_status` next to `usage_accounted`. An SDK that omits `guard_event_id` stays an unverified observation and is not charged. `log_result` returns a 409 integrity body instead of raising, so the model call is not repeated.
+
 Critical containment. Not tagged or published.
 
 ### P0-7 — Unauthenticated disclosure

@@ -120,7 +120,7 @@ def test_failed_reconciliation_stays_retryable_and_charges_once(tmp_path, monkey
         guard_event_id=11,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     reservations, budgets = _ledger(store)
     assert reservations[0]["status"] == "reconciled"
     assert reservations[0]["reported_usd"] == pytest.approx(_cost(4000))
@@ -170,7 +170,7 @@ def test_multi_rule_failure_rolls_back_every_rule(tmp_path, monkeypatch):
         guard_event_id=12,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     reservations, budgets = _ledger(store)
     assert [row["status"] for row in reservations] == ["reconciled", "reconciled"]
     assert all(row["charged_usd"] == pytest.approx(_cost(1500)) for row in reservations)
@@ -216,7 +216,7 @@ def test_process_restart_after_interrupted_reconciliation(tmp_path, monkeypatch)
         guard_event_id=13,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     row = restarted.list_reservations()[0]
     assert row["status"] == "reconciled"
     assert row["charged_usd"] == pytest.approx(_cost(2500))
@@ -275,7 +275,7 @@ def test_duplicate_report_after_success_does_not_change_the_ledger(tmp_path):
         guard_event_id=15,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     before = store.list_reservations()[0]
     assert store.post_record(
         action,
@@ -285,7 +285,7 @@ def test_duplicate_report_after_success_does_not_change_the_ledger(tmp_path):
         guard_event_id=15,
         tenant_id="default",
         principal_hash="p",
-    ) is False
+    ).usage_accounted is False
     after = store.list_reservations()[0]
     assert after["status"] == "reconciled"
     assert after["charged_usd"] == pytest.approx(before["charged_usd"])
@@ -316,7 +316,7 @@ def test_expired_reservation_then_actual_usage_applies_the_delta(tmp_path):
         guard_event_id=16,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     actual = _cost(5000)
     row = store.list_reservations()[0]
     assert row["status"] == "reconciled"
@@ -341,7 +341,7 @@ def test_actual_usage_below_and_above_the_estimate(tmp_path):
         guard_event_id=17,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     low_cost = _cost(100)
     assert low_cost < estimate
     assert store.list_reservations()[0]["charged_usd"] == pytest.approx(low_cost)
@@ -358,7 +358,7 @@ def test_actual_usage_below_and_above_the_estimate(tmp_path):
         guard_event_id=18,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     high_cost = _cost(8000)
     assert high_cost > estimate
     charged = [row["charged_usd"] for row in store.list_reservations()]
@@ -381,7 +381,7 @@ def test_client_failure_status_does_not_settle_or_block_a_later_usage_report(tmp
         tenant_id="default",
         principal_hash="p",
         client_status="failed",
-    ) is False
+    ).usage_accounted is False
     assert store.list_reservations()[0]["status"] == "reserved"
     assert float(store.list_active_budgets()[0]["current_usd"]) == 0.0
     assert store.post_record(
@@ -393,7 +393,7 @@ def test_client_failure_status_does_not_settle_or_block_a_later_usage_report(tmp
         tenant_id="default",
         principal_hash="p",
         client_status="failed",
-    ) is True
+    ).usage_accounted is True
     assert store.list_reservations()[0]["status"] == "reconciled"
     assert store.list_reservations()[0]["charged_usd"] == pytest.approx(_cost(900))
 
@@ -413,7 +413,7 @@ def test_missing_and_malformed_usage_charge_the_estimate_once(tmp_path):
         guard_event_id=20,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     row = store.list_reservations()[0]
     assert row["status"] == "reconciled"
     assert row["reported_usd"] is None
@@ -431,7 +431,7 @@ def test_missing_and_malformed_usage_charge_the_estimate_once(tmp_path):
         guard_event_id=21,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     bad = store.list_reservations()[-1]
     assert bad["status"] == "reconciled"
     assert bad["reported_usd"] is None
@@ -474,7 +474,7 @@ def test_sqlite_lock_is_an_explicit_failure_and_remains_retryable(tmp_path, monk
         guard_event_id=22,
         tenant_id="default",
         principal_hash="p",
-    ) is True
+    ).usage_accounted is True
     assert store.list_reservations()[0]["charged_usd"] == pytest.approx(_cost(700))
 
 

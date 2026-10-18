@@ -29,7 +29,42 @@ A log that does not match is stored as `unverified_observation`. Incident views 
 
 Token accounting for an allowed `llm_call` follows the guard event. Reporting `status=blocked` does not skip it. Reporting the same event twice does not charge it twice. If the agent never reports usage, the pre-check reservation remains and still counts toward the cap.
 
-Usage reconciliation for one guard event is a single SQLite transaction: every applicable rule settles, or none of them do. The reservation status is the completion record. A failed or interrupted reconciliation leaves the hold `reserved`, so a retry can apply the actual usage. A repeated or concurrent report for a settled event does not charge it again. A client `failed` / `blocked` / `not_executed` report without usage does not settle the hold and does not prevent a later usage report from doing so. Missing or non-numeric usage is charged at the reserved estimate once (`reported_usd` stays empty). If SQLite stays locked, accounting raises and `/sdk/log` returns HTTP 503 with `usage_accounted: false`. The model call is not run again.
+Usage reconciliation for one guard event is a single SQLite transaction: every applicable rule settles, or none of them do. The reservation status is the completion record. A failed or interrupted reconciliation leaves the hold `reserved`, so a retry can apply the actual usage. A repeated or concurrent report for a settled event does not charge it again. A client `failed` / `blocked` / `not_executed` report without usage does not settle the hold and does not prevent a later usage report from doing so. Missing or non-numeric usage is charged at the reserved estimate once (`reported_usd` stays empty). If SQLite stays locked, accounting raises and `/sdk/log` returns HTTP 503 with `usage_accounted: false` and `accounting_status: "retryable_failure"`. The model call is not run again.
+
+### Guard-time budget evidence
+
+A verified guard event proves the policy decision. It does not prove that budget accounting succeeded. Those are separate facts, along with whether the audit row was stored, whether the client reported an execution, and whether a hold was actually enforced.
+
+`/sdk/guard` writes `metadata.budget_evidence` on the audit event before the event is hashed. The client cannot supply that field: it is server-owned and stripped from inbound metadata. The document names each budget rule considered, the rule snapshot used for the estimate, the reservation id when a hold was taken, and an explicit disposition:
+
+| Guard-time disposition | Meaning |
+| --- | --- |
+| `reserved` | A hold was created. Later usage must settle that reservation. |
+| `warned_not_held` | A soft cap warned and did not reserve. |
+| `not_applicable` | The rule was disabled or did not apply. |
+| `unbudgeted` | No rule reserved a hold. This is a positive record, not a missing one. |
+
+The same snapshot is stored on the reservation row. Reconciliation prices usage from that snapshot. Deleting the rule, disabling it, or changing its cap or model price afterwards does not move the obligation. A rule added after an unbudgeted guard does not create a hold for that guard.
+
+The reservation row and the audit event are not one transaction. The hold is written first. If the process stops before the guard event is stored, the next usage report that presents this evidence binds the unbound reservation and then settles it. A crash during settlement rolls the charge back and leaves the hold `reserved`.
+
+`/sdk/log` returns `accounting_status` beside `usage_accounted`:
+
+| Status | HTTP | What it means |
+| --- | --- | --- |
+| `reconciled` | 200 | The guard-time holds were settled, once. |
+| `already_reconciled` | 200 | This guard was already settled. No second charge. |
+| `legitimately_unbudgeted` | 200 | Guard-time evidence says no hold was required. |
+| `warned_not_held` | 200 | A soft cap applied and did not reserve. |
+| `pending_usage` | 200 | The client reported that it did not execute, and no usage was present. The hold remains. |
+| `accounting_integrity_failure` | 409 | Evidence names a reservation that is missing or belongs to another guard event. Nothing in that report is charged. A redacted row is stored in `token_budget_accounting_findings`. |
+| `unverified_guard` | 200 | The log does not match a guard event for this tenant, principal, and action. |
+| `legacy_evidence_insufficient` | 200 | The guard event is older than this evidence, or its reservation has no rule snapshot. It is not charged and it is not relabelled unbudgeted. |
+| `retryable_failure` | 503 | SQLite stayed locked. The hold is unchanged. |
+
+An integrity failure is HTTP 409 with `logged: true` and `retryable: false`. The SDK returns that body from `log_result` instead of raising, so a caller does not treat it as a reason to repeat the model call. The audit event for the report is already stored.
+
+Schema 15 adds `token_budget_accounting_findings`. It does not rewrite old events and it does not invent `budget_evidence` for them. An SDK that omits `guard_event_id` remains an `unverified_observation` and is not budget-accounted.
 
 ### Reservation ledger
 
@@ -58,6 +93,8 @@ Schema 14 adds `tenant_id` and `principal_hash` to the live counter, historical 
 The OSS authentication helper stamps every accepted request with the single OSS tenant id. Two API keys in this build therefore share a daily or monthly cap. They do not share a session cap: that follows the key hash. The ledger isolates tenants when the server passes two tenant ids; this build's HTTP layer does not present a second tenant.
 
 A session counter does not reset on a clock. Changing the policy limit is how an operator clears it. Python interception is not an operating-system sandbox.
+
+If a reservation row is removed while the counter still shows its `reserved_usd`, reconciliation does not invent a replacement charge and does not clear that counter by itself. The integrity finding is the operator record. Historical events are left without `budget_evidence`; they are not rewritten to look unbudgeted.
 
 ## P0-5 — Session contracts
 

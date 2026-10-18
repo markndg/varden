@@ -176,7 +176,7 @@ def test_cross_tenant_reconcile_does_not_move_the_other_ledger(tmp_path):
         guard_event_id=30,
         tenant_id="tenant-b",
         principal_hash="pb",
-    ) is False
+    ).usage_accounted is False
     assert store.list_reservations()[0]["status"] == "reserved"
     assert float(store.list_active_budgets(tenant_id="tenant-a")[0]["current_usd"]) == 0.0
     assert store.post_record(
@@ -187,7 +187,7 @@ def test_cross_tenant_reconcile_does_not_move_the_other_ledger(tmp_path):
         guard_event_id=30,
         tenant_id="tenant-a",
         principal_hash="pa",
-    ) is True
+    ).usage_accounted is True
     assert store.list_active_budgets(tenant_id="tenant-b") == []
     own = store.list_active_budgets(tenant_id="tenant-a")
     assert float(own[0]["current_usd"]) > 0

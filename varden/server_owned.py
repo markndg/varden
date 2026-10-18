@@ -24,6 +24,7 @@ SERVER_OWNED_METADATA = frozenset(
         "decision_latency_ms",
         "provenance_analysis",
         "approvals",
+        "budget_evidence",
     }
 )
 

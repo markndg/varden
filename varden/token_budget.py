@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -29,6 +30,101 @@ _DEFAULT_RETENTION_SECONDS = 90 * 24 * 3600
 # for any other final decision is released only because the server denied
 # execution before the side effect.
 BUDGET_EXECUTES = {"allow", "warn", "warned", "monitor", "sanitise"}
+ACCOUNTING_RECONCILED = "reconciled"
+ACCOUNTING_ALREADY = "already_reconciled"
+ACCOUNTING_UNBUDGETED = "legitimately_unbudgeted"
+ACCOUNTING_PENDING = "pending_usage"
+ACCOUNTING_INTEGRITY = "accounting_integrity_failure"
+ACCOUNTING_UNVERIFIED = "unverified_guard"
+ACCOUNTING_LEGACY = "legacy_evidence_insufficient"
+ACCOUNTING_NOT_APPLICABLE = "not_applicable"
+
+
+@dataclass(frozen=True)
+class AccountingResult:
+    """Disposition of one usage report. Truth value is usage_accounted only."""
+
+    status: str
+    usage_accounted: bool
+    finding_id: int | None = None
+
+    def __bool__(self) -> bool:
+        return self.usage_accounted
+
+
+@dataclass(frozen=True)
+class _GuardSettle:
+    status: str
+    detail: dict[str, Any]
+
+
+def _json_object(raw: str | None) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _snapshot_from_evidence(raw: str | None) -> dict[str, Any] | None:
+    snapshot = _json_object(raw).get("rule_snapshot")
+    return snapshot if isinstance(snapshot, dict) and snapshot.get("id") else None
+
+
+def _priced_usage(
+    rule: TokenBudgetRule,
+    action: Action,
+    input_payload: Any,
+    usage: tuple[str, int, int] | None,
+    *,
+    malformed: bool,
+    estimate_usd: float,
+) -> tuple[float, float | None]:
+    if usage and not malformed:
+        model, input_tokens, output_tokens = usage
+        amount = compute_cost_usd(
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            model_costs=rule.model_costs,
+        )
+        return float(amount), float(amount)
+    del action, input_payload
+    return float(estimate_usd), None
+
+
+def budget_evidence_document(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Server-owned record of the rules that applied at guard time.
+
+    An empty evaluation is an explicit unbudgeted decision. It is not the
+    same as an old event that has no record at all.
+    """
+    actionable = [entry for entry in entries if entry.get("disposition") == "reserved"]
+    if not actionable and any(entry.get("disposition") == "warned_not_held" for entry in entries):
+        return {
+            "version": 1,
+            "disposition": "evaluated",
+            "reason": "soft cap did not reserve a hold",
+            "rules": entries,
+        }
+    if not actionable:
+        return {
+            "version": 1,
+            "disposition": "unbudgeted",
+            "reason": "no budget rule reserved a hold",
+            "rules": entries
+            or [
+                {
+                    "policy_id": "",
+                    "disposition": "unbudgeted",
+                    "reason": "no budget rule applied",
+                    "reservation_id": None,
+                    "estimated_usd": 0.0,
+                    "rule_snapshot": None,
+                }
+            ],
+        }
+    return {"version": 1, "disposition": "evaluated", "reason": "", "rules": entries}
 
 
 def _utc_now() -> float:
@@ -357,6 +453,11 @@ class TokenBudgetStore:
         computes it so a late report adds only the difference from the
         estimate already charged.
         """
+        prior = _json_object(reservation["evidence_json"])
+        snapshot = prior.get("rule_snapshot")
+        prior.update(evidence)
+        if isinstance(snapshot, dict):
+            prior["rule_snapshot"] = snapshot
         updated = conn.execute(
             """
             UPDATE token_budget_reservations
@@ -367,7 +468,7 @@ class TokenBudgetStore:
                 new_status,
                 reported_usd,
                 float(reservation["charged_usd"] or 0) + float(amount),
-                json.dumps(evidence, sort_keys=True),
+                json.dumps(prior, sort_keys=True, default=str),
                 reservation["id"],
                 expected_status,
             ),
@@ -616,13 +717,27 @@ class TokenBudgetStore:
         tenant_id: str | None = None,
         principal_hash: str | None = None,
         reservation_ids: list[int] | None = None,
+        evidence: list[dict[str, Any]] | None = None,
     ) -> Decision | None:
         if action.type != "llm_call" or not rules:
             return None
         for rule in rules:
             if not rule.enabled:
+                if evidence is not None:
+                    evidence.append(
+                        {
+                            "policy_id": rule.id,
+                            "window": rule.window,
+                            "disposition": "not_applicable",
+                            "reason": "rule disabled at guard time",
+                            "reservation_id": None,
+                            "estimated_usd": 0.0,
+                            "rule_snapshot": rule.to_dict(),
+                        }
+                    )
                 continue
             model, input_tokens, output_tokens, projected = estimate_llm_cost(action, raw_payload, rule)
+            before = len(reservation_ids or [])
             decision = self._check_rule(
                 rule,
                 action,
@@ -637,6 +752,30 @@ class TokenBudgetStore:
                 principal_hash=principal_hash,
                 reservation_ids=reservation_ids,
             )
+            if evidence is not None:
+                created = None
+                if reservation_ids and len(reservation_ids) > before:
+                    created = reservation_ids[-1]
+                if created is not None:
+                    disposition = "reserved"
+                    reason = ""
+                elif decision is not None and decision.action == "warn":
+                    disposition = "warned_not_held"
+                    reason = decision.reason
+                else:
+                    disposition = "not_applicable"
+                    reason = "rule did not reserve a hold"
+                evidence.append(
+                    {
+                        "policy_id": rule.id,
+                        "window": rule.window,
+                        "disposition": disposition,
+                        "reason": reason,
+                        "reservation_id": created,
+                        "estimated_usd": float(projected),
+                        "rule_snapshot": rule.to_dict(),
+                    }
+                )
             if decision:
                 return decision
         return None
@@ -650,6 +789,344 @@ class TokenBudgetStore:
         del guard_event_id
         return True
 
+    def list_accounting_findings(self, guard_event_id: int | None = None) -> list[dict[str, Any]]:
+        with connect(self.db_path) as conn:
+            if guard_event_id is None:
+                rows = conn.execute(
+                    "SELECT * FROM token_budget_accounting_findings ORDER BY id"
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM token_budget_accounting_findings WHERE guard_event_id = ? ORDER BY id",
+                    (int(guard_event_id),),
+                ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _record_finding(
+        self,
+        *,
+        guard_event_id: int,
+        tenant_id: str | None,
+        principal_hash: str | None,
+        detail: dict[str, Any],
+    ) -> int:
+        payload = json.dumps(detail, sort_keys=True, default=str)
+        with connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                """
+                SELECT id FROM token_budget_accounting_findings
+                WHERE guard_event_id = ? AND status = ?
+                """,
+                (int(guard_event_id), ACCOUNTING_INTEGRITY),
+            ).fetchone()
+            if existing is not None:
+                conn.commit()
+                return int(existing["id"])
+            cursor = conn.execute(
+                """
+                INSERT INTO token_budget_accounting_findings(
+                  guard_event_id, tenant_id, principal_hash, status, detail_json, created_at
+                ) VALUES (?,?,?,?,?,?)
+                """,
+                (
+                    int(guard_event_id),
+                    tenant_id or "",
+                    principal_hash,
+                    ACCOUNTING_INTEGRITY,
+                    payload,
+                    self._now(),
+                ),
+            )
+            conn.commit()
+            return int(cursor.lastrowid or 0)
+
+    def _reconcile_guard(
+        self,
+        action: Action,
+        *,
+        input_payload: Any,
+        output_payload: Any,
+        guard_event_id: int,
+        tenant_id: str | None,
+        principal_hash: str | None,
+        client_status: str | None,
+        guard_evidence: dict[str, Any] | None,
+    ) -> AccountingResult:
+        """Reconcile a verified guard from its own evidence, not the live policy."""
+        if guard_evidence is not None and guard_evidence.get("disposition") == "unbudgeted":
+            return AccountingResult(ACCOUNTING_UNBUDGETED, False)
+        if guard_evidence is not None:
+            reserved_plan = [
+                entry
+                for entry in (guard_evidence.get("rules") or [])
+                if isinstance(entry, dict) and entry.get("disposition") == "reserved"
+            ]
+            if not reserved_plan:
+                return AccountingResult("warned_not_held", False)
+        else:
+            reserved_plan = None
+
+        fallback_model = extract_model_from_payload(action, input_payload)
+        malformed = False
+        try:
+            usage = extract_usage_from_log_payload(output_payload, input_payload, fallback_model=fallback_model)
+        except (TypeError, ValueError):
+            usage = None
+            malformed = True
+
+        for attempt in range(3):
+            try:
+                with connect(self.db_path) as conn:
+                    conn.execute("BEGIN IMMEDIATE")
+                    now = self._now()
+                    self._expire_due(conn, now)
+                    plan = reserved_plan
+                    if plan is None:
+                        bound = conn.execute(
+                            "SELECT * FROM token_budget_reservations WHERE guard_event_id = ? ORDER BY id",
+                            (int(guard_event_id),),
+                        ).fetchall()
+                        if not bound:
+                            conn.rollback()
+                            return AccountingResult(ACCOUNTING_LEGACY, False)
+                        plan = []
+                        for row in bound:
+                            snapshot = _snapshot_from_evidence(row["evidence_json"])
+                            if snapshot is None:
+                                conn.rollback()
+                                return AccountingResult(ACCOUNTING_LEGACY, False)
+                            plan.append(
+                                {
+                                    "policy_id": row["policy_id"],
+                                    "reservation_id": row["id"],
+                                    "rule_snapshot": snapshot,
+                                    "disposition": "reserved",
+                                }
+                            )
+                    outcome = self._settle_guard_plan(
+                        conn,
+                        plan,
+                        action=action,
+                        guard_event_id=int(guard_event_id),
+                        tenant_id=tenant_id,
+                        principal_hash=principal_hash,
+                        client_status=client_status,
+                        usage=usage,
+                        malformed=malformed,
+                        now=now,
+                        input_payload=input_payload,
+                    )
+                    if outcome.status == ACCOUNTING_INTEGRITY:
+                        conn.rollback()
+                        finding_id = self._record_finding(
+                            guard_event_id=int(guard_event_id),
+                            tenant_id=tenant_id,
+                            principal_hash=principal_hash,
+                            detail=outcome.detail,
+                        )
+                        return AccountingResult(ACCOUNTING_INTEGRITY, False, finding_id)
+                    if outcome.status == ACCOUNTING_UNVERIFIED:
+                        conn.rollback()
+                        return AccountingResult(ACCOUNTING_UNVERIFIED, False)
+                    conn.commit()
+                    return AccountingResult(outcome.status, outcome.status == ACCOUNTING_RECONCILED)
+            except sqlite3.OperationalError:
+                if attempt < 2:
+                    continue
+                raise
+        return AccountingResult(ACCOUNTING_NOT_APPLICABLE, False)
+
+    def _settle_guard_plan(
+        self,
+        conn: sqlite3.Connection,
+        plan: list[dict[str, Any]],
+        *,
+        action: Action,
+        guard_event_id: int,
+        tenant_id: str | None,
+        principal_hash: str | None,
+        client_status: str | None,
+        usage: tuple[str, int, int] | None,
+        malformed: bool,
+        now: float,
+        input_payload: Any,
+    ) -> "_GuardSettle":
+        rows: list[tuple[dict[str, Any], sqlite3.Row, TokenBudgetRule]] = []
+        for entry in plan:
+            reservation_id = entry.get("reservation_id")
+            if reservation_id is None:
+                return _GuardSettle(
+                    ACCOUNTING_INTEGRITY,
+                    {"reason": "guard evidence reserved a hold without a reservation id", "policy_id": entry.get("policy_id")},
+                )
+            row = conn.execute(
+                "SELECT * FROM token_budget_reservations WHERE id = ?",
+                (int(reservation_id),),
+            ).fetchone()
+            if row is None:
+                return _GuardSettle(
+                    ACCOUNTING_INTEGRITY,
+                    {
+                        "reason": "reservation named by guard-time evidence is missing",
+                        "policy_id": entry.get("policy_id"),
+                        "reservation_id": reservation_id,
+                    },
+                )
+            if row["guard_event_id"] not in (None, int(guard_event_id)):
+                return _GuardSettle(
+                    ACCOUNTING_INTEGRITY,
+                    {
+                        "reason": "reservation belongs to a different guard event",
+                        "policy_id": row["policy_id"],
+                        "reservation_id": row["id"],
+                        "bound_guard_event_id": row["guard_event_id"],
+                    },
+                )
+            if not self._scope_matches(row, tenant_id=tenant_id, principal_hash=principal_hash):
+                return _GuardSettle(ACCOUNTING_UNVERIFIED, {})
+            snapshot = entry.get("rule_snapshot") or _snapshot_from_evidence(row["evidence_json"])
+            if not isinstance(snapshot, dict):
+                return _GuardSettle(
+                    ACCOUNTING_INTEGRITY,
+                    {
+                        "reason": "reservation has no guard-time rule snapshot",
+                        "policy_id": row["policy_id"],
+                        "reservation_id": row["id"],
+                    },
+                )
+            if row["guard_event_id"] is None:
+                bound = conn.execute(
+                    """
+                    UPDATE token_budget_reservations
+                    SET guard_event_id = ?
+                    WHERE id = ? AND guard_event_id IS NULL AND status = ?
+                    """,
+                    (int(guard_event_id), row["id"], row["status"]),
+                )
+                if bound.rowcount != 1:
+                    return _GuardSettle(
+                        ACCOUNTING_INTEGRITY,
+                        {
+                            "reason": "reservation could not be bound to the guard event",
+                            "reservation_id": row["id"],
+                        },
+                    )
+                row = conn.execute(
+                    "SELECT * FROM token_budget_reservations WHERE id = ?",
+                    (row["id"],),
+                ).fetchone()
+            rows.append((entry, row, TokenBudgetRule.from_dict(snapshot)))
+
+        if not rows:
+            return _GuardSettle(ACCOUNTING_UNBUDGETED, {})
+
+        pending = (
+            usage is None
+            and str(client_status or "") in _UNTRUSTED_RELEASE
+            and any(row["status"] == STATUS_RESERVED for _, row, _rule in rows)
+        )
+        if pending:
+            for _entry, row, _rule in rows:
+                if row["status"] != STATUS_RESERVED:
+                    continue
+                prior = _json_object(row["evidence_json"])
+                prior.update(
+                    {
+                        "client_status": client_status,
+                        "accepted": False,
+                        "reason": "client execution claim is not server evidence",
+                    }
+                )
+                conn.execute(
+                    """
+                    UPDATE token_budget_reservations
+                    SET evidence_json = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                    (json.dumps(prior, sort_keys=True, default=str), row["id"], STATUS_RESERVED),
+                )
+            return _GuardSettle(ACCOUNTING_PENDING, {})
+
+        settled = 0
+        terminal = 0
+        for entry, row, rule in rows:
+            if row["status"] == STATUS_RECONCILED or (
+                row["status"] == STATUS_EXPIRED_CHARGED and (not usage or row["reported_usd"] is not None)
+            ) or row["status"] == STATUS_CANCELLED:
+                terminal += 1
+                continue
+            amount, reported = _priced_usage(
+                rule,
+                action,
+                input_payload,
+                usage,
+                malformed=malformed,
+                estimate_usd=float(row["reserved_usd"] or entry.get("estimated_usd") or 0),
+            )
+            scope = self._counter_scope(rule, tenant_id=row["tenant_id"], principal_hash=row["principal_hash"])
+            if scope is None:
+                return _GuardSettle(
+                    ACCOUNTING_INTEGRITY,
+                    {"reason": "stored reservation has no authenticated scope", "reservation_id": row["id"]},
+                )
+            tenant_key, principal_key = scope
+            self._ensure_budget_row(conn, rule, tenant_key, principal_key, now, update_limit=False)
+            if row["status"] == STATUS_RESERVED:
+                self._record_usage_event(
+                    conn,
+                    action,
+                    now,
+                    "" if usage is None else usage[0],
+                    0 if usage is None else usage[1],
+                    0 if usage is None else usage[2],
+                    amount,
+                    action.tool,
+                    tenant_id=tenant_key,
+                    principal_hash=row["principal_hash"],
+                )
+                if not self._settle(
+                    conn, row, amount, STATUS_RECONCILED, now,
+                    {
+                        "client_status": client_status,
+                        "usage_present": usage is not None and not malformed,
+                        "usage_malformed": malformed,
+                        "policy": "guard_time_snapshot",
+                    },
+                    expected_status=STATUS_RESERVED,
+                    reported_usd=reported,
+                ):
+                    return _GuardSettle(
+                        ACCOUNTING_INTEGRITY,
+                        {"reason": "reservation status changed during reconciliation", "reservation_id": row["id"]},
+                    )
+                settled += 1
+                continue
+            if row["status"] == STATUS_EXPIRED_CHARGED and usage and not malformed and row["reported_usd"] is None:
+                delta = amount - float(row["charged_usd"] or 0)
+                self._record_usage_event(
+                    conn, action, now, usage[0], usage[1], usage[2], amount, action.tool,
+                    tenant_id=tenant_key, principal_hash=row["principal_hash"],
+                )
+                if not self._settle(
+                    conn, row, delta, STATUS_RECONCILED, now,
+                    {"client_status": client_status, "policy": "late_report_replaces_estimate"},
+                    expected_status=STATUS_EXPIRED_CHARGED,
+                    reported_usd=amount,
+                ):
+                    return _GuardSettle(
+                        ACCOUNTING_INTEGRITY,
+                        {"reason": "expired reservation could not accept the late report", "reservation_id": row["id"]},
+                    )
+                settled += 1
+                continue
+            terminal += 1
+        if settled:
+            return _GuardSettle(ACCOUNTING_RECONCILED, {})
+        if terminal:
+            return _GuardSettle(ACCOUNTING_ALREADY, {})
+        return _GuardSettle(ACCOUNTING_LEGACY, {})
+
     def post_record(
         self,
         action: Action,
@@ -661,9 +1138,21 @@ class TokenBudgetStore:
         tenant_id: str | None = None,
         principal_hash: str | None = None,
         client_status: str | None = None,
-    ) -> bool:
+        guard_evidence: dict[str, Any] | None = None,
+    ) -> AccountingResult:
+        if guard_event_id is not None:
+            return self._reconcile_guard(
+                action,
+                input_payload=input_payload,
+                output_payload=output_payload,
+                guard_event_id=int(guard_event_id),
+                tenant_id=tenant_id if tenant_id is not None else action.tenant_id,
+                principal_hash=principal_hash,
+                client_status=client_status,
+                guard_evidence=guard_evidence,
+            )
         if action.type != "llm_call" or not rules:
-            return False
+            return AccountingResult(ACCOUNTING_NOT_APPLICABLE, False)
         resolved_tenant = tenant_id if tenant_id is not None else action.tenant_id
         fallback_model = extract_model_from_payload(action, input_payload)
         malformed = False
@@ -701,7 +1190,7 @@ class TokenBudgetStore:
                 }
             )
         if not prepared:
-            return False
+            return AccountingResult(ACCOUNTING_NOT_APPLICABLE, False)
         violation: PolicyViolation | None = None
         accounted = False
         for attempt in range(3):
@@ -735,9 +1224,10 @@ class TokenBudgetStore:
                             break
                         if pending_violation is not None and pending is None:
                             pending = pending_violation
-                    if "rejected" in outcomes:
+                    if "rejected" in outcomes or "integrity" in outcomes:
                         conn.rollback()
-                        return False
+                        status = ACCOUNTING_INTEGRITY if "integrity" in outcomes else ACCOUNTING_UNVERIFIED
+                        return AccountingResult(status, False)
                     conn.commit()
                 violation = pending
                 accounted = "accounted" in outcomes
@@ -748,7 +1238,7 @@ class TokenBudgetStore:
                 raise
         if violation is not None:
             raise violation
-        return accounted
+        return AccountingResult(ACCOUNTING_RECONCILED if accounted else ACCOUNTING_NOT_APPLICABLE, accounted)
 
     def _apply_post(
         self,
@@ -851,7 +1341,9 @@ class TokenBudgetStore:
         if found is not None:
             return "ignored", None
         if guard_event_id is not None:
-            return None, None
+            # A guard id with no matching reservation is not success and not
+            # an invitation to charge whatever the live policy says.
+            return "integrity", None
         # No ledger row matches this report. Do not spend another call's hold.
         open_hold = conn.execute(
             """
@@ -895,6 +1387,8 @@ class TokenBudgetStore:
         tenant_id: str,
         principal_hash: str,
         now: float,
+        *,
+        update_limit: bool = True,
     ) -> sqlite3.Row | None:
         row = self._budget_row(
             conn,
@@ -925,7 +1419,7 @@ class TokenBudgetStore:
         if row is None:
             return None
         row = self._reset_row_if_due(conn, row, now)
-        if float(row["limit_usd"]) != float(rule.limit_usd):
+        if update_limit and float(row["limit_usd"]) != float(rule.limit_usd):
             conn.execute("UPDATE token_budgets SET limit_usd = ? WHERE id = ?", (rule.limit_usd, row["id"]))
             row = self._budget_row(
                 conn,
@@ -1060,7 +1554,11 @@ class TokenBudgetStore:
                                     now,
                                     now + self.reservation_ttl,
                                     STATUS_RESERVED,
-                                    "{}",
+                                    json.dumps(
+                                        {"disposition": "reserved", "rule_snapshot": rule.to_dict()},
+                                        sort_keys=True,
+                                        default=str,
+                                    ),
                                 ),
                             )
                             if reservation_ids is not None and cursor.lastrowid is not None:

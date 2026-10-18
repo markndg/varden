@@ -176,6 +176,13 @@ class VardenClient:
         self.ensure_credentials()
         resp = self._client.post(f'{self.base_url}/sdk/log', headers=self.headers(), json=payload)
         data = _parse_json(resp)
+        # Accounting failed after the log was stored. The model call already
+        # happened; surfacing this as a transport error would invite a retry
+        # of that side effect.
+        if resp.status_code == 409 and isinstance(data, dict):
+            detail = data.get('detail') if isinstance(data.get('detail'), dict) else data
+            if detail.get('logged') and detail.get('accounting_status') == 'accounting_integrity_failure':
+                return detail
         resp.raise_for_status()
         return data
 

@@ -38,7 +38,12 @@ from .redaction import redact
 from .server_owned import action_fingerprint, strip_untrusted_metadata
 from .ratelimit import BucketConfig, RateLimiter
 from .stores import EventStore, WorkflowStore
-from .token_budget import TokenBudgetStore, simulate_budget_trace
+from .token_budget import (
+    ACCOUNTING_INTEGRITY,
+    TokenBudgetStore,
+    budget_evidence_document,
+    simulate_budget_trace,
+)
 from .rules.registry import load_budget_rules
 from .webshield.routes import register_webshield_routes
 from .webshield.store import WebShieldStore
@@ -690,6 +695,7 @@ def create_app(config: AppConfig) -> FastAPI:
         decision = policy.evaluate(action, policy_doc=policy_doc)
         budget_rules = load_budget_rules(policy_doc)
         budget_reservation_ids: list[int] = []
+        budget_entries: list[dict[str, Any]] = []
         if action.type == "llm_call" and budget_rules and decision.action in {"allow", "monitor", "warn", "warned", "sanitise"}:
             try:
                 budget_decision = token_budget_store.pre_check(
@@ -699,6 +705,7 @@ def create_app(config: AppConfig) -> FastAPI:
                     tenant_id=tenant_id,
                     principal_hash=principal_hash,
                     reservation_ids=budget_reservation_ids,
+                    evidence=budget_entries,
                 )
             except PolicyViolation as exc:
                 decision = Decision(
@@ -744,6 +751,10 @@ def create_app(config: AppConfig) -> FastAPI:
         trace_events = event_store.list_trace_events(action.trace_id, tenant_id=tenant_id, limit=60) if action.trace_id else []
         action = intelligence.apply_decision_context(action, decision, recent_events=recent_events, trace_events=trace_events)
         decision.route_target = action.route_target
+        if action.type == "llm_call" and decision.action in BUDGET_EXECUTES:
+            meta = dict(action.metadata or {})
+            meta["budget_evidence"] = budget_evidence_document(budget_entries)
+            action.metadata = meta
         return action, decision
 
     def record_tool(tool_name: str, args: list, kwargs: dict, tenant_id: str, agent_name: str | None = None, workflow_id: str | None = None):
@@ -1219,7 +1230,13 @@ def create_app(config: AppConfig) -> FastAPI:
         decision = event.get("decision") or {}
         if not isinstance(decision, dict) or not decision.get("action"):
             return None
-        return {"id": event_id, "decision": decision, "status": event.get("status")}
+        stored_meta = stored_action.get("metadata") if isinstance(stored_action.get("metadata"), dict) else {}
+        return {
+            "id": event_id,
+            "decision": decision,
+            "status": event.get("status"),
+            "budget_evidence": stored_meta.get("budget_evidence") if isinstance(stored_meta.get("budget_evidence"), dict) else None,
+        }
 
     @app.post("/sdk/log")
     @app.post("/v1/actions/log")
@@ -1269,9 +1286,11 @@ def create_app(config: AppConfig) -> FastAPI:
         action.metadata = meta
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
         accounted = False
-        if bound is not None and action.type == "llm_call" and bound["decision"].get("action") == "allow":
+        accounting_status = "unverified_guard" if bound is None else "not_applicable"
+        executes = bound is not None and action.type == "llm_call" and bound["decision"].get("action") in {"allow", "warn", "warned", "monitor", "sanitise"}
+        if executes:
             try:
-                accounted = bool(token_budget_store.post_record(
+                result = token_budget_store.post_record(
                     action,
                     input_payload=payload.get("input_payload"),
                     output_payload=payload.get("output_payload"),
@@ -1280,7 +1299,8 @@ def create_app(config: AppConfig) -> FastAPI:
                     tenant_id=record["tenant_id"],
                     principal_hash=str(record.get("key_hash") or ""),
                     client_status=None if client_status is None else str(client_status),
-                ))
+                    guard_evidence=bound.get("budget_evidence"),
+                )
             except PolicyViolation as exc:
                 raise HTTPException(
                     status_code=403,
@@ -1289,6 +1309,7 @@ def create_app(config: AppConfig) -> FastAPI:
                         "event_id": event_id,
                         "evidence_class": "server_decision",
                         "usage_accounted": True,
+                        "accounting_status": "reconciled",
                         "error": str(exc),
                         "rule": exc.rule,
                         "current_usd": exc.current_usd,
@@ -1303,11 +1324,34 @@ def create_app(config: AppConfig) -> FastAPI:
                         "event_id": event_id,
                         "evidence_class": "server_decision",
                         "usage_accounted": False,
+                        "accounting_status": "retryable_failure",
                         "retryable": True,
                         "error": "budget accounting is locked",
                     },
                 )
-        return {"logged": True, "event_id": event_id, "evidence_class": meta["evidence_class"], "usage_accounted": accounted}
+            accounted = bool(result.usage_accounted)
+            accounting_status = result.status
+            if result.status == ACCOUNTING_INTEGRITY:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "logged": True,
+                        "event_id": event_id,
+                        "evidence_class": meta["evidence_class"],
+                        "usage_accounted": False,
+                        "accounting_status": result.status,
+                        "retryable": False,
+                        "finding_id": result.finding_id,
+                        "error": "budget reservation named at guard time could not be reconciled",
+                    },
+                )
+        return {
+            "logged": True,
+            "event_id": event_id,
+            "evidence_class": meta["evidence_class"],
+            "usage_accounted": accounted,
+            "accounting_status": accounting_status,
+        }
 
     @app.get("/token-budgets")
     def list_token_budgets(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
