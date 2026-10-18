@@ -84,15 +84,15 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
 
     @functools.wraps(original)
     def wrapper(url, *args, **kwargs):
-        from varden_sdk.sdk import current_guard
+        from varden_sdk.sdk import _authorize_http, current_guard
 
         current = current_guard() or guard
         url_s = url if isinstance(url, str) else getattr(url, "full_url", None) or str(url)
         if hasattr(current, "_is_control_plane_url") and current._is_control_plane_url(url_s):
             return original(url, *args, **kwargs)
         payload = {"url": url_s, "args": list(args), "kwargs": {k: str(type(v)) for k, v in kwargs.items()}}
-        result = current.guarded_action(
-            type="http_request",
+        canonical, _result = _authorize_http(
+            current,
             tool="urllib",
             url=str(url_s),
             method="GET",
@@ -100,12 +100,37 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
             payload=payload,
             metadata={"runtime": {"surface": "http", "boundary": True}},
         )
-        if result and result.blocked and _enforcing(current):
-            raise _blocked_error(current)(f"urllib request to {url_s} blocked", result.decision)
-        return original(url, *args, **kwargs)
+        target = canonical if isinstance(url, str) else url
+        if not isinstance(url, str) and hasattr(url, "full_url") and canonical != url_s:
+            try:
+                url.full_url = canonical
+            except Exception:
+                target = canonical
+        return original(target, *args, **kwargs)
 
     urllib_request.urlopen = wrapper
     sdk_mod._WRAPPERS[key] = wrapper
+    redirect_key = "urllib.request.HTTPRedirectHandler.redirect_request"
+    if redirect_key not in originals:
+        originals[redirect_key] = urllib_request.HTTPRedirectHandler.redirect_request
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            from varden_sdk.sdk import _authorize_http, current_guard
+
+            current = current_guard() or guard
+            payload = {"url": str(newurl), "redirect_from": getattr(req, "full_url", None)}
+            canonical, _result = _authorize_http(
+                current,
+                tool="urllib",
+                url=str(newurl),
+                method="GET",
+                args=payload,
+                payload=payload,
+                metadata={"runtime": {"surface": "http", "boundary": True, "redirect": True}},
+            )
+            return originals[redirect_key](self, req, fp, code, msg, headers, canonical)
+
+        urllib_request.HTTPRedirectHandler.redirect_request = redirect_request
     try:
         get_coverage_registry().install_interceptor(
             "http.urllib",

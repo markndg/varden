@@ -978,22 +978,16 @@ _DEFAULT_PORTS = {'http': 80, 'https': 443}
 
 
 def _origin(url: str) -> tuple[str, str, int] | None:
-    """Return (scheme, host, port) for a URL, or None if it is unusable.
+    """Return (scheme, host, port) for an unambiguous HTTP URL, else None."""
+    from varden.url_identity import canonicalize_destination
 
-    URLs carrying userinfo are rejected outright: ``http://127.0.0.1:8000@evil``
-    has host ``evil`` and must never be mistaken for the control plane.
-    """
-    parsed = urlparse(str(url))
-    scheme = (parsed.scheme or '').lower()
-    if scheme not in _DEFAULT_PORTS or not parsed.hostname:
+    dest = canonicalize_destination(str(url))
+    if dest.rejection or not dest.scheme or not dest.host:
         return None
-    if parsed.username is not None or parsed.password is not None or '@' in (parsed.netloc or ''):
+    port = dest.port or _DEFAULT_PORTS.get(dest.scheme)
+    if port is None:
         return None
-    try:
-        port = parsed.port or _DEFAULT_PORTS[scheme]
-    except ValueError:
-        return None
-    return scheme, parsed.hostname.lower().rstrip('.'), port
+    return dest.scheme, dest.host, port
 
 
 def _is_control_plane_request(url: str | None, guard: VardenGuard) -> bool:
@@ -1027,6 +1021,79 @@ def _minimize_subprocess_payload(args: Any, kwargs: dict[str, Any]) -> dict[str,
     return {"args": _json_safe(args), "kwargs": safe_kwargs}
 
 
+def _authorize_http(current: VardenGuard, *, tool: str, url: str, method: str | None, args: dict[str, Any], payload: Any, metadata: dict[str, Any]) -> tuple[str, GuardResult | None]:
+    """Guard ``url`` and return the canonical URL the client must connect to.
+
+    An ambiguous destination raises ``VardenBlockedError`` while enforcement
+    is on. That is not a transport failure, so ``fail_mode=open`` does not
+    proceed. ``observe`` keeps the caller's URL.
+    """
+    from varden.url_identity import DestinationRejected, prepare_outbound_url
+
+    rejected_code = None
+    try:
+        canonical = prepare_outbound_url(str(url))
+    except DestinationRejected as exc:
+        rejected_code = exc.code
+        canonical = str(url)
+    result = current.guarded_action(
+        type="http_request",
+        tool=tool,
+        url=str(url),
+        method=(method or "GET").upper(),
+        args=args,
+        payload=payload,
+        metadata=metadata,
+    )
+    if rejected_code is not None and _live_enforcing(current):
+        # A delivered deny already raised. Reaching here means the control
+        # plane allowed the call or fail-open returned no decision. Neither
+        # is permission to connect to an ambiguous destination.
+        raise VardenBlockedError(
+            f"ambiguous destination: {rejected_code}",
+            {"action": "block", "reason": f"ambiguous destination: {rejected_code}", "effective_action": "block"},
+        )
+    if result and result.blocked and _live_enforcing(current):
+        raise VardenBlockedError(f"HTTP request to {url} blocked", result.decision)
+    return canonical, result
+
+
+_MAX_HTTP_REDIRECTS = 30
+
+
+def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, call_kwargs: dict[str, Any], args: tuple[Any, ...]):
+    """Send ``url`` and re-authorize every redirect before the next connection."""
+    from urllib.parse import urljoin
+
+    canonical, result = authorize(url, method)
+    response = send(method, canonical, args, call_kwargs)
+    hops = 0
+    current_method = method
+    while follow and getattr(response, "is_redirect", False) and hops < _MAX_HTTP_REDIRECTS:
+        headers = getattr(response, "headers", {}) or {}
+        location = headers.get("Location") or headers.get("location")
+        if not location:
+            break
+        nxt = urljoin(str(getattr(response, "url", canonical)), location)
+        if getattr(response, "status_code", None) in (301, 302, 303) and current_method.upper() not in {"GET", "HEAD"}:
+            current_method = "GET"
+            call_kwargs.pop("data", None)
+            call_kwargs.pop("json", None)
+            call_kwargs.pop("files", None)
+        if _request_host(str(getattr(response, "url", canonical))) != _request_host(nxt):
+            kept = {k: v for k, v in dict(call_kwargs.get("headers") or {}).items() if str(k).lower() != "authorization"}
+            call_kwargs["headers"] = kept
+        canonical, result = authorize(nxt, current_method)
+        response = send(current_method, canonical, args, call_kwargs)
+        hops += 1
+    return response, result
+
+
+def _request_host(url: str) -> str | None:
+    origin = _origin(url)
+    return origin[1] if origin else None
+
+
 def _patch_requests(guard: VardenGuard) -> None:
     try:
         import requests
@@ -1044,14 +1111,29 @@ def _patch_requests(guard: VardenGuard) -> None:
             if body is None:
                 body = _decode_body_value(kwargs.get('data'))
             payload = _minimize_http_payload({'args': list(args), 'kwargs': _json_safe(kwargs), 'body': _json_safe(body)})
-            result = current.guarded_action(type='http_request', tool='requests', url=url, method=method.upper(), args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})})
-            if result and result.blocked and _live_enforcing(current):
-                raise VardenBlockedError(f'HTTP request to {url} blocked', result.decision)
+            metadata = {'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})}
+            follow = kwargs.get('allow_redirects', True)
+            call_kwargs = dict(kwargs)
+            call_kwargs['allow_redirects'] = False
+
+            def authorize(target: str, verb: str):
+                return _authorize_http(
+                    current, tool='requests', url=str(target), method=verb, args=payload, payload=payload, metadata=metadata,
+                )
+
+            def send(verb, canonical, send_args, send_kwargs):
+                return original(self, verb, canonical, *send_args, **send_kwargs)
+
+            result = None
             try:
-                response = original(self, method, url, *args, **kwargs)
+                response, result = _follow_requests(
+                    send, method=method, url=str(url), follow=bool(follow), authorize=authorize, call_kwargs=call_kwargs, args=args,
+                )
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', url))})
                 return response
+            except VardenBlockedError:
+                raise
             except Exception as exc:
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
@@ -1066,6 +1148,20 @@ def _patch_requests(guard: VardenGuard) -> None:
     )
 
 
+def _retarget_httpx_request(request: httpx.Request, canonical: str) -> httpx.Request:
+    if canonical == str(request.url):
+        return request
+    headers = [(key, value) for key, value in request.headers.items() if key.lower() != "host"]
+    return httpx.Request(request.method, canonical, headers=headers, content=request.content)
+
+
+def _httpx_follow(kwargs: dict[str, Any], client: Any) -> bool:
+    follow = kwargs.get("follow_redirects", httpx.USE_CLIENT_DEFAULT)
+    if follow is httpx.USE_CLIENT_DEFAULT:
+        return bool(getattr(client, "follow_redirects", False))
+    return bool(follow)
+
+
 def _patch_httpx(guard: VardenGuard) -> None:
     key = 'httpx.Client.send'
 
@@ -1078,14 +1174,33 @@ def _patch_httpx(guard: VardenGuard) -> None:
                 return original(self, request, *args, **kwargs)
             body = _extract_httpx_body(request)
             payload = _minimize_http_payload({'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)})
-            result = current.guarded_action(type='http_request', tool='httpx', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})})
-            if result and result.blocked and _live_enforcing(current):
-                raise VardenBlockedError(f'HTTPX request to {request.url} blocked', result.decision)
+            metadata = {'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})}
+            follow = _httpx_follow(kwargs, self)
+            send_kwargs = dict(kwargs)
+            send_kwargs['follow_redirects'] = False
+            result = None
+            canonical, result = _authorize_http(
+                current, tool='httpx', url=request_url, method=request.method, args=payload, payload=payload, metadata=metadata,
+            )
+            request = _retarget_httpx_request(request, canonical)
             try:
-                response = original(self, request, *args, **kwargs)
+                response = original(self, request, *args, **send_kwargs)
+                hops = 0
+                while follow and response.is_redirect and hops < _MAX_HTTP_REDIRECTS:
+                    nxt = response.next_request
+                    if nxt is None:
+                        break
+                    canonical, result = _authorize_http(
+                        current, tool='httpx', url=str(nxt.url), method=nxt.method, args=payload, payload=payload, metadata=metadata,
+                    )
+                    nxt = _retarget_httpx_request(nxt, canonical)
+                    response = original(self, nxt, *args, **send_kwargs)
+                    hops += 1
                 if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(request.url)})
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(response.url)})
                 return response
+            except VardenBlockedError:
+                raise
             except Exception as exc:
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
@@ -1110,14 +1225,33 @@ def _patch_httpx(guard: VardenGuard) -> None:
                 return await original(self, request, *args, **kwargs)
             body = _extract_httpx_body(request)
             payload = _minimize_http_payload({'headers': dict(request.headers), 'method': request.method, 'body': _json_safe(body)})
-            result = current.guarded_action(type='http_request', tool='httpx_async', url=request_url, method=request.method, args=payload, payload=payload, metadata={'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})})
-            if result and result.blocked and _live_enforcing(current):
-                raise VardenBlockedError(f'HTTPX request to {request.url} blocked', result.decision)
+            metadata = {'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})}
+            follow = _httpx_follow(kwargs, self)
+            send_kwargs = dict(kwargs)
+            send_kwargs['follow_redirects'] = False
+            result = None
+            canonical, result = _authorize_http(
+                current, tool='httpx_async', url=request_url, method=request.method, args=payload, payload=payload, metadata=metadata,
+            )
+            request = _retarget_httpx_request(request, canonical)
             try:
-                response = await original(self, request, *args, **kwargs)
+                response = await original(self, request, *args, **send_kwargs)
+                hops = 0
+                while follow and response.is_redirect and hops < _MAX_HTTP_REDIRECTS:
+                    nxt = response.next_request
+                    if nxt is None:
+                        break
+                    canonical, result = _authorize_http(
+                        current, tool='httpx_async', url=str(nxt.url), method=nxt.method, args=payload, payload=payload, metadata=metadata,
+                    )
+                    nxt = _retarget_httpx_request(nxt, canonical)
+                    response = await original(self, nxt, *args, **send_kwargs)
+                    hops += 1
                 if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(request.url)})
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(response.url)})
                 return response
+            except VardenBlockedError:
+                raise
             except Exception as exc:
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))

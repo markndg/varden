@@ -25,6 +25,8 @@ SERVER_OWNED_METADATA = frozenset(
         "provenance_analysis",
         "approvals",
         "budget_evidence",
+        "identity",
+        "destination",
     }
 )
 
@@ -77,11 +79,15 @@ def _placeholder(value: Any, depth: int = 0) -> Any:
 
 
 def action_fingerprint(action: dict[str, Any]) -> str:
+    identity = action.get("metadata") if isinstance(action.get("metadata"), dict) else {}
+    identity = identity.get("identity") if isinstance(identity, dict) else {}
+    identity = identity if isinstance(identity, dict) else {}
     body = {
-        "type": action.get("type"),
+        "type": identity.get("type") or action.get("type"),
         "tool": action.get("tool"),
-        "method": action.get("method"),
-        "url": action.get("url"),
+        "method": identity.get("method") or action.get("method"),
+        "url": identity.get("canonical_url") or action.get("url"),
+        "resource": identity.get("resource"),
         "trace_id": action.get("trace_id"),
         "args": _placeholder(action.get("args") or {}),
     }
