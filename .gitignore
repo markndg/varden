@@ -58,4 +58,4 @@ TODO-OSS.md
 .pypirc
 .tmp/
 data/reports/ui-consistency/
-data/reports/ui-stability/  
+data/reports/ui-stability/
