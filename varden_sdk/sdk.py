@@ -1074,7 +1074,10 @@ def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, ca
         location = headers.get("Location") or headers.get("location")
         if not location:
             break
-        nxt = urljoin(str(getattr(response, "url", canonical)), location)
+        try:
+            nxt = urljoin(str(getattr(response, "url", canonical)), location)
+        except ValueError:
+            nxt = location
         if getattr(response, "status_code", None) in (301, 302, 303) and current_method.upper() not in {"GET", "HEAD"}:
             current_method = "GET"
             call_kwargs.pop("data", None)
@@ -1187,11 +1190,20 @@ def _patch_httpx(guard: VardenGuard) -> None:
                 response = original(self, request, *args, **send_kwargs)
                 hops = 0
                 while follow and response.is_redirect and hops < _MAX_HTTP_REDIRECTS:
-                    nxt = response.next_request
+                    try:
+                        nxt = response.next_request
+                        nxt_url = None if nxt is None else str(nxt.url)
+                    except ValueError as exc:
+                        if _live_enforcing(current):
+                            raise VardenBlockedError(
+                                "ambiguous destination: malformed_authority",
+                                {"action": "block", "reason": "ambiguous destination: malformed_authority", "effective_action": "block"},
+                            ) from exc
+                        break
                     if nxt is None:
                         break
                     canonical, result = _authorize_http(
-                        current, tool='httpx', url=str(nxt.url), method=nxt.method, args=payload, payload=payload, metadata=metadata,
+                        current, tool='httpx', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
                     )
                     nxt = _retarget_httpx_request(nxt, canonical)
                     response = original(self, nxt, *args, **send_kwargs)
@@ -1238,11 +1250,20 @@ def _patch_httpx(guard: VardenGuard) -> None:
                 response = await original(self, request, *args, **send_kwargs)
                 hops = 0
                 while follow and response.is_redirect and hops < _MAX_HTTP_REDIRECTS:
-                    nxt = response.next_request
+                    try:
+                        nxt = response.next_request
+                        nxt_url = None if nxt is None else str(nxt.url)
+                    except ValueError as exc:
+                        if _live_enforcing(current):
+                            raise VardenBlockedError(
+                                "ambiguous destination: malformed_authority",
+                                {"action": "block", "reason": "ambiguous destination: malformed_authority", "effective_action": "block"},
+                            ) from exc
+                        break
                     if nxt is None:
                         break
                     canonical, result = _authorize_http(
-                        current, tool='httpx_async', url=str(nxt.url), method=nxt.method, args=payload, payload=payload, metadata=metadata,
+                        current, tool='httpx_async', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
                     )
                     nxt = _retarget_httpx_request(nxt, canonical)
                     response = await original(self, nxt, *args, **send_kwargs)

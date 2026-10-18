@@ -111,24 +111,42 @@ def canonicalize_destination(raw: str) -> Destination:
         return reject("malformed")
     if "\\" in raw:
         return reject("malformed")
-    if "@" in urlsplit(raw).netloc or _has_userinfo(raw):
-        return reject("userinfo")
-
-    parsed = urlsplit(raw)
+    parsed = _safe_urlsplit(raw)
+    if parsed is None:
+        return reject("malformed_authority")
+    try:
+        netloc = parsed.netloc or ""
+        username = parsed.username
+        password = parsed.password
+    except ValueError:
+        return reject("malformed_authority")
     scheme = (parsed.scheme or "").lower()
-    if parsed.netloc and any(ch.isspace() for ch in parsed.netloc):
+    if username is not None or password is not None or "@" in netloc:
+        return reject("userinfo", scheme=scheme or None)
+    if netloc and any(ch.isspace() for ch in netloc):
         return reject("malformed", scheme=scheme or None)
     if not scheme:
         return reject("missing_scheme")
     if scheme not in _DEFAULT_PORTS:
         return reject("unsupported_scheme", scheme=scheme)
-    if parsed.username is not None or parsed.password is not None:
-        return reject("userinfo", scheme=scheme)
+    if "%" in netloc:
+        return reject("percent_encoded_host", scheme=scheme)
+    if netloc.count(":") > 1 and not netloc.startswith("["):
+        return reject("malformed_authority", scheme=scheme)
+    bracket_problem = _bracket_authority(netloc)
+    if bracket_problem:
+        return reject(bracket_problem, scheme=scheme)
+    port_text = _explicit_port(netloc)
+    if port_text is not None and not _valid_port_text(port_text):
+        return reject("malformed_port", scheme=scheme)
 
-    host_raw = parsed.hostname
+    try:
+        host_raw = parsed.hostname
+    except ValueError:
+        return reject("malformed_authority", scheme=scheme)
     if not host_raw:
         return reject("missing_host", scheme=scheme)
-    if "%" in host_raw or "%" in (parsed.netloc or ""):
+    if "%" in host_raw:
         return reject("percent_encoded_host", scheme=scheme)
 
     host = host_raw.lower()
@@ -143,6 +161,8 @@ def canonicalize_destination(raw: str) -> Destination:
         port = parsed.port
     except ValueError:
         return reject("malformed_port", scheme=scheme)
+    if port is not None and not 1 <= port <= 65535:
+        return reject("malformed_port", scheme=scheme)
     if port == _DEFAULT_PORTS[scheme]:
         port = None
 
@@ -152,8 +172,9 @@ def canonicalize_destination(raw: str) -> Destination:
         host, ip_text, category = _classify_host(host)
     except _Ambiguous as exc:
         return reject(exc.code, scheme=scheme)
-    except ValueError:
-        return reject("malformed_host", scheme=scheme)
+    except ValueError as exc:
+        code = exc.args[0] if exc.args and exc.args[0] in {"invalid_idna", "malformed_ipv6"} else "malformed_host"
+        return reject(code, scheme=scheme)
 
     if ip_text is not None and ":" in ip_text:
         host_for_url = f"[{ip_text}]"
@@ -200,13 +221,15 @@ def canonicalize_host_claim(value: str) -> tuple[str, int | None] | str:
         rest = text[text.index("]") + 1 :]
         port = None
         if rest:
-            if not rest.startswith(":") or not rest[1:].isdigit():
+            if not rest.startswith(":") or not _valid_port_text(rest[1:]):
                 return "malformed_domain"
             port = int(rest[1:])
         try:
             canon, _ip, _category = _classify_host(host.lower())
-        except (_Ambiguous, ValueError):
-            return "malformed_domain"
+        except _Ambiguous as exc:
+            return exc.code
+        except ValueError as exc:
+            return _host_error_code(exc)
         return canon, port
     if text.count(":") == 1:
         host_part, port_s = text.rsplit(":", 1)
@@ -214,12 +237,14 @@ def canonicalize_host_claim(value: str) -> tuple[str, int | None] | str:
             stripped = _strip_one_dot(host_part.lower())
             if stripped is None:
                 return "malformed_domain"
+            if not _valid_port_text(port_s):
+                return "malformed_domain"
             try:
                 canon, _ip, _category = _classify_host(stripped)
             except _Ambiguous as exc:
                 return exc.code
-            except ValueError:
-                return "malformed_domain"
+            except ValueError as exc:
+                return _host_error_code(exc)
             return canon, int(port_s)
     stripped = _strip_one_dot(text.lower())
     if stripped is None:
@@ -228,8 +253,8 @@ def canonicalize_host_claim(value: str) -> tuple[str, int | None] | str:
         canon, _ip, _category = _classify_host(stripped)
     except _Ambiguous as exc:
         return exc.code
-    except ValueError:
-        return "malformed_domain"
+    except ValueError as exc:
+        return _host_error_code(exc)
     return canon, None
 
 
@@ -267,7 +292,7 @@ def _classify_host(host: str) -> tuple[str, str | None, str]:
         try:
             ip = ipaddress.IPv6Address(host)
         except ValueError as exc:
-            raise ValueError("malformed ipv6") from exc
+            raise ValueError("malformed_ipv6") from exc
         if ip.ipv4_mapped is not None:
             raise _Ambiguous("ipv4_mapped")
         return ip.compressed, ip.compressed, _ip_category(ip)
@@ -289,14 +314,9 @@ def _classify_host(host: str) -> tuple[str, str | None, str]:
         text = str(ip)
         return text, text, _ip_category(ip)
 
-    if not _dns_ok(host):
-        raise ValueError("dns")
-    try:
-        a_label = host.encode("idna").decode("ascii")
-    except UnicodeError as exc:
-        raise ValueError("idna") from exc
+    a_label = _idna_hostname(host)
     if not _dns_ok(a_label):
-        raise ValueError("idna")
+        raise ValueError("malformed_host")
     category = "metadata" if a_label in _METADATA_HOSTS else "hostname"
     return a_label, None, category
 
@@ -335,30 +355,148 @@ def _dns_ok(host: str) -> bool:
     return all(_LABEL.fullmatch(label) and not (label.startswith("-") or label.endswith("-")) for label in host.split("."))
 
 
-def _has_userinfo(raw: str) -> bool:
-    # urlsplit treats ``http://expected@evil`` as userinfo. Also catch the
-    # backslash form before a parser drops it into the path.
-    parsed = urlsplit(raw)
-    return parsed.username is not None or parsed.password is not None or "@" in (parsed.netloc or "")
+def _idna_hostname(host: str) -> str:
+    """ASCII A-label form of a DNS name.
+
+    Unicode is encoded before hostname validation. Equality ignores ASCII
+    case only. A mapping such as sharp-s to ``ss`` is ambiguous and is rejected.
+    """
+    if host.isascii():
+        for label in host.split("."):
+            if label.startswith("xn--"):
+                try:
+                    label.encode("ascii").decode("idna")
+                except UnicodeError as exc:
+                    raise ValueError("invalid_idna") from exc
+        return host
+    try:
+        a_label = host.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise ValueError("invalid_idna") from exc
+    try:
+        decoded = a_label.encode("ascii").decode("idna")
+    except UnicodeError as exc:
+        raise ValueError("invalid_idna") from exc
+    if _ascii_casefold(decoded) != _ascii_casefold(host):
+        raise _Ambiguous("ambiguous_idna")
+    return a_label
+
+
+def _ascii_casefold(text: str) -> str:
+    """Lowercase A-Z only. Unicode casefold would hide IDNA transitions such as ß."""
+    return "".join(ch.lower() if "A" <= ch <= "Z" else ch for ch in text)
+
+
+def _host_error_code(exc: ValueError) -> str:
+    if exc.args and exc.args[0] in {"invalid_idna", "malformed_ipv6", "ambiguous_idna"}:
+        return str(exc.args[0])
+    return "malformed_domain"
+
+
+def _safe_urlsplit(raw: str):
+    try:
+        return urlsplit(raw)
+    except ValueError:
+        return None
+
+
+def _is_plain_ipv6(text: str) -> bool:
+    if not text or "%" in text:
+        return False
+    try:
+        ipaddress.IPv6Address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _bracket_authority(netloc: str) -> str | None:
+    """Rejection code for a bracketed authority, or None when it is well formed."""
+    if "[" not in netloc and "]" not in netloc:
+        return None
+    if not netloc.startswith("[") or netloc.find("]") == -1:
+        return "malformed_authority"
+    end = netloc.index("]")
+    inside = netloc[1:end]
+    after = netloc[end + 1 :]
+    if after and not after.startswith(":"):
+        return "malformed_authority"
+    if not _is_plain_ipv6(inside):
+        return "malformed_ipv6"
+    return None
+
+
+def _explicit_port(netloc: str) -> str | None:
+    """Port text when the authority contains a port separator, else None."""
+    if netloc.startswith("["):
+        end = netloc.find("]")
+        if end == -1:
+            return None
+        rest = netloc[end + 1 :]
+        if rest.startswith(":"):
+            return rest[1:]
+        return None
+    if netloc.count(":") == 1:
+        return netloc.split(":", 1)[1]
+    return None
+
+
+def _valid_port_text(text: str) -> bool:
+    if not text.isdigit():
+        return False
+    number = int(text)
+    return 1 <= number <= 65535
+
+
+def _redact_unparsed_userinfo(raw: str) -> str:
+    """Drop userinfo without calling the URL parser."""
+    scheme, sep, rest = raw.partition("://")
+    if not sep:
+        return raw
+    cut = len(rest)
+    for marker in "/?#":
+        index = rest.find(marker)
+        if index != -1:
+            cut = min(cut, index)
+    authority, tail = rest[:cut], rest[cut:]
+    if "@" not in authority:
+        return raw
+    return f"{scheme}://{authority.rsplit('@', 1)[-1]}{tail}"
 
 
 def _evidence_url(raw: str) -> str:
-    """Original URL with userinfo removed, for audit storage."""
+    """Original URL with userinfo removed, for audit storage.
+
+    Parser failures return a redacted string. They do not propagate.
+    """
     if not isinstance(raw, str) or not raw:
         return ""
     if len(raw) > _MAX_URL:
-        return raw[:_MAX_URL]
-    parsed = urlsplit(raw)
-    if parsed.username is None and parsed.password is None and "@" not in (parsed.netloc or ""):
+        raw = raw[:_MAX_URL]
+    parsed = _safe_urlsplit(raw)
+    if parsed is None:
+        return _redact_unparsed_userinfo(raw)
+    try:
+        username = parsed.username
+        password = parsed.password
+        netloc = parsed.netloc or ""
+        host = parsed.hostname or ""
+    except ValueError:
+        return _redact_unparsed_userinfo(raw)
+    if username is None and password is None and "@" not in netloc:
         return raw
-    host = parsed.hostname or ""
     try:
         port = parsed.port
     except ValueError:
         port = None
-    netloc = host
+    if port is not None and not 1 <= port <= 65535:
+        port = None
+    authority = host
     if port:
-        netloc = f"{host}:{port}"
+        authority = f"{host}:{port}"
     if ":" in host and not host.startswith("["):
-        netloc = f"[{host}]" if port is None else f"[{host}]:{port}"
-    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, ""))
+        authority = f"[{host}]" if port is None else f"[{host}]:{port}"
+    try:
+        return urlunsplit((parsed.scheme, authority, parsed.path, parsed.query, ""))
+    except ValueError:
+        return _redact_unparsed_userinfo(raw)

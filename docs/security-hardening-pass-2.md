@@ -196,7 +196,7 @@ A URL host and a domain claim that disagree are `block` with `conflicting_destin
 - empty path written as `/`
 - fragment dropped from the canonical URL
 
-The original string is kept as `identity.original_url`, with userinfo removed from the stored copy.
+The original string is kept as `identity.original_url`, with userinfo removed from the stored copy. Audit sanitization catches parser failures. An unmatched IPv6 bracket does not raise out of `canonicalize_destination`.
 
 These forms are rejected rather than parsed:
 
@@ -204,15 +204,24 @@ These forms are rejected rather than parsed:
 - a backslash in the URL
 - a percent-encoded host
 - a missing scheme or host
+- an authority the URL parser cannot read, including unmatched IPv6 brackets (`malformed_authority`)
+- a bracketed host that is not one IPv6 address (`malformed_ipv6`)
+- a port outside 1–65535, or an empty or non-numeric port (`malformed_port`)
 - decimal, hex, octal, and short IPv4 literals (`2852039166`, `0x7f000001`, `0177.0.0.1`, `127.1`)
 - IPv4-mapped IPv6 (`::ffff:169.254.169.254`)
 - ASCII controls
+- an invalid IDNA label or noncharacter (`invalid_idna`)
+- a Unicode name whose IDNA mapping is not the same name up to ASCII case, including `ß` → `ss`, ideographic dots, and zero-width characters (`ambiguous_idna`)
 
-`requests`, `httpx`, and `urllib` connect to the canonical URL after the guard decision. Domain rules use host equality. A `contains` check is not destination trust.
+A Unicode DNS name that round-trips is encoded to its ASCII A-label before the hostname label check. `bücher.example` and `xn--bcher-kva.example` are the same host. The label check runs on that A-label.
+
+`requests`, `httpx`, and `urllib` connect to the canonical URL after the guard decision. A rejected destination does not connect, including when `fail_mode=open` or the control plane returns an allow. Domain rules use host equality. A `contains` check is not destination trust.
 
 ### P0-8 — MCP methods that were not classified
 
-The gateway still forwards an explicit discovery set without a policy decision: `initialize`, `ping`, `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, and the recognized `notifications/*` methods. Those stay available when the control plane is down.
+The gateway still forwards an explicit discovery set without a policy decision: `initialize`, `ping`, `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, and the notification names listed in `docs/mcp-gateway.md`. The set is exact and disjoint from `tools/call`, `resources/read`, and `prompts/get`. Forwarding a discovery message does not turn its params into a privileged call. `notifications/tools/call` is not on that list.
+
+Those discovery messages stay available when the control plane is down.
 
 Every other well-formed method is `mcp_call` and must receive a guard decision before the downstream server sees it. `Tools/Call` is `tools/call`. A method with leading or trailing space, or an ASCII control, is rejected and not forwarded. A `tools/call`, `resources/read`, or `prompts/get` with an ambiguous name or URI is not forwarded, including when the policy would allow it. A guard exception is a JSON-RPC error and is not forwarded.
 

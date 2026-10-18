@@ -12,6 +12,9 @@ Phase 1 and phase 2 are in the working tree. This version is not tagged and not 
 - Cloud metadata destinations are classified as `metadata`. Loopback, private, and generic link-local addresses are not globally blocked. DNS rebinding is still open: a hostname is not pinned to the address that was checked.
 - An unrecognized action type is `unsupported` unless an explicit rule matches. A malformed type is `unsupported`. `fail_mode=open` does not turn that decision, or an explicit deny, into execution.
 - Redirect hops are authorized again before the next connection.
+- Malformed URL authorities, including unmatched IPv6 brackets, return a rejection code. They do not escape as parser exceptions, and they do not connect when `fail_mode=open`.
+- Valid Unicode DNS names are encoded to ASCII A-labels before hostname checks. Names that do not round-trip, including `ß` mapped to `ss`, are rejected.
+- MCP discovery and notification methods are an exact allowlist disjoint from `tools/call`, `resources/read`, and `prompts/get`. Nested params are not a second privileged call.
 
 Custom action types that relied on the implicit allow now need an explicit matching rule.
 

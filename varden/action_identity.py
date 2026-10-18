@@ -246,6 +246,10 @@ def bind_security_identity(action: Any) -> Any | None:
         rejection = "malformed_action_type"
         decision_action = "unsupported"
 
+    if dest is not None and isinstance(original_url, str) and dest.evidence_url != original_url:
+        # The stored action keeps the audit copy. Userinfo is not retained.
+        action.url = dest.evidence_url
+
     if dest is not None and dest.ok and rejection is None and (canonical == "http_request" or isinstance(original_domain, str)):
         action.domain = dest.host
     elif rejection is None and isinstance(original_domain, str) and original_domain:

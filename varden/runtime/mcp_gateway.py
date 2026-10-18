@@ -109,6 +109,8 @@ OBSERVED_METHODS = frozenset(
 
 _METHOD_CANONICAL = {name.lower(): name for name in PRIVILEGED_METHODS | OBSERVED_METHODS}
 _METHOD_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9._/-]{0,127}$")
+if not OBSERVED_METHODS.isdisjoint(PRIVILEGED_METHODS):
+    raise RuntimeError("MCP discovery methods overlap privileged methods")
 
 
 # Active gateway sessions in this process. Live CoverageRegistry probes check
@@ -351,6 +353,13 @@ class McpGatewaySession:
         kind, canonical, rejection = classify_mcp_method(method)
         if kind == "reject" or not canonical:
             return _rpc_error(msg_id, f"rejected MCP method: {rejection or 'ambiguous_method'}", code=-32601)
+        if kind == "discovery":
+            # Discovery is an exact method allowlist. It is not a prefix and
+            # it is disjoint from tools/call, resources/read, and prompts/get.
+            # Params are forwarded as data for that one method. They are not
+            # a second JSON-RPC operation.
+            if canonical in PRIVILEGED_METHODS:
+                return _rpc_error(msg_id, "rejected MCP method: privileged_discovery_overlap", code=-32601)
 
         if kind != "discovery":
             problem = validate_mcp_params(canonical, params)
