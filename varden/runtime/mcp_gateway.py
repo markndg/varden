@@ -5,19 +5,80 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import uuid
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import httpx
 
 from varden.runtime.guard_response import guard_response_blocks
+from varden.url_identity import canonicalize_destination
 
-# Methods that must pass through the runtime boundary before forwarding.
+
+def classify_mcp_method(method: object) -> tuple[str, str | None, str | None]:
+    """Return ``(kind, canonical, rejection)``.
+
+    ``discovery`` methods are explicitly permitted without a policy decision.
+    ``privileged`` and ``authorize`` must receive a non-deny decision before
+    the downstream server sees them. ``reject`` is ambiguous and is not forwarded.
+    """
+    if not isinstance(method, str) or not method or method != method.strip():
+        return "reject", None, "ambiguous_method"
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in method):
+        return "reject", None, "ambiguous_method"
+    canonical = _METHOD_CANONICAL.get(method.lower())
+    if canonical in OBSERVED_METHODS:
+        return "discovery", canonical, None
+    if canonical in PRIVILEGED_METHODS:
+        return "privileged", canonical, None
+    if canonical:
+        return "authorize", canonical, None
+    if not _METHOD_TOKEN.fullmatch(method):
+        return "reject", None, "malformed_method"
+    return "authorize", method, None
+
+
+def validate_mcp_params(method: str, params: object) -> str | None:
+    """Reject tool, resource, and prompt calls whose target is ambiguous."""
+    if method == "tools/call":
+        if not isinstance(params, dict):
+            return "malformed_params"
+        name = params.get("name")
+        if not isinstance(name, str) or not name or name != name.strip() or "\x00" in name:
+            return "ambiguous_tool"
+        arguments = params.get("arguments") if "arguments" in params else None
+        if "arguments" in params and arguments is not None and not isinstance(arguments, dict):
+            return "malformed_arguments"
+    elif method == "resources/read":
+        if not isinstance(params, dict):
+            return "malformed_params"
+        uri = params.get("uri")
+        if not isinstance(uri, str) or not uri or uri != uri.strip() or "\x00" in uri:
+            return "ambiguous_resource"
+        if uri.startswith(("http://", "https://")):
+            dest = canonicalize_destination(uri)
+            if dest.rejection:
+                return dest.rejection
+    elif method == "prompts/get":
+        if not isinstance(params, dict):
+            return "malformed_params"
+        name = params.get("name")
+        if not isinstance(name, str) or not name or name != name.strip() or "\x00" in name:
+            return "ambiguous_prompt"
+    return None
+
+
+def _rpc_error(msg_id: Any, message: str, *, data: Any = None, code: int = -32000) -> dict[str, Any]:
+    error: dict[str, Any] = {"code": code, "message": message}
+    if data is not None:
+        error["data"] = data
+    return {"jsonrpc": "2.0", "id": msg_id, "error": error}
+
+# Methods that must be authorized before forwarding.
 PRIVILEGED_METHODS = frozenset(
     {
         "tools/call",
@@ -26,17 +87,30 @@ PRIVILEGED_METHODS = frozenset(
     }
 )
 
-# Methods we observe/fingerprint but typically allow after recording.
+# Protocol discovery and lifecycle. These may proceed without a policy
+# decision. Every other method is authorization-required.
 OBSERVED_METHODS = frozenset(
     {
         "initialize",
+        "ping",
         "tools/list",
         "resources/list",
+        "resources/templates/list",
         "prompts/list",
         "notifications/initialized",
         "notifications/tools/list_changed",
+        "notifications/resources/list_changed",
+        "notifications/prompts/list_changed",
+        "notifications/progress",
+        "notifications/cancelled",
+        "notifications/message",
     }
 )
+
+_METHOD_CANONICAL = {name.lower(): name for name in PRIVILEGED_METHODS | OBSERVED_METHODS}
+_METHOD_TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9._/-]{0,127}$")
+if not OBSERVED_METHODS.isdisjoint(PRIVILEGED_METHODS):
+    raise RuntimeError("MCP discovery methods overlap privileged methods")
 
 
 # Active gateway sessions in this process. Live CoverageRegistry probes check
@@ -269,31 +343,53 @@ class McpGatewaySession:
                 )
 
     def exchange(self, message: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(message, dict):
+            return _rpc_error(None, "malformed MCP message", code=-32600)
         if not self.proc or not self.proc.stdin or not self.proc.stdout:
             raise RuntimeError("gateway session not started")
         method = message.get("method")
-        params = message.get("params") or {}
+        params = message.get("params") if message.get("params") is not None else {}
         msg_id = message.get("id")
+        kind, canonical, rejection = classify_mcp_method(method)
+        if kind == "reject" or not canonical:
+            return _rpc_error(msg_id, f"rejected MCP method: {rejection or 'ambiguous_method'}", code=-32601)
+        if kind == "discovery":
+            # Discovery is an exact method allowlist. It is not a prefix and
+            # it is disjoint from tools/call, resources/read, and prompts/get.
+            # Params are forwarded as data for that one method. They are not
+            # a second JSON-RPC operation.
+            if canonical in PRIVILEGED_METHODS:
+                return _rpc_error(msg_id, "rejected MCP method: privileged_discovery_overlap", code=-32601)
 
-        if method in PRIVILEGED_METHODS or method in OBSERVED_METHODS:
-            if method in PRIVILEGED_METHODS:
-                decision = self.guard(method=str(method), params=params if isinstance(params, dict) else {"value": params})
-                if decision.get("blocked"):
-                    detail = decision.get("detail") or {}
-                    reason = detail
-                    if isinstance(detail, dict):
-                        reason = (detail.get("decision") or {}).get("reason") or detail
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": msg_id,
-                        "error": {
-                            "code": -32000,
-                            "message": f"blocked by Varden MCP gateway: {reason}",
-                            "data": detail,
-                        },
-                    }
+        if kind != "discovery":
+            problem = validate_mcp_params(canonical, params)
+            if problem:
+                return _rpc_error(
+                    msg_id,
+                    f"blocked by Varden MCP gateway: {problem}",
+                    data={"rejection": problem},
+                )
+            try:
+                decision = self.guard(
+                    method=canonical,
+                    params=params if isinstance(params, dict) else {"value": params},
+                )
+            except Exception as exc:
+                # No decision was delivered. Do not forward an authorization-required call.
+                return _rpc_error(msg_id, f"MCP authorization unavailable: {exc}", code=-32001)
+            if decision.get("blocked"):
+                detail = decision.get("detail") if isinstance(decision, dict) else None
+                reason = "blocked"
+                if isinstance(detail, dict):
+                    reason = (detail.get("decision") or {}).get("reason") or detail
+                return _rpc_error(
+                    msg_id,
+                    f"blocked by Varden MCP gateway: {reason}",
+                    data={"detail": detail} if detail else None,
+                )
 
-        line = json.dumps(message, ensure_ascii=False)
+        outbound = message if canonical == method else {**message, "method": canonical}
+        line = json.dumps(outbound, ensure_ascii=False)
         with self._lock:
             self.proc.stdin.write(line + "\n")
             self.proc.stdin.flush()
@@ -309,13 +405,13 @@ class McpGatewaySession:
                 except Exception:
                     continue
                 if resp.get("id") == msg_id:
-                    if method == "tools/list":
+                    if canonical == "tools/list":
                         result = resp.get("result") or {}
                         tools = result.get("tools") if isinstance(result, dict) else None
                         if isinstance(tools, list):
                             self.fingerprint_tools(tools)
-                    if method in PRIVILEGED_METHODS and "result" in resp:
-                        self.observe_result(method=str(method), result=params)
+                    if canonical in PRIVILEGED_METHODS and "result" in resp:
+                        self.observe_result(method=canonical, result=params)
                     return resp
 
 

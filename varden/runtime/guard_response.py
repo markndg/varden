@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 # Aliases the decision engine and status mapping already use.
-DENY_ACTIONS = frozenset({"block", "blocked", "require_approval", "approval_required"})
+DENY_ACTIONS = frozenset({"block", "blocked", "require_approval", "approval_required", "unsupported"})
 
 # Policy vocabulary that may execute (``sanitise`` modifies output; it does not block).
 _NON_DENY_ACTIONS = frozenset({"allow", "warn", "warned", "monitor", "sanitise"})
