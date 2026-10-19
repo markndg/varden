@@ -442,10 +442,9 @@ def _explicit_port(netloc: str) -> str | None:
 
 
 def _valid_port_text(text: str) -> bool:
-    if not text.isdigit():
+    if not text or len(text) > 5 or not text.isascii() or not text.isdecimal():
         return False
-    number = int(text)
-    return 1 <= number <= 65535
+    return 1 <= int(text) <= 65535
 
 
 def _redact_unparsed_userinfo(raw: str) -> str:
