@@ -28,16 +28,33 @@ jobs:
       - name: Python unit and security tests
         run: python -m pytest -q --ignore=tests/browser --ignore=tests/test_clean_wheel_smoke.py
 
+  # Linux already runs the suite. This job covers the same boundary tests on
+  # macOS, including Thread._stop and F_GETPATH directory descriptors.
+  macos-boundary:
+    name: macos boundary
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install package with test extras
+        run: pip install -e ".[test]"
+      - name: Phase 4 boundary and directory descriptors
+        run: python -m pytest -q tests/security/pass2/test_p4_boundary_integrity.py tests/security/pass2/test_p4_dir_fd.py tests/security/pass2/test_p4_binding_isolation.py --tb=short
+
   test:
     name: test
     runs-on: ubuntu-latest
-    needs: [test-matrix]
+    needs: [test-matrix, macos-boundary]
     if: always()
     steps:
-      - name: Require all Python matrix shards
+      - name: Require Linux matrix and macOS boundary
         run: |
           echo "matrix result=${{ needs.test-matrix.result }}"
+          echo "macos result=${{ needs.macos-boundary.result }}"
           test "${{ needs.test-matrix.result }}" = "success"
+          test "${{ needs.macos-boundary.result }}" = "success"
 
   provider-integrations:
     name: provider integrations

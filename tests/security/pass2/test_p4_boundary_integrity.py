@@ -132,7 +132,9 @@ class _Listener(threading.Thread):
         super().__init__(daemon=True)
         self.host = host
         self.accepted: list[tuple] = []
-        self._stop = threading.Event()
+        # Thread._stop is a method on Python 3.12 and earlier. An Event under
+        # that name is called when the thread exits.
+        self._stop_event = threading.Event()
         self.sock = socket.socket(socket.AF_INET6 if ":" in host else socket.AF_INET, socket.SOCK_STREAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind((host, 0))
@@ -141,7 +143,7 @@ class _Listener(threading.Thread):
 
     def run(self):
         self.sock.settimeout(0.1)
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             try:
                 conn, addr = self.sock.accept()
             except socket.timeout:
@@ -154,7 +156,7 @@ class _Listener(threading.Thread):
             conn.close()
 
     def close(self):
-        self._stop.set()
+        self._stop_event.set()
         self.join(timeout=1)
         self.sock.close()
 
@@ -765,8 +767,9 @@ def test_unresolvable_dir_fd_is_refused(tmp_path):
     _fs_guard(lambda action: _allow())
     read_fd, write_fd = os.pipe()
     try:
-        with pytest.raises(VardenBlockedError):
+        with pytest.raises(VardenBlockedError) as caught:
             os.open("notes.txt", os.O_RDONLY, dir_fd=read_fd)
+        assert caught.value.decision.get("reason") == "filesystem_dir_fd_unresolved"
     finally:
         os.close(read_fd)
         os.close(write_fd)

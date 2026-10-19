@@ -132,7 +132,7 @@ Python 3.13's `ipaddress` treats the documentation ranges `192.0.2.0/24`, `198.5
 
 Filesystem coverage remains **`PARTIAL`**.
 
-Prevented on the patched calls, on the platform tested: a relative `dir_fd` whose directory path can be read and whose joined path is denied; a relative `dir_fd` whose path cannot be read, while enforcing; a final-component symlink introduced after a non-symlink check, via `O_NOFOLLOW`; a passthrough inherited by another thread or task.
+Prevented on the patched calls: a relative `dir_fd` whose directory path can be read and whose joined path is denied; a relative `dir_fd` that is not a directory, is closed, is invalid, or whose path does not name that same directory, while enforcing; a final-component symlink introduced after a non-symlink check, via `O_NOFOLLOW`; a passthrough inherited by another thread or task.
 
 Not prevented: inode replacement of a regular file between the re-check and the syscall; a parent directory replaced after the re-check; a hard link that already exists under another name; a directory renamed after `F_GETPATH` or `readlink`; `os.read` and `os.write`; a caller-supplied `opener`; native code; another process. `openat2` is not used. A Linux-only flag is not described as cross-platform containment.
 
@@ -161,7 +161,7 @@ Tested: macOS Darwin 25.6.0, CPython 3.13.13, arm64. Libraries in this environme
 | Boundary | macOS (tested) | Linux (not run) | Windows (not run) |
 |---|---|---|---|
 | Operation-scoped dial and peer check | exercised on the supported clients | same Python wrappers, not run here | same Python wrappers, not run here |
-| `dir_fd` path | `F_GETPATH`, exercised | `/proc/self/fd` is implemented, not run | no `dir_fd`; relative form would be refused if reached, not run |
+| `dir_fd` path | `F_GETPATH` after `S_ISDIR`, exercised | `/proc/self/fd` after `S_ISDIR`, exercised in Linux 3.12 | no `dir_fd`; relative form would be refused if reached, not run |
 | `O_NOFOLLOW` | exercised | present on Linux, not run | not present; the flag is applied only when `os.O_NOFOLLOW` exists |
 | `openat2` | not implemented | not implemented | not applicable |
 
@@ -319,7 +319,7 @@ The remaining cost is the path resolution the check requires. It was not removed
 
 ### Platform
 
-Tested here: macOS Darwin 25.6.0, CPython 3.13.13, arm64, urllib3 2.7.0, requests 2.34.2, httpx 0.28.1, httpcore 1.0.9. `h2` is not installed. Linux and Windows were not run in this session. Existing GitHub Actions run the suite on Ubuntu for CPython 3.10–3.12 when this branch is pushed. That run is not a result in this report until it exists.
+Tested here: macOS Darwin 25.6.0, CPython 3.13.13, arm64, urllib3 2.7.0, requests 2.34.2, httpx 0.28.1, httpcore 1.0.9. `h2` is not installed. Linux CPython 3.12 was run in a container after the CI failures; the counts are in section 18. Windows was not run. GitHub Actions also runs the suite on Ubuntu for CPython 3.10–3.12. A result from that hosted matrix is not claimed until the workflow for this commit finishes.
 
 ### Remaining risks
 
@@ -349,3 +349,40 @@ Machine: macOS Darwin 25.6.0, CPython 3.13.13. Linux and Windows were not run.
 The 7 errors are the same sandbox Playwright misses as section 15: Chromium is not in the sandbox browser cache. The browser file passed when pointed at the installed cache. No frontend code changed. The 12 new passes are `test_p4_binding_isolation.py`.
 
 `ruff check` on `tests/security/pass2/test_p4_binding_isolation.py` passes. `ruff check` on the modified runtime modules still reports the repository's existing blind-except findings. `varden/destination_binding.py` at the reviewed SHA already reported 25 of those. They were not mass-rewritten. The catches around peer inspection stay broad on purpose: an inspection error is a drop, not a reuse.
+
+## 18. Linux CI failures after the first remediation push
+
+GitHub Actions on Ubuntu, CPython 3.10–3.12, reported eight failures. macOS CPython 3.13 did not. Production HTTP code was not changed for these failures.
+
+### `TypeError: 'Event' object is not callable`
+
+Seven boundary tests failed in the listener helper, before the connection assertions ran. `_Listener` subclasses `threading.Thread` and stored a `threading.Event` on `_stop`. On 3.12 and earlier, `Thread._bootstrap_inner` calls `self._stop()` when the thread exits. The Event is not callable. CPython 3.13 no longer has that method, which is why the macOS run stayed green.
+
+The attribute is now `_stop_event`. The tests still record accepted connections and the addresses passed to `connect`.
+
+### `pipe:[N]/notes.txt`
+
+`test_unresolvable_dir_fd_is_refused` opens a relative path with a pipe as `dir_fd`. Linux `readlink("/proc/self/fd/N")` returns `pipe:[N]` for a pipe. That string is not a directory. The old code joined `notes.txt` onto it and the patched `os.open` reached the kernel, which raised `FileNotFoundError`. macOS `F_GETPATH` fails on a pipe, so the same test already took the unresolved path and raised `VardenBlockedError`.
+
+`directory_fd_path` now requires `os.fstat` and `stat.S_ISDIR` before it trusts a name. The name must be absolute, and `os.stat` of that name must be the same directory as the descriptor (`st_dev` and `st_ino`). A pipe, socket, closed fd, invalid fd, `anon_inode`, or deleted path stays unresolved. While enforcing, the wrapper raises `VardenBlockedError` with reason `filesystem_dir_fd_unresolved` and does not call the syscall. Observe mode still calls the original `os.open`, so the kernel error is preserved (`ENOTSUP` on macOS, `ENOTDIR` on Linux). A missing file on a real directory remains `FileNotFoundError`. A secret directory outside the workspace is a policy denial, not an unresolved descriptor. Filesystem coverage stays `PARTIAL`.
+
+`tests/security/pass2/test_p4_dir_fd.py` covers a valid directory, a missing file, a pipe, observe-mode native errno, a socket, a closed descriptor, an invalid descriptor, a renamed directory, and a secret directory outside the workspace. Each one checks the exception class and a filesystem side effect.
+
+### CI
+
+The Ubuntu matrix already runs the suite for 3.10–3.12, excluding browser and the clean wheel. Those have their own jobs, and the browser job installs Chromium. A `macos-latest` job now runs the Phase 4 boundary, directory-descriptor, and binding-isolation tests on CPython 3.12. The required `test` check waits for that job and the Linux matrix.
+
+### Linux results
+
+CPython 3.12, Debian bookworm, arm64, in a Linux container. Playwright Chromium and its system libraries were installed. The first run used the CI install extras (`langchain`, `test`, `all`) as root. Root ignores `chmod 0444`, so `test_rc_readonly_db_attach_degrades_not_crash` did not degrade; that is not a destination-binding or `dir_fd` regression. The eight pass2 skips were `pytest.importorskip` for OpenAI and Anthropic, which that extra set does not install. One more skip was `test_invariant_equivalent_destinations` because the container had no `~/.ssh`.
+
+The verification run used a normal user, the `providers` extra, a home `.ssh` directory, and Playwright. Root was not used for the assertions.
+
+| Command | Result |
+|---|---|
+| `pytest -q tests/security/pass2/test_p4_boundary_integrity.py --tb=short` | 30 passed, 2.66s |
+| `pytest -q tests/security/pass2/` with the CI extras, as root | 403 passed, 8 provider skips, 32 warnings, 32.87s |
+| `pytest -q --tb=line -p no:cacheprovider -rs` as a normal user, with providers and Playwright | 1247 passed, 0 skipped, 0 failed, 0 errors, 49 warnings, 229.51s |
+| `test_rc_readonly_db_attach_degrades_not_crash` as that same user | 1 passed |
+
+The boundary file includes the seven listener tests and the pipe `dir_fd` refusal. `test_p4_dir_fd.py` is inside the pass2 and full runs. The full run's browser tests executed. Windows is still not run. Hosted GitHub Actions for 3.10 and 3.11 are not a result in this table.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -436,16 +437,8 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
     }
 
 
-def directory_fd_path(dir_fd: int) -> str | None:
-    """Path of a directory descriptor, or None when this platform cannot say.
-
-    macOS uses ``F_GETPATH``. Linux uses ``/proc/self/fd``. The result can be
-    stale if the directory is renamed after the descriptor was opened. It is
-    still the strongest path identity available without ``openat2``. Windows
-    has no ``dir_fd`` and returns None.
-    """
-    if isinstance(dir_fd, bool) or not isinstance(dir_fd, int) or dir_fd < 0:
-        return None
+def _descriptor_name(dir_fd: int) -> str | None:
+    """Platform name for an open descriptor. Not yet checked to be a directory."""
     import sys
 
     if sys.platform == "darwin":
@@ -465,6 +458,38 @@ def directory_fd_path(dir_fd: int) -> str | None:
         except OSError:
             return None
     return None
+
+
+def directory_fd_path(dir_fd: int) -> str | None:
+    """Path of a directory descriptor, or None when it cannot be trusted.
+
+    The descriptor must be a directory: ``os.fstat`` and ``stat.S_ISDIR``.
+    macOS then uses ``F_GETPATH``. Linux uses ``/proc/self/fd``. The named
+    path must be absolute and must still be that same directory. A pipe,
+    socket, ``anon_inode``, deleted path, or other non-directory is None
+    rather than a string that can be joined. Windows has no ``dir_fd``.
+    A later rename can make the returned path stale. This is not ``openat2``.
+    """
+    if isinstance(dir_fd, bool) or not isinstance(dir_fd, int) or dir_fd < 0:
+        return None
+    try:
+        held = os.fstat(dir_fd)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(held.st_mode):
+        return None
+    named = _descriptor_name(dir_fd)
+    if not named or not os.path.isabs(named):
+        return None
+    try:
+        current = os.stat(named)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(current.st_mode):
+        return None
+    if current.st_dev != held.st_dev or current.st_ino != held.st_ino:
+        return None
+    return named
 
 
 def descriptor_relative_path(path: Any, dir_fd: Any) -> Any:
