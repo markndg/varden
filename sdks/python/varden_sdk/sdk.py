@@ -22,6 +22,8 @@ import httpx
 # Legacy standalone SDK. The supported package is the repository-root
 # ``varden_sdk``. This copy still refuses a delivered deny. ``fail_mode=open``
 # applies only when no decision was delivered.
+# It does not pin connection destinations, attest interceptor integrity, or
+# resolve directory descriptors. Those boundaries exist only in the root package.
 
 
 def _decode_body_value(value: Any) -> Any:

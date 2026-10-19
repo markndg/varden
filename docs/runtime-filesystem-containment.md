@@ -15,10 +15,11 @@ the caller-supplied path string.
   (narrows — does not eliminate — check/use gaps)
 * `os.open`, `os.link`, and `os.symlink`, including keyword arguments
   (`os.remove(path=...)`, `os.rename(src=..., dst=...)`)
-* Descriptor-relative `dir_fd` calls are classified from the path string.
-  A benign relative name against an untracked directory descriptor is not
-  contained. Blanket denial of `dir_fd` would stop the process from deleting
-  its own temporary files (`shutil.rmtree`), so that form stays PARTIAL.
+* Relative `dir_fd` calls are joined to the directory descriptor's path on
+  macOS (`F_GETPATH`) and Linux (`/proc/self/fd`) before classification.
+  An unresolvable relative descriptor is refused while enforcement is on.
+  Absolute paths ignore `dir_fd`, matching the kernel. This is still path
+  identity, not an `openat2` containment guarantee.
 
 API unchanged:
 
@@ -55,7 +56,18 @@ does not silently ALLOW.
 A parent directory that is a normal in-workspace path at check time can be
 replaced with a symlink to an outside path before use. Varden's pre-use
 re-check detects many such mutations; concurrent races at the kernel boundary
-and unpatched APIs remain out of scope. Descriptor-relative (`openat`)
-hardening is future work, not claimed here.
+and unpatched APIs remain out of scope. Relative `dir_fd` paths are resolved
+to a directory path before classification on macOS and Linux. That is not
+`openat2` `RESOLVE_BENEATH` containment, and a directory renamed after the
+descriptor path is read can still disagree with the kernel.
+
+A path-scoped passthrough applies only to the thread or task that entered
+the original syscall, and only until that syscall returns. Another task does
+not inherit it.
+
+`O_NOFOLLOW` is applied when the checked final component was not a symlink.
+A symlink swapped in after that check is not followed. Replacing a regular
+file's inode, pre-existing hard links, raw descriptors, and native code
+remain outside this boundary.
 
 See also `docs/runtime-limitations.md`.

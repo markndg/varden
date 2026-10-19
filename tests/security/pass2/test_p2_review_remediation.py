@@ -176,7 +176,14 @@ def test_allow_decision_does_not_connect_to_a_rejected_destination():
             Guard(), tool="requests", url=str(target), method=verb, args={}, payload={}, metadata={}
         )
 
-    with pytest.raises(VardenBlockedError):
+    from varden.destination_binding import resolver_scope
+
+    def resolver(host, _port):
+        if host == "ok.example":
+            return ["203.0.113.10"]
+        raise OSError("unresolved")
+
+    with resolver_scope(resolver), pytest.raises(VardenBlockedError):
         _follow_requests(
             send,
             method="POST",

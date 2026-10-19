@@ -19,7 +19,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from varden.runtime.coverage import ENFORCED, NOT_ROUTED, OBSERVATIONAL, PARTIAL, UNCOVERED, format_startup_attestation, get_coverage_registry
+from varden.runtime.coverage import ENFORCED, NOT_ROUTED, PARTIAL, UNCOVERED, format_startup_attestation, get_coverage_registry
 from varden.runtime.guard_response import (
     AUTHORITATIVE_ALLOW,
     SERVICE_FAILURE_WITH_ALLOW,
@@ -436,6 +436,24 @@ class VardenGuard:
     def guarded_action(self, *, type: str, tool: str | None = None, url: str | None = None, method: str | None = None,
                        args: dict[str, Any] | None = None, metadata: dict[str, Any] | None = None, payload: Any = None,
                        agent_name: str | None = None, workflow_id: str | None = None) -> GuardResult | None:
+        contract = get_coverage_registry().enforcement_contract()
+        if contract.get("mode_locked"):
+            verified = get_coverage_registry().verify()
+            required = list(contract.get("require_coverage") or [])
+            if contract.get("mode") == "strict" and not required:
+                required = ["http", "subprocess"]
+            if verified.get("changes") and required and _live_enforcing(self):
+                lost = []
+                for change in verified["changes"]:
+                    surface = str(change.get("surface") or "")
+                    category = surface.split(".", 1)[0]
+                    if surface in required or category in required:
+                        lost.append(surface)
+                if lost:
+                    raise VardenBlockedError(
+                        "required interceptor is no longer installed: " + ", ".join(lost),
+                        {"action": "block", "reason": "interceptor_tamper", "effective_action": "block", "surfaces": lost},
+                    )
         workflow_id = workflow_id or _current_workflow.get()
         agent_name = agent_name or _current_agent.get() or self.app_name
         trace_id = _current_trace_id.get() or workflow_id or str(uuid.uuid4())
@@ -881,10 +899,59 @@ def unpatch_runtime() -> None:
         _runtime_patches.restore_extended(_ORIGINALS)
         _ORIGINALS.clear()
         _WRAPPERS.clear()
+        _RECONCILE_TARGETS.clear()
+        from varden.destination_binding import restore_resolution_hook
+
+        restore_resolution_hook()
         _remove_import_hook()
         _PATCHED = False
         get_coverage_registry().reset(release_enforcement_lock=True)
         _current_guard.set(None)
+
+
+_RECONCILE_TARGETS: dict[str, tuple[Any, Any, Any]] = {}
+
+
+def reconcile_runtime() -> dict[str, str]:
+    """Restore wrappers that were put back to the saved original.
+
+    A foreign replacement is left in place and reported as ``foreign``.
+    Coverage verify then drops ENFORCED for that surface. This does not
+    defeat an attacker who keeps a reference to the original function.
+    """
+    from varden.destination_binding import hook_installed, install_resolution_hook
+
+    results: dict[str, str] = {}
+    with _PATCH_LOCK:
+        for key, (get_target, set_target, make_wrapper) in list(_RECONCILE_TARGETS.items()):
+            try:
+                current = get_target()
+            except Exception:
+                results[key] = "unavailable"
+                continue
+            wrapper = _WRAPPERS.get(key)
+            original = _ORIGINALS.get(key)
+            if wrapper is not None and current is wrapper:
+                results[key] = "intact"
+                continue
+            if original is not None and current is original and wrapper is not None:
+                set_target(wrapper)
+                results[key] = "restored"
+                continue
+            if original is not None and current is original:
+                wrapper = make_wrapper(original)
+                _WRAPPERS[key] = wrapper
+                set_target(wrapper)
+                results[key] = "restored"
+                continue
+            results[key] = "foreign"
+        if hook_installed():
+            results["http.transport_binding"] = "intact"
+        else:
+            install_resolution_hook()
+            results["http.transport_binding"] = "restored" if hook_installed() else "foreign"
+    get_coverage_registry().verify()
+    return results
 
 
 def _reconcile_or_install(key: str, *, get_target: Any, set_target: Any, make_wrapper: Any) -> bool:
@@ -893,6 +960,7 @@ def _reconcile_or_install(key: str, *, get_target: Any, set_target: Any, make_wr
     Returns True when our wrapper is installed afterward. Does not fight foreign
     wrappers (avoids repatch loops); coverage verify will then refuse ENFORCED.
     """
+    _RECONCILE_TARGETS[key] = (get_target, set_target, make_wrapper)
     if key not in _ORIGINALS:
         original = get_target()
         _ORIGINALS[key] = original
@@ -920,6 +988,9 @@ def patch_runtime(guard: VardenGuard) -> None:
     global _PATCHED
     with _PATCH_LOCK:
         _install_import_hook()
+        from varden.destination_binding import install_resolution_hook
+
+        install_resolution_hook()
         _patch_requests(guard)
         _patch_httpx(guard)
         _patch_openai(guard)
@@ -933,13 +1004,23 @@ def patch_runtime(guard: VardenGuard) -> None:
             def _check_requests():
                 try:
                     import requests
+                    from varden.destination_binding import transport_binding_installed
                     request_ok = requests.sessions.Session.request is _WRAPPERS.get(
                         'requests.sessions.Session.request'
                     )
                     send_ok = requests.sessions.Session.send is _WRAPPERS.get(
                         'requests.sessions.Session.send'
                     )
-                    return request_ok and send_ok
+                    transport_ok = transport_binding_installed()
+                    surface = reg.get('http.requests')
+                    if surface is not None:
+                        surface.evidence = {
+                            **(surface.evidence or {}),
+                            'url_policy': bool(request_ok and send_ok),
+                            'socket_binding': bool(transport_ok),
+                            'binding_scope': 'operation' if transport_ok else 'unavailable',
+                        }
+                    return bool(request_ok and send_ok and transport_ok)
                 except Exception:
                     return False
 
@@ -950,6 +1031,12 @@ def patch_runtime(guard: VardenGuard) -> None:
                     interceptor='requests.Session.request+Session.send',
                     limitations=[
                         'Saved pre-patch Session.request or Session.send references bypass monkeypatching.',
+                        'URL policy and operation-scoped socket binding are separate. ENFORCED requires both the request wrappers and the transport dial/pool checks.',
+                        'A direct connection dials only the addresses authorized for that operation. The URL host is unchanged for TLS. Another thread or task does not inherit the authorization.',
+                        'A pooled connection is reused only when its peer is verified in that operation address set. An unknown peer is not reused.',
+                        'HTTP proxies are not socket-bound. The proxy resolves the target.',
+                        'Custom HTTPAdapter subclasses are not destination-bound.',
+                        'socket.getaddrinfo is not rewritten. Unrelated lookups are unaffected.',
                     ],
                 )
             except RuntimeError:
@@ -964,15 +1051,33 @@ def patch_runtime(guard: VardenGuard) -> None:
                 )
         if 'httpx.Client.send' in _ORIGINALS:
             def _check_httpx():
+                from varden.destination_binding import transport_binding_installed
                 sync_ok = httpx.Client.send is _WRAPPERS.get('httpx.Client.send')
                 async_ok = httpx.AsyncClient.send is _WRAPPERS.get('httpx.AsyncClient.send')
-                return sync_ok and async_ok
+                transport_ok = transport_binding_installed()
+                surface = reg.get('http.httpx')
+                if surface is not None:
+                    surface.evidence = {
+                        **(surface.evidence or {}),
+                        'url_policy': bool(sync_ok and async_ok),
+                        'socket_binding': bool(transport_ok),
+                        'binding_scope': 'operation' if transport_ok else 'unavailable',
+                    }
+                return bool(sync_ok and async_ok and transport_ok)
 
             try:
                 reg.install_interceptor(
                     'http.httpx',
                     checker=_check_httpx,
                     interceptor='httpx.Client/AsyncClient.send',
+                    limitations=[
+                        'URL policy and operation-scoped socket binding are separate. ENFORCED requires both the send wrappers and the httpcore dial/pool checks.',
+                        'A direct connection dials only the addresses on that request. The URL host is unchanged for TLS. Another task does not inherit the authorization.',
+                        'A pooled connection, including an HTTP/2 connection, is reused only when its peer is verified in that request address set.',
+                        'HTTP proxies are not socket-bound. The proxy resolves the target.',
+                        'Custom transports, including MockTransport, are not destination-bound.',
+                        'socket.getaddrinfo is not rewritten. Unrelated lookups are unaffected.',
+                    ],
                 )
             except RuntimeError:
                 reg.mark(
@@ -1098,21 +1203,41 @@ def _minimize_subprocess_payload(args: Any, kwargs: dict[str, Any]) -> dict[str,
     return {"args": _json_safe(args), "kwargs": safe_kwargs}
 
 
-def _authorize_http(current: VardenGuard, *, tool: str, url: str, method: str | None, args: dict[str, Any], payload: Any, metadata: dict[str, Any]) -> tuple[str, GuardResult | None]:
-    """Guard ``url`` and return the canonical URL the client must connect to.
+def _authorize_http(
+    current: VardenGuard,
+    *,
+    tool: str,
+    url: str,
+    method: str | None,
+    args: dict[str, Any],
+    payload: Any,
+    metadata: dict[str, Any],
+    binding: Any | None = None,
+) -> tuple[str, GuardResult | None, Any]:
+    """Guard ``url`` and return the canonical URL plus the connection binding.
 
     An ambiguous destination raises ``VardenBlockedError`` while enforcement
     is on. That is not a transport failure, so ``fail_mode=open`` does not
     proceed. ``observe`` keeps the caller's URL.
+
+    A direct hop whose name cannot be resolved does not connect while
+    enforcement is on. The returned binding is the address set ``connect``
+    must use. Hostname canonicalization still reports ``dns_rebinding=open``;
+    the pin is this binding, not the URL identity.
     """
+    from varden.destination_binding import resolve_binding
     from varden.url_identity import DestinationRejected, prepare_outbound_url
 
+    if binding is None:
+        binding = resolve_binding(str(url))
     rejected_code = None
     try:
         canonical = prepare_outbound_url(str(url))
     except DestinationRejected as exc:
         rejected_code = exc.code
         canonical = str(url)
+    hop_meta = dict(metadata or {})
+    hop_meta["destination_binding"] = binding.to_dict()
     result = current.guarded_action(
         type="http_request",
         tool=tool,
@@ -1120,7 +1245,7 @@ def _authorize_http(current: VardenGuard, *, tool: str, url: str, method: str | 
         method=(method or "GET").upper(),
         args=args,
         payload=payload,
-        metadata=metadata,
+        metadata=hop_meta,
     )
     if rejected_code is not None and _live_enforcing(current):
         # A delivered deny already raised. Reaching here means the control
@@ -1130,9 +1255,78 @@ def _authorize_http(current: VardenGuard, *, tool: str, url: str, method: str | 
             f"ambiguous destination: {rejected_code}",
             {"action": "block", "reason": f"ambiguous destination: {rejected_code}", "effective_action": "block"},
         )
+    if binding.blocks_direct_connection and _live_enforcing(current):
+        code = binding.error or binding.status
+        raise VardenBlockedError(
+            f"destination binding failed: {code}",
+            {"action": "block", "reason": f"destination_binding_{code}", "effective_action": "block"},
+        )
     if result and result.blocked and _live_enforcing(current):
         raise VardenBlockedError(f"HTTP request to {url} blocked", result.decision)
-    return canonical, result
+    return canonical, result, binding
+
+
+def _requests_binding(session: Any, url: str, explicit_proxies: Any) -> Any:
+    from varden.destination_binding import requests_adapter_kind, requests_proxy_url, resolve_binding
+
+    proxies = explicit_proxies if isinstance(explicit_proxies, dict) else None
+    proxy = requests_proxy_url(session, url, proxies)
+    if requests_adapter_kind(session, url) != "default":
+        return resolve_binding(url, socket_bound=False, proxy=proxy)
+    if proxy:
+        return resolve_binding(url, socket_bound=False, proxy=proxy)
+    return resolve_binding(url)
+
+
+def _httpx_binding(client: Any, url: str) -> Any:
+    from varden.destination_binding import httpx_route, resolve_binding
+
+    route, proxy = httpx_route(client, url)
+    if route == "direct":
+        return resolve_binding(url)
+    return resolve_binding(url, socket_bound=False, proxy=proxy)
+
+
+def _send_pinned_requests(session: Any, prepared: Any, send_kwargs: dict[str, Any], binding: Any) -> Any:
+    from varden.destination_binding import DestinationBindingError, pinned_connection, scrub_urllib3_pools
+
+    try:
+        with pinned_connection(binding):
+            scrub_urllib3_pools(session, binding)
+            return _raw_requests_send(session, prepared, send_kwargs)
+    except DestinationBindingError as exc:
+        raise VardenBlockedError(
+            f"destination binding failed: {exc.code}",
+            {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
+        ) from exc
+
+
+async def _send_pinned_httpx_async(client: Any, original: Any, request: Any, args: tuple[Any, ...], send_kwargs: dict[str, Any], binding: Any) -> Any:
+    from varden.destination_binding import DestinationBindingError, mark_request_binding, pinned_connection
+
+    try:
+        with pinned_connection(binding):
+            mark_request_binding(request, binding)
+            return await original(client, request, *args, **send_kwargs)
+    except DestinationBindingError as exc:
+        raise VardenBlockedError(
+            f"destination binding failed: {exc.code}",
+            {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
+        ) from exc
+
+
+def _send_pinned_httpx(client: Any, original: Any, request: Any, args: tuple[Any, ...], send_kwargs: dict[str, Any], binding: Any) -> Any:
+    from varden.destination_binding import DestinationBindingError, mark_request_binding, pinned_connection
+
+    try:
+        with pinned_connection(binding):
+            mark_request_binding(request, binding)
+            return original(client, request, *args, **send_kwargs)
+    except DestinationBindingError as exc:
+        raise VardenBlockedError(
+            f"destination binding failed: {exc.code}",
+            {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
+        ) from exc
 
 
 _MAX_HTTP_REDIRECTS = 30
@@ -1188,11 +1382,18 @@ def _strip_cross_origin_credentials(call_kwargs: dict[str, Any], previous: str, 
     return True
 
 
+def _authorization_pair(value: Any) -> tuple[str, Any]:
+    """Accept the 2-tuple tests return and the 3-tuple ``_authorize_http`` returns."""
+    if isinstance(value, tuple) and len(value) >= 2:
+        return value[0], value[1]
+    raise TypeError("authorize() must return the canonical URL and the guard result")
+
+
 def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, call_kwargs: dict[str, Any], args: tuple[Any, ...], session: Any = None):
     """Send ``url`` and re-authorize every redirect before the next connection."""
     from urllib.parse import urljoin
 
-    canonical, result = authorize(url, method)
+    canonical, result = _authorization_pair(authorize(url, method))
     response = send(method, canonical, args, call_kwargs)
     hops = 0
     current_method = method
@@ -1215,7 +1416,7 @@ def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, ca
         if saved_auth is not None:
             session.auth = None
         try:
-            canonical, result = authorize(nxt, current_method)
+            canonical, result = _authorization_pair(authorize(nxt, current_method))
             response = send(current_method, canonical, args, call_kwargs)
         finally:
             if saved_auth is not None:
@@ -1325,13 +1526,13 @@ def _send_authorized_request(
     from urllib.parse import urljoin
 
     target = _requests_target_url(session, url, call_kwargs)
-    canonical, result = authorize(target, method)
+    canonical, result, binding = authorize(target, method)
     prepared, send_kwargs = _prepare_session_call(session, method, url, call_kwargs)
     prepared_identity = _operation_identity(str(prepared.url), str(prepared.method))
     if prepared_identity != _operation_identity(target, method):
-        canonical, result = authorize(str(prepared.url), str(prepared.method))
+        canonical, result, binding = authorize(str(prepared.url), str(prepared.method))
     prepared = _retarget_prepared(prepared, canonical)
-    response = _raw_requests_send(session, prepared, send_kwargs)
+    response = _send_pinned_requests(session, prepared, send_kwargs, binding)
     hops = 0
     current_method = str(getattr(prepared, "method", method) or method)
     while follow and getattr(response, "is_redirect", False) and hops < _MAX_HTTP_REDIRECTS:
@@ -1345,9 +1546,9 @@ def _send_authorized_request(
             nxt = location
         if getattr(response, "status_code", None) in (301, 302, 303) and current_method.upper() not in {"GET", "HEAD"}:
             current_method = "GET"
-        canonical, result = authorize(nxt, current_method)
+        canonical, result, binding = authorize(nxt, current_method)
         outbound = _prepared_redirect(response, current_method, canonical)
-        response = _raw_requests_send(session, outbound, send_kwargs)
+        response = _send_pinned_requests(session, outbound, send_kwargs, binding)
         hops += 1
     return response, result
 
@@ -1406,6 +1607,13 @@ def _patch_requests(guard: VardenGuard) -> None:
                 url = url.decode('utf-8')
             if _is_control_plane_request(url, current):
                 return original(self, method, url, *args, **kwargs)
+            if requests.sessions.Session.send is not _WRAPPERS.get("requests.sessions.Session.send"):
+                get_coverage_registry().verify()
+                if _live_enforcing(current):
+                    raise VardenBlockedError(
+                        "requests Session.send interceptor is missing",
+                        {"action": "block", "reason": "interceptor_tamper", "effective_action": "block", "surfaces": ["http.requests"]},
+                    )
             bound = _bind_request_call(args, kwargs)
             body = bound.get('json')
             if body is None:
@@ -1417,8 +1625,10 @@ def _patch_requests(guard: VardenGuard) -> None:
             call_kwargs['allow_redirects'] = False
 
             def authorize(target: str, verb: str):
+                binding = _requests_binding(self, str(target), call_kwargs.get("proxies"))
                 return _authorize_http(
                     current, tool='requests', url=str(target), method=verb, args=payload, payload=payload, metadata=metadata,
+                    binding=binding,
                 )
 
             result = None
@@ -1461,13 +1671,15 @@ def _patch_requests(guard: VardenGuard) -> None:
             send_kwargs['allow_redirects'] = False
 
             def authorize(target: str, verb: str):
+                binding = _requests_binding(self, str(target), kwargs.get("proxies"))
                 return _authorize_http(
                     current, tool='requests', url=str(target), method=verb, args=payload, payload=payload, metadata=metadata,
+                    binding=binding,
                 )
 
-            canonical, result = authorize(request_url, method)
+            canonical, result, binding = authorize(request_url, method)
             outbound = _retarget_prepared(request, canonical)
-            response = _raw_requests_send(self, outbound, send_kwargs)
+            response = _send_pinned_requests(self, outbound, send_kwargs, binding)
             hops = 0
             while follow and getattr(response, 'is_redirect', False) and hops < _MAX_HTTP_REDIRECTS:
                 location = (getattr(response, 'headers', {}) or {}).get('Location') or (getattr(response, 'headers', {}) or {}).get('location')
@@ -1482,9 +1694,9 @@ def _patch_requests(guard: VardenGuard) -> None:
                 if getattr(response, 'status_code', None) in (301, 302, 303) and method.upper() not in {'GET', 'HEAD'}:
                     verb = 'GET'
                 method = verb
-                canonical, result = authorize(nxt, verb)
+                canonical, result, binding = authorize(nxt, verb)
                 outbound = _prepared_redirect(response, verb, canonical)
-                response = _raw_requests_send(self, outbound, send_kwargs)
+                response = _send_pinned_requests(self, outbound, send_kwargs, binding)
                 hops += 1
             if result:
                 current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', request_url))})
@@ -1568,12 +1780,14 @@ def _patch_httpx(guard: VardenGuard) -> None:
             send_kwargs = dict(kwargs)
             send_kwargs['follow_redirects'] = False
             result = None
-            canonical, result = _authorize_http(
+            binding = _httpx_binding(self, request_url)
+            canonical, result, binding = _authorize_http(
                 current, tool='httpx', url=request_url, method=request.method, args=payload, payload=payload, metadata=metadata,
+                binding=binding,
             )
             request = _retarget_httpx_request(request, canonical)
             try:
-                response = original(self, request, *args, **send_kwargs)
+                response = _send_pinned_httpx(self, original, request, args, send_kwargs, binding)
                 hops = 0
                 while follow and response.is_redirect and hops < _MAX_HTTP_REDIRECTS:
                     try:
@@ -1588,14 +1802,16 @@ def _patch_httpx(guard: VardenGuard) -> None:
                         break
                     if nxt is None:
                         break
-                    canonical, result = _authorize_http(
+                    binding = _httpx_binding(self, str(nxt_url))
+                    canonical, result, binding = _authorize_http(
                         current, tool='httpx', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
+                        binding=binding,
                     )
                     previous = str(getattr(response, "url", ""))
                     nxt = _httpx_drop_cross_origin_credentials(nxt, previous)
                     nxt = _retarget_httpx_request(nxt, canonical)
                     hop_kwargs = _httpx_hop_kwargs(send_kwargs, previous, canonical)
-                    response = original(self, nxt, *args, **hop_kwargs)
+                    response = _send_pinned_httpx(self, original, nxt, args, hop_kwargs, binding)
                     hops += 1
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(response.url)})
@@ -1631,12 +1847,14 @@ def _patch_httpx(guard: VardenGuard) -> None:
             send_kwargs = dict(kwargs)
             send_kwargs['follow_redirects'] = False
             result = None
-            canonical, result = _authorize_http(
+            binding = _httpx_binding(self, request_url)
+            canonical, result, binding = _authorize_http(
                 current, tool='httpx_async', url=request_url, method=request.method, args=payload, payload=payload, metadata=metadata,
+                binding=binding,
             )
             request = _retarget_httpx_request(request, canonical)
             try:
-                response = await original(self, request, *args, **send_kwargs)
+                response = await _send_pinned_httpx_async(self, original, request, args, send_kwargs, binding)
                 hops = 0
                 while follow and response.is_redirect and hops < _MAX_HTTP_REDIRECTS:
                     try:
@@ -1651,14 +1869,16 @@ def _patch_httpx(guard: VardenGuard) -> None:
                         break
                     if nxt is None:
                         break
-                    canonical, result = _authorize_http(
+                    binding = _httpx_binding(self, str(nxt_url))
+                    canonical, result, binding = _authorize_http(
                         current, tool='httpx_async', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
+                        binding=binding,
                     )
                     previous = str(getattr(response, "url", ""))
                     nxt = _httpx_drop_cross_origin_credentials(nxt, previous)
                     nxt = _retarget_httpx_request(nxt, canonical)
                     hop_kwargs = _httpx_hop_kwargs(send_kwargs, previous, canonical)
-                    response = await original(self, nxt, *args, **hop_kwargs)
+                    response = await _send_pinned_httpx_async(self, original, nxt, args, hop_kwargs, binding)
                     hops += 1
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(response.url)})
