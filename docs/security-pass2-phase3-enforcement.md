@@ -161,7 +161,7 @@ Commands actually run on this branch (do not treat a row as passed unless it app
 - The two HTTP redirect tests bind `127.0.0.1` and `::1`. `127.0.0.2` cannot be bound on this Mac (`EADDRNOTAVAIL`).
 
 - Phase 3 gauntlet collected 49 tests. They are included in the full suite result below.
-- Full suite: `.venv/bin/python -m pytest -q --tb=line -p no:cacheprovider` — 1096 passed, 1 skipped, 31 warnings, 194.56s. The skip is `tests/runtime/test_filesystem_containment.py` when `~/.ssh` is absent, not a Phase 3 failure.
+- Full suite: `.venv/bin/python -m pytest -q --tb=line -p no:cacheprovider` — 1096 passed, 1 skipped, 31 warnings, 194.56s. A second run with `-rs` (192.93s) identified the skip: `tests/browser/test_ui_smoke.py` because `playwright` is not installed. No frontend files changed, so that browser pass was not required.
 - Clean wheel: `.venv/bin/python -m pytest tests/test_clean_wheel_smoke.py -q --tb=short -p no:cacheprovider` — 4 passed, 4.45s. The enforcement smoke installs the root wheel into a fresh venv with `PYTHONPATH` empty and checks that keyword `os.remove` of `id_rsa` does not delete the file after a delivered block.
 - Compile: `.venv/bin/python -m compileall -q` on the changed modules — exit 0.
 - Ruff: the new gauntlet file is clean. `ruff check` on the pre-existing modules still reports historical `BLE001` / import-order findings that this pass did not introduce and did not mass-rewrite. There is no ruff configuration or ruff job in `.github/`.
