@@ -103,3 +103,26 @@ def guard_response_blocks(payload: Any, *, status_code: int | None = None) -> bo
     if response_denies_execution(payload):
         return True
     return response_decision_ambiguous(payload)
+
+
+def response_authorizes_execution(payload: Any) -> bool:
+    """True only when a recognized non-deny decision was delivered.
+
+    A missing decision is not permission. An ambiguous slot is not permission.
+    A deny in any recognized slot wins, including when another slot says allow.
+    Transport failure is not decided here: callers apply fail-open only when
+    no HTTP result was delivered.
+    """
+    if response_denies_execution(payload) or response_decision_ambiguous(payload):
+        return False
+    decisions = candidate_decisions(payload)
+    if not decisions:
+        return False
+    for decision in decisions:
+        action = _policy_action(decision, "action")
+        if action not in _NON_DENY_ACTIONS:
+            return False
+        effective = _policy_action(decision, "effective_action")
+        if effective is not None and effective not in _NON_DENY_ACTIONS:
+            return False
+    return True

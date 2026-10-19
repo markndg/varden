@@ -63,6 +63,10 @@ _current_lineage: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Co
 _current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar('varden_trace_id', default=None)
 _current_parent_event_id: contextvars.ContextVar[int | None] = contextvars.ContextVar('varden_parent_event_id', default=None)
 _current_provenance: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar('varden_provenance', default=None)
+# Set while Session.request is already authorizing, so Session.send does not
+# authorize the same hop a second time. Direct Session.send stays at depth 0.
+_requests_guard_depth: contextvars.ContextVar[int] = contextvars.ContextVar('varden_requests_guard_depth', default=0)
+_SENSITIVE_REDIRECT_HEADERS = frozenset({'authorization', 'cookie', 'proxy-authorization'})
 
 _PATCH_LOCK = threading.Lock()
 _PATCHED = False
@@ -801,6 +805,9 @@ def unpatch_runtime() -> None:
                 if key == 'requests.sessions.Session.request':
                     import requests
                     requests.sessions.Session.request = original
+                elif key == 'requests.sessions.Session.send':
+                    import requests
+                    requests.sessions.Session.send = original
                 elif key == 'httpx.Client.send':
                     httpx.Client.send = original
                 elif key == 'httpx.AsyncClient.send':
@@ -808,12 +815,21 @@ def unpatch_runtime() -> None:
                 elif key == 'openai.responses.create':
                     from openai.resources.responses.responses import Responses
                     Responses.create = original
+                elif key == 'openai.responses.async_create':
+                    from openai.resources.responses.responses import AsyncResponses
+                    AsyncResponses.create = original
                 elif key == 'openai.chat.completions.create':
                     from openai.resources.chat.completions.completions import Completions
                     Completions.create = original
+                elif key == 'openai.chat.completions.async_create':
+                    from openai.resources.chat.completions.completions import AsyncCompletions
+                    AsyncCompletions.create = original
                 elif key == 'anthropic.messages.create':
                     import anthropic
                     anthropic.resources.messages.Messages.create = original
+                elif key == 'anthropic.messages.async_create':
+                    import anthropic
+                    anthropic.resources.messages.AsyncMessages.create = original
                 elif key == 'subprocess.Popen':
                     subprocess.Popen = original
                 elif key == 'subprocess.run':
@@ -875,9 +891,13 @@ def patch_runtime(guard: VardenGuard) -> None:
             def _check_requests():
                 try:
                     import requests
-                    return requests.sessions.Session.request is _WRAPPERS.get(
+                    request_ok = requests.sessions.Session.request is _WRAPPERS.get(
                         'requests.sessions.Session.request'
                     )
+                    send_ok = requests.sessions.Session.send is _WRAPPERS.get(
+                        'requests.sessions.Session.send'
+                    )
+                    return request_ok and send_ok
                 except Exception:
                     return False
 
@@ -885,7 +905,10 @@ def patch_runtime(guard: VardenGuard) -> None:
                 reg.install_interceptor(
                     'http.requests',
                     checker=_check_requests,
-                    interceptor='requests.Session.request',
+                    interceptor='requests.Session.request+Session.send',
+                    limitations=[
+                        'Saved pre-patch Session.request or Session.send references bypass monkeypatching.',
+                    ],
                 )
             except RuntimeError:
                 reg.mark(
@@ -899,7 +922,9 @@ def patch_runtime(guard: VardenGuard) -> None:
                 )
         if 'httpx.Client.send' in _ORIGINALS:
             def _check_httpx():
-                return httpx.Client.send is _WRAPPERS.get('httpx.Client.send')
+                sync_ok = httpx.Client.send is _WRAPPERS.get('httpx.Client.send')
+                async_ok = httpx.AsyncClient.send is _WRAPPERS.get('httpx.AsyncClient.send')
+                return sync_ok and async_ok
 
             try:
                 reg.install_interceptor(
@@ -931,6 +956,7 @@ def patch_runtime(guard: VardenGuard) -> None:
                     limitations=[
                         'Saved pre-patch function references bypass monkeypatching.',
                         'Native forks from extensions are outside Python hooks.',
+                        'os.exec*, os.spawn*, and ctypes/libc process creation are not intercepted.',
                     ],
                 )
             except RuntimeError:
@@ -942,12 +968,21 @@ def patch_runtime(guard: VardenGuard) -> None:
                     verified=False,
                     applicable=True,
                 )
-        if 'openai.responses.create' in _ORIGINALS or 'openai.chat.completions.create' in _ORIGINALS:
-            if not getattr(reg, '_mode_locked', False):
-                reg.mark('llm.openai_transport', status=ENFORCED, interceptor='openai', active=True, applicable=True)
-        if 'anthropic.messages.create' in _ORIGINALS:
-            if not getattr(reg, '_mode_locked', False):
-                reg.mark('llm.anthropic_transport', status=ENFORCED, interceptor='anthropic', active=True, applicable=True)
+        _note_llm_coverage(
+            'llm.openai_transport',
+            [
+                'openai.responses.create',
+                'openai.responses.async_create',
+                'openai.chat.completions.create',
+                'openai.chat.completions.async_create',
+            ],
+            partial_reason=_llm_partial_reason('openai'),
+        )
+        _note_llm_coverage(
+            'llm.anthropic_transport',
+            ['anthropic.messages.create', 'anthropic.messages.async_create'],
+            partial_reason=_llm_partial_reason('anthropic'),
+        )
         # MCP stays non-applicable until discover()/gateway marks it. Do not
         # claim NOT_ROUTED merely because protect() ran without MCP configs.
         _PATCHED = True
@@ -1061,7 +1096,26 @@ def _authorize_http(current: VardenGuard, *, tool: str, url: str, method: str | 
 _MAX_HTTP_REDIRECTS = 30
 
 
-def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, call_kwargs: dict[str, Any], args: tuple[Any, ...]):
+def _strip_cross_host_credentials(call_kwargs: dict[str, Any], previous: str, nxt: str) -> bool:
+    """Drop caller credentials when the next hop is a different host.
+
+    Returns True when the hop is cross-host. Session-level ``auth`` is cleared
+    by the caller for that hop; this helper only edits the per-call kwargs.
+    """
+    if _request_host(previous) == _request_host(nxt):
+        return False
+    kept = {
+        key: value
+        for key, value in dict(call_kwargs.get("headers") or {}).items()
+        if str(key).lower() not in _SENSITIVE_REDIRECT_HEADERS
+    }
+    call_kwargs["headers"] = kept
+    call_kwargs.pop("auth", None)
+    call_kwargs.pop("cookies", None)
+    return True
+
+
+def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, call_kwargs: dict[str, Any], args: tuple[Any, ...], session: Any = None):
     """Send ``url`` and re-authorize every redirect before the next connection."""
     from urllib.parse import urljoin
 
@@ -1083,11 +1137,16 @@ def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, ca
             call_kwargs.pop("data", None)
             call_kwargs.pop("json", None)
             call_kwargs.pop("files", None)
-        if _request_host(str(getattr(response, "url", canonical))) != _request_host(nxt):
-            kept = {k: v for k, v in dict(call_kwargs.get("headers") or {}).items() if str(k).lower() != "authorization"}
-            call_kwargs["headers"] = kept
-        canonical, result = authorize(nxt, current_method)
-        response = send(current_method, canonical, args, call_kwargs)
+        cross_host = _strip_cross_host_credentials(call_kwargs, str(getattr(response, "url", canonical)), nxt)
+        saved_auth = getattr(session, "auth", None) if session is not None and cross_host else None
+        if saved_auth is not None:
+            session.auth = None
+        try:
+            canonical, result = authorize(nxt, current_method)
+            response = send(current_method, canonical, args, call_kwargs)
+        finally:
+            if saved_auth is not None:
+                session.auth = saved_auth
         hops += 1
     return response, result
 
@@ -1095,6 +1154,45 @@ def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, ca
 def _request_host(url: str) -> str | None:
     origin = _origin(url)
     return origin[1] if origin else None
+
+
+def _retarget_prepared(request: Any, canonical: str) -> Any:
+    if canonical == str(getattr(request, "url", "")):
+        return request
+    try:
+        request.url = canonical
+    except Exception:
+        return request
+    headers = getattr(request, "headers", None)
+    if headers is not None and "Host" in headers:
+        try:
+            del headers["Host"]
+        except Exception:
+            pass
+    return request
+
+
+def _prepared_redirect(response: Any, method: str, canonical: str) -> Any:
+    """Build the next PreparedRequest without replaying cross-host credentials."""
+    import requests
+
+    previous = str(getattr(response, "url", "") or "")
+    source = getattr(getattr(response, "request", None), "headers", {}) or {}
+    same_host = _request_host(previous) == _request_host(canonical)
+    headers = {}
+    for key, value in dict(source).items():
+        lowered = str(key).lower()
+        if lowered == "host":
+            continue
+        if not same_host and lowered in _SENSITIVE_REDIRECT_HEADERS:
+            continue
+        headers[key] = value
+    body = None
+    if method.upper() not in {"GET", "HEAD"} and getattr(response, "status_code", None) not in (301, 302, 303):
+        body = getattr(getattr(response, "request", None), "body", None)
+    prepared = requests.PreparedRequest()
+    prepared.prepare(method=method, url=canonical, headers=headers, data=body)
+    return prepared
 
 
 def _patch_requests(guard: VardenGuard) -> None:
@@ -1128,9 +1226,10 @@ def _patch_requests(guard: VardenGuard) -> None:
                 return original(self, verb, canonical, *send_args, **send_kwargs)
 
             result = None
+            token = _requests_guard_depth.set(_requests_guard_depth.get() + 1)
             try:
                 response, result = _follow_requests(
-                    send, method=method, url=str(url), follow=bool(follow), authorize=authorize, call_kwargs=call_kwargs, args=args,
+                    send, method=method, url=str(url), follow=bool(follow), authorize=authorize, call_kwargs=call_kwargs, args=args, session=self,
                 )
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', url))})
@@ -1141,6 +1240,8 @@ def _patch_requests(guard: VardenGuard) -> None:
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
                 raise
+            finally:
+                _requests_guard_depth.reset(token)
         return wrapper
 
     _reconcile_or_install(
@@ -1149,6 +1250,77 @@ def _patch_requests(guard: VardenGuard) -> None:
         set_target=lambda fn: setattr(requests.sessions.Session, 'request', fn),
         make_wrapper=_make,
     )
+
+    send_key = 'requests.sessions.Session.send'
+
+    def _make_send(original: Any):
+        @functools.wraps(original)
+        def send_wrapper(self, request: Any, **kwargs: Any):
+            if _requests_guard_depth.get() > 0:
+                return original(self, request, **kwargs)
+            current = current_guard() or guard
+            request_url = str(getattr(request, 'url', '') or '')
+            if _is_control_plane_request(request_url, current):
+                return original(self, request, **kwargs)
+            method = str(getattr(request, 'method', 'GET') or 'GET')
+            payload = _minimize_http_payload({'method': method, 'url': request_url, 'entry': 'Session.send'})
+            metadata = {'runtime': {'surface': 'http', 'boundary': True, 'entry': 'Session.send'}}
+            follow = bool(kwargs.get('allow_redirects', True))
+            send_kwargs = dict(kwargs)
+            send_kwargs['allow_redirects'] = False
+
+            def authorize(target: str, verb: str):
+                return _authorize_http(
+                    current, tool='requests', url=str(target), method=verb, args=payload, payload=payload, metadata=metadata,
+                )
+
+            canonical, result = authorize(request_url, method)
+            outbound = _retarget_prepared(request, canonical)
+            token = _requests_guard_depth.set(_requests_guard_depth.get() + 1)
+            try:
+                response = original(self, outbound, **send_kwargs)
+                hops = 0
+                while follow and getattr(response, 'is_redirect', False) and hops < _MAX_HTTP_REDIRECTS:
+                    location = (getattr(response, 'headers', {}) or {}).get('Location') or (getattr(response, 'headers', {}) or {}).get('location')
+                    if not location:
+                        break
+                    from urllib.parse import urljoin
+                    try:
+                        nxt = urljoin(str(getattr(response, 'url', canonical)), location)
+                    except ValueError:
+                        nxt = location
+                    verb = method
+                    if getattr(response, 'status_code', None) in (301, 302, 303) and method.upper() not in {'GET', 'HEAD'}:
+                        verb = 'GET'
+                    method = verb
+                    canonical, result = authorize(nxt, verb)
+                    outbound = _prepared_redirect(response, verb, canonical)
+                    response = original(self, outbound, **send_kwargs)
+                    hops += 1
+                if result:
+                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', request_url))})
+                return response
+            finally:
+                _requests_guard_depth.reset(token)
+        return send_wrapper
+
+    _reconcile_or_install(
+        send_key,
+        get_target=lambda: requests.sessions.Session.send,
+        set_target=lambda fn: setattr(requests.sessions.Session, 'send', fn),
+        make_wrapper=_make_send,
+    )
+
+
+def _httpx_drop_cross_origin_credentials(request: httpx.Request, previous_url: str) -> httpx.Request:
+    if _request_host(previous_url) == _request_host(str(request.url)):
+        return request
+    headers = [
+        (key, value)
+        for key, value in request.headers.items()
+        if key.lower() not in _SENSITIVE_REDIRECT_HEADERS and key.lower() != "host"
+    ]
+    return httpx.Request(request.method, request.url, headers=headers, content=request.content)
 
 
 def _retarget_httpx_request(request: httpx.Request, canonical: str) -> httpx.Request:
@@ -1205,6 +1377,7 @@ def _patch_httpx(guard: VardenGuard) -> None:
                     canonical, result = _authorize_http(
                         current, tool='httpx', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
                     )
+                    nxt = _httpx_drop_cross_origin_credentials(nxt, str(getattr(response, "url", "")))
                     nxt = _retarget_httpx_request(nxt, canonical)
                     response = original(self, nxt, *args, **send_kwargs)
                     hops += 1
@@ -1265,6 +1438,7 @@ def _patch_httpx(guard: VardenGuard) -> None:
                     canonical, result = _authorize_http(
                         current, tool='httpx_async', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
                     )
+                    nxt = _httpx_drop_cross_origin_credentials(nxt, str(getattr(response, "url", "")))
                     nxt = _retarget_httpx_request(nxt, canonical)
                     response = await original(self, nxt, *args, **send_kwargs)
                     hops += 1
@@ -1313,75 +1487,174 @@ def _llm_usage_output_payload(provider: str, response: Any, *, kwargs: dict[str,
     }
 
 
+_LLM_GAPS: dict[str, str | None] = {}
+
+
+def _llm_partial_reason(provider: str) -> str | None:
+    return _LLM_GAPS.get(provider)
+
+
+def _note_llm_coverage(name: str, keys: list[str], *, partial_reason: str | None) -> None:
+    """Attest LLM transport from the methods actually wrapped.
+
+    ENFORCED requires every known sync and async create method to be the live
+    wrapper. A missing async class is PARTIAL, not a silent full claim.
+    """
+    present = [key for key in keys if key in _ORIGINALS and key in _WRAPPERS]
+    if not present:
+        return
+    reg = get_coverage_registry()
+
+    def checker() -> bool:
+        for key in present:
+            owner = _LLM_OWNERS.get(key)
+            if owner is None:
+                return False
+            try:
+                current = getattr(owner[0], owner[1])
+            except Exception:
+                return False
+            if current is not _WRAPPERS.get(key):
+                return False
+        return True
+
+    limitations = [
+        "Does not cover model cognition or tool-choice reasoning.",
+        "Only the create methods imported from the known SDK classes are patched.",
+    ]
+    status = ENFORCED
+    if partial_reason:
+        status = PARTIAL
+        limitations.insert(0, partial_reason)
+    try:
+        reg.install_interceptor(
+            name,
+            checker=checker,
+            interceptor="+".join(present),
+            status=status,
+            limitations=limitations,
+        )
+    except RuntimeError:
+        reg.mark(
+            name,
+            status=UNCOVERED,
+            active=False,
+            installed=True,
+            verified=False,
+            applicable=True,
+            limitations=limitations,
+        )
+
+
+_LLM_OWNERS: dict[str, tuple[Any, str]] = {}
+
+
+def _install_llm_method(guard: VardenGuard, *, key: str, owner: Any, tool: str, message: str) -> str:
+    """Return patched, absent, or failed. ``owner`` is the class that owns create."""
+    if owner is None or not hasattr(owner, "create"):
+        return "absent"
+    _LLM_OWNERS[key] = (owner, "create")
+
+    def _make(original: Any):
+        if inspect.iscoroutinefunction(original):
+            @functools.wraps(original)
+            async def async_wrapper(self, *args: Any, **kwargs: Any):
+                current = current_guard() or guard
+                payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
+                result = current.guarded_action(type='llm_call', tool=tool, args=payload, payload=payload)
+                if result and result.blocked and _live_enforcing(current):
+                    raise VardenBlockedError(message, result.decision)
+                response = await original(self, *args, **kwargs)
+                if result:
+                    current.record_result(
+                        action=result.action,
+                        decision=result.decision,
+                        input_payload=payload,
+                        output_payload=_llm_usage_output_payload(tool.split('.', 1)[0], response, kwargs=kwargs),
+                    )
+                return response
+            return async_wrapper
+
+        @functools.wraps(original)
+        def wrapper(self, *args: Any, **kwargs: Any):
+            current = current_guard() or guard
+            payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
+            result = current.guarded_action(type='llm_call', tool=tool, args=payload, payload=payload)
+            if result and result.blocked and _live_enforcing(current):
+                raise VardenBlockedError(message, result.decision)
+            response = original(self, *args, **kwargs)
+            if result:
+                current.record_result(
+                    action=result.action,
+                    decision=result.decision,
+                    input_payload=payload,
+                    output_payload=_llm_usage_output_payload(tool.split('.', 1)[0], response, kwargs=kwargs),
+                )
+            return response
+        return wrapper
+
+    ok = _reconcile_or_install(
+        key,
+        get_target=lambda: getattr(owner, "create"),
+        set_target=lambda fn: setattr(owner, "create", fn),
+        make_wrapper=_make,
+    )
+    return "patched" if ok else "failed"
+
+
+def _load_attr(module: str, attr: str) -> Any:
+    imported = importlib.import_module(module)
+    return getattr(imported, attr)
+
+
 def _patch_openai(guard: VardenGuard) -> None:
-    try:
-        from openai.resources.responses.responses import Responses
-    except Exception:
-        Responses = None
-    if Responses is not None:
-        key = 'openai.responses.create'
-        if key not in _ORIGINALS:
-            _ORIGINALS[key] = Responses.create
-
-            @functools.wraps(_ORIGINALS[key])
-            def wrapper(self, *args: Any, **kwargs: Any):
-                current = current_guard() or guard
-                payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
-                result = current.guarded_action(type='llm_call', tool='openai.responses.create', args=payload, payload=payload)
-                if result and result.blocked and _live_enforcing(current):
-                    raise VardenBlockedError('OpenAI response call blocked', result.decision)
-                response = _ORIGINALS[key](self, *args, **kwargs)
-                if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload=_llm_usage_output_payload('openai', response, kwargs=kwargs))
-                return response
-            Responses.create = wrapper
-
-    try:
-        from openai.resources.chat.completions.completions import Completions
-    except Exception:
-        Completions = None
-    if Completions is not None:
-        key = 'openai.chat.completions.create'
-        if key not in _ORIGINALS:
-            _ORIGINALS[key] = Completions.create
-
-            @functools.wraps(_ORIGINALS[key])
-            def wrapper(self, *args: Any, **kwargs: Any):
-                current = current_guard() or guard
-                payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
-                result = current.guarded_action(type='llm_call', tool='openai.chat.completions.create', args=payload, payload=payload)
-                if result and result.blocked and _live_enforcing(current):
-                    raise VardenBlockedError('OpenAI chat completion blocked', result.decision)
-                response = _ORIGINALS[key](self, *args, **kwargs)
-                if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload=_llm_usage_output_payload('openai', response, kwargs=kwargs))
-                return response
-            Completions.create = wrapper
+    specs = (
+        ("openai.responses.create", "openai.resources.responses.responses", "Responses", "openai.responses.create", "OpenAI response call blocked"),
+        ("openai.responses.async_create", "openai.resources.responses.responses", "AsyncResponses", "openai.responses.create", "OpenAI response call blocked"),
+        ("openai.chat.completions.create", "openai.resources.chat.completions.completions", "Completions", "openai.chat.completions.create", "OpenAI chat completion blocked"),
+        ("openai.chat.completions.async_create", "openai.resources.chat.completions.completions", "AsyncCompletions", "openai.chat.completions.create", "OpenAI chat completion blocked"),
+    )
+    outcomes: dict[str, str] = {}
+    for key, module, attr, tool, message in specs:
+        try:
+            owner = _load_attr(module, attr)
+        except Exception:
+            outcomes[key] = "absent"
+            continue
+        outcomes[key] = _install_llm_method(guard, key=key, owner=owner, tool=tool, message=message)
+    if not any(value == "patched" for value in outcomes.values()):
+        _LLM_GAPS.pop("openai", None)
+        return
+    missing = [key for key, value in outcomes.items() if "async" in key and value != "patched"]
+    _LLM_GAPS["openai"] = (
+        "Async OpenAI create is not wrapped (" + ", ".join(missing) + "). Coverage is partial."
+        if missing
+        else None
+    )
 
 
 def _patch_anthropic(guard: VardenGuard) -> None:
-    try:
-        import anthropic
-        Messages = anthropic.resources.messages.Messages
-    except Exception:
-        Messages = None
-    if Messages is not None:
-        key = 'anthropic.messages.create'
-        if key not in _ORIGINALS:
-            _ORIGINALS[key] = Messages.create
-
-            @functools.wraps(_ORIGINALS[key])
-            def wrapper(self, *args: Any, **kwargs: Any):
-                current = current_guard() or guard
-                payload = {'args': _json_safe(args), 'kwargs': _json_safe(kwargs)}
-                result = current.guarded_action(type='llm_call', tool='anthropic.messages.create', args=payload, payload=payload)
-                if result and result.blocked and _live_enforcing(current):
-                    raise VardenBlockedError('Anthropic message blocked', result.decision)
-                response = _ORIGINALS[key](self, *args, **kwargs)
-                if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload=_llm_usage_output_payload('anthropic', response, kwargs=kwargs))
-                return response
-            Messages.create = wrapper
+    specs = (
+        ("anthropic.messages.create", "anthropic.resources.messages", "Messages", "anthropic.messages.create", "Anthropic message blocked"),
+        ("anthropic.messages.async_create", "anthropic.resources.messages", "AsyncMessages", "anthropic.messages.create", "Anthropic message blocked"),
+    )
+    outcomes: dict[str, str] = {}
+    for key, module, attr, tool, message in specs:
+        try:
+            owner = _load_attr(module, attr)
+        except Exception:
+            outcomes[key] = "absent"
+            continue
+        outcomes[key] = _install_llm_method(guard, key=key, owner=owner, tool=tool, message=message)
+    if not any(value == "patched" for value in outcomes.values()):
+        _LLM_GAPS.pop("anthropic", None)
+        return
+    missing = [key for key, value in outcomes.items() if "async" in key and value != "patched"]
+    _LLM_GAPS["anthropic"] = (
+        "Async Anthropic create is not wrapped (" + ", ".join(missing) + "). Coverage is partial."
+        if missing
+        else None
+    )
 
 
 def _patch_subprocess(guard: VardenGuard) -> None:

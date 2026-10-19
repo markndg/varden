@@ -13,6 +13,12 @@ the caller-supplied path string.
 * Rename/replace: **source and destination** are classified independently
 * Re-check of the effective target immediately before the underlying operation
   (narrows — does not eliminate — check/use gaps)
+* `os.open`, `os.link`, and `os.symlink`, including keyword arguments
+  (`os.remove(path=...)`, `os.rename(src=..., dst=...)`)
+* Descriptor-relative `dir_fd` calls are classified from the path string.
+  A benign relative name against an untracked directory descriptor is not
+  contained. Blanket denial of `dir_fd` would stop the process from deleting
+  its own temporary files (`shutil.rmtree`), so that form stays PARTIAL.
 
 API unchanged:
 
@@ -31,7 +37,7 @@ However, Python-level interception cannot guarantee that the filesystem object
 remains unchanged between security evaluation and the underlying operation in
 every race scenario, nor can it guarantee mediation of filesystem access paths
 outside the patched/runtime-covered surfaces (native code, child processes,
-unpatched APIs such as `os.open`).
+raw file descriptors, and calls that never enter the patched Python functions).
 
 Coverage therefore remains explicitly attested as **PARTIAL**.
 

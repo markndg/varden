@@ -105,6 +105,48 @@ print(json.dumps({"ok": True}))
     assert data["ok"] is True
 
 
+def test_clean_wheel_enforcement_smoke(clean_wheel_env):
+    """Installed wheel, not the source tree: a block must not remove the file."""
+    python = clean_wheel_env["python"]
+    script = r"""
+import os
+import tempfile
+from pathlib import Path
+from varden.runtime.guard_response import guard_response_blocks, response_authorizes_execution
+from varden_sdk.patches import patch_filesystem
+from varden_sdk.sdk import VardenBlockedError
+
+assert guard_response_blocks({"decision": {"action": "require_approval"}}, status_code=200)
+assert response_authorizes_execution({"decision": {"action": "allow"}})
+assert not response_authorizes_execution({})
+assert not response_authorizes_execution({"decision": {"action": "block"}})
+
+class Guard:
+    mode = "enforce"
+    product_mode = "guarded"
+    fail_mode = "closed"
+
+    def guarded_action(self, **kwargs):
+        raise VardenBlockedError("blocked", {"action": "block"})
+
+root = Path(tempfile.mkdtemp())
+secret = root / "id_rsa"
+secret.write_bytes(b"PRIVATE")
+patch_filesystem(Guard(), {})
+removed = False
+try:
+    os.remove(path=str(secret))
+    removed = True
+except VardenBlockedError:
+    removed = False
+assert secret.is_file() and not removed, "keyword os.remove ran after a delivered block"
+print("wheel-enforcement-ok")
+"""
+    proc = _run([str(python), "-c", script])
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "wheel-enforcement-ok" in proc.stdout
+
+
 def test_clean_wheel_posture_json(clean_wheel_env):
     varden_bin = clean_wheel_env["varden"]
     proc = _run([str(varden_bin), "posture", "--json"])

@@ -15,7 +15,10 @@ from typing import Any
 
 import httpx
 
-from varden.runtime.guard_response import guard_response_blocks
+from varden.runtime.guard_response import (
+    guard_response_blocks,
+    response_authorizes_execution,
+)
 from varden.url_identity import canonicalize_destination
 
 
@@ -268,7 +271,12 @@ class McpGatewaySession:
         payload = {"action": action, "payload": params or {}}
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(f"{self.base_url}/sdk/guard", headers=self._headers(), json=payload)
-            data = resp.json() if resp.content else {}
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
             if guard_response_blocks(data, status_code=resp.status_code):
                 detail = data.get("detail") if isinstance(data, dict) else data
                 return {
@@ -277,6 +285,20 @@ class McpGatewaySession:
                     "detail": detail if detail else data,
                 }
             resp.raise_for_status()
+            # A delivered HTTP success with no recognized decision is not an allow.
+            # Fail-open does not apply: the control plane answered, it just did
+            # not authorize the downstream call.
+            if not response_authorizes_execution(data):
+                return {
+                    "blocked": True,
+                    "status_code": resp.status_code,
+                    "detail": {
+                        "decision": {
+                            "action": "block",
+                            "reason": "missing_guard_decision",
+                        }
+                    },
+                }
             return {"blocked": False, "result": data}
 
     def _fetch_session_provenance(self) -> list[dict[str, Any]]:

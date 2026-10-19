@@ -32,6 +32,11 @@ from typing import Any, Callable
 
 import httpx
 
+from varden.runtime.guard_response import (
+    guard_response_blocks,
+    response_authorizes_execution,
+)
+
 
 @dataclass
 class McpToolResult:
@@ -185,21 +190,31 @@ class VardenMcpHost:
                 headers=self._headers(),
                 json={"action": action, "payload": arguments},
             )
-            data = resp.json() if resp.content else {}
-            if resp.status_code == 403:
-                detail = data.get("detail") if isinstance(data, dict) else data
-                decision = detail.get("decision") if isinstance(detail, dict) else {"action": "block"}
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            if guard_response_blocks(data, status_code=resp.status_code) or not response_authorizes_execution(data):
+                detail = data.get("detail") if isinstance(data.get("detail"), dict) else data
+                decision = detail.get("decision") if isinstance(detail, dict) else None
+                if not isinstance(decision, dict):
+                    decision = {"action": "block", "reason": "missing_guard_decision"}
+                if resp.status_code >= 400 and not guard_response_blocks(data, status_code=resp.status_code):
+                    # A server error with no decision is an outage, not a forged allow.
+                    # Raising skips the handler. Callers do not see a successful tool result.
+                    resp.raise_for_status()
                 return McpToolResult(
                     server_id=server_id,
                     tool=tool,
                     content=None,
                     blocked=True,
-                    decision=decision if isinstance(decision, dict) else {"action": "block"},
+                    decision=decision,
                     trace_id=self.trace_id,
                 )
-            resp.raise_for_status()
 
-        # Execute downstream only after allow.
+        # Execute downstream only after a recognized non-deny decision.
         if server_id in self._handlers:
             content = self._handlers[server_id](tool, arguments)
         else:

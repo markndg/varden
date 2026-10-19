@@ -62,7 +62,9 @@ _CATALOG: list[dict[str, Any]] = [
         "category": "http",
         "default_status": UNCOVERED,
         "applicable": False,
-        "limitations": ["Saved pre-patch Session.request references bypass monkeypatching."],
+        "limitations": [
+            "Saved pre-patch Session.request or Session.send references bypass monkeypatching.",
+        ],
     },
     {
         "name": "http.httpx",
@@ -107,6 +109,7 @@ _CATALOG: list[dict[str, Any]] = [
         "limitations": [
             "Saved pre-patch function references bypass monkeypatching.",
             "Native forks from extensions are outside Python hooks.",
+            "os.exec*, os.spawn*, and ctypes/libc process creation are not intercepted.",
             "A PATH session shim is not an OS sandbox. The same user can replace the session contract, the verification key in the child environment, the control-plane URL, skip the shim, or execute the real binary. A verified contract does not make subprocess coverage ENFORCED.",
         ],
     },
