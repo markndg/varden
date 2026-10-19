@@ -6,7 +6,8 @@ hosts are rejected instead of guessed.
 
 DNS rebinding is not closed here. A hostname is not the address a later
 connect() will use. ``Destination.dns_rebinding`` is ``open`` for names and
-``not_applicable`` for literal IPs.
+``not_applicable`` for literal IPs. Connection pinning, when the supported
+HTTP client actually connects, lives in ``varden.destination_binding``.
 """
 
 from __future__ import annotations
@@ -319,6 +320,11 @@ def _classify_host(host: str) -> tuple[str, str | None, str]:
         raise ValueError("malformed_host")
     category = "metadata" if a_label in _METADATA_HOSTS else "hostname"
     return a_label, None, category
+
+
+def ip_category(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:
+    """Category of an already-parsed address. See ``_ip_category``."""
+    return _ip_category(ip)
 
 
 def _ip_category(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str:

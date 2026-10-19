@@ -14,6 +14,9 @@ from typing import Any, Literal
 
 ResolutionStatus = Literal["resolution_success", "resolution_partial", "resolution_failed"]
 
+# Relative path plus a directory descriptor whose path cannot be read.
+DIR_FD_UNRESOLVED = object()
+
 _SECRET_PATTERNS = (
     re.compile(r"(^|/)\.ssh(/|$)", re.I),
     re.compile(r"(^|/)\.aws(/|$)", re.I),
@@ -426,6 +429,58 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
         "resolution": info.get("resolution"),
         "symlink_involved": info.get("symlink_involved"),
     }
+
+
+def directory_fd_path(dir_fd: int) -> str | None:
+    """Path of a directory descriptor, or None when this platform cannot say.
+
+    macOS uses ``F_GETPATH``. Linux uses ``/proc/self/fd``. The result can be
+    stale if the directory is renamed after the descriptor was opened. It is
+    still the strongest path identity available without ``openat2``. Windows
+    has no ``dir_fd`` and returns None.
+    """
+    if isinstance(dir_fd, bool) or not isinstance(dir_fd, int) or dir_fd < 0:
+        return None
+    import sys
+
+    if sys.platform == "darwin":
+        try:
+            import fcntl
+
+            raw = fcntl.fcntl(dir_fd, fcntl.F_GETPATH, bytes(1024))
+        except (OSError, AttributeError):
+            return None
+        if not isinstance(raw, bytes):
+            return None
+        text = os.fsdecode(raw.split(b"\0", 1)[0])
+        return text or None
+    if sys.platform.startswith("linux"):
+        try:
+            return os.readlink(f"/proc/self/fd/{dir_fd}")
+        except OSError:
+            return None
+    return None
+
+
+def descriptor_relative_path(path: Any, dir_fd: Any) -> Any:
+    """Join a relative path to the directory a ``dir_fd`` refers to.
+
+    Absolute paths ignore ``dir_fd``, matching the kernel. Returns the
+    sentinel ``DIR_FD_UNRESOLVED`` when a relative path has a descriptor this
+    process cannot name. Returns ``path`` unchanged when ``dir_fd`` is absent.
+    """
+    if dir_fd is None or path is None or isinstance(path, int):
+        return path
+    try:
+        text = os.fspath(path)
+    except TypeError:
+        return path
+    if os.path.isabs(text):
+        return path
+    directory = directory_fd_path(dir_fd) if isinstance(dir_fd, int) and not isinstance(dir_fd, bool) else None
+    if not directory:
+        return DIR_FD_UNRESOLVED
+    return os.path.join(directory, text)
 
 
 def resolution_blocks_under_fail_closed(info: dict[str, Any]) -> bool:

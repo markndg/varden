@@ -214,6 +214,8 @@ class CoverageRegistry:
         self._mode_locked: bool = False
         self._interceptor_checks: dict[str, Any] = {}
         self._interceptor_sealed: set[str] = set()
+        self._sealed_contract: dict[str, Any] | None = None
+        self._tamper_events: list[dict[str, Any]] = []
         self.reset()
 
     def reset(self, *, release_enforcement_lock: bool = False) -> None:
@@ -255,6 +257,8 @@ class CoverageRegistry:
             self._fail_mode = "closed"
             self._session_id = None
             self._attested_at = None
+            self._sealed_contract = None
+            self._tamper_events = []
 
     def set_session(
         self,
@@ -272,15 +276,17 @@ class CoverageRegistry:
             if self._mode_locked:
                 # Locked contract is immutable: mode, fail_mode, coverage requirements
                 # and accepted exceptions cannot change (including silent expansion of
-                # allow_uncovered). Identical re-entry is a no-op.
+                # allow_uncovered). Identical re-entry is a no-op. The comparison
+                # uses the sealed snapshot, not fields an in-process caller can assign.
+                sealed = self._sealed_contract or {}
                 if (
-                    mode != self._mode
-                    or fail_mode != self._fail_mode
-                    or require != self._require_coverage
-                    or allow != self._allow_uncovered
+                    mode != sealed.get("mode", self._mode)
+                    or fail_mode != sealed.get("fail_mode", self._fail_mode)
+                    or require != list(sealed.get("require_coverage", self._require_coverage))
+                    or allow != set(sealed.get("allow_uncovered", self._allow_uncovered))
                 ):
                     raise RuntimeError(
-                        f"security mode locked after activation ({self._mode}/{self._fail_mode}); "
+                        f"security mode locked after activation ({sealed.get('mode', self._mode)}/{sealed.get('fail_mode', self._fail_mode)}); "
                         "silent downgrade refused"
                     )
                 if session_id is not None:
@@ -293,6 +299,14 @@ class CoverageRegistry:
             self._allow_uncovered = allow
             if lock_mode:
                 self._mode_locked = True
+                # Snapshot the contract. Later assignment to the mutable fields
+                # does not change what enforcement_contract() returns.
+                self._sealed_contract = {
+                    "mode": mode,
+                    "fail_mode": fail_mode,
+                    "require_coverage": list(require),
+                    "allow_uncovered": set(allow),
+                }
             self._apply_requirement_applicability()
 
     def enforcement_contract(self) -> dict[str, Any]:
@@ -302,6 +316,16 @@ class CoverageRegistry:
         interceptor enforce/observe decisions (not mutable guard attributes).
         """
         with self._lock:
+            if self._mode_locked and self._sealed_contract is not None:
+                sealed = self._sealed_contract
+                return {
+                    "mode": sealed["mode"],
+                    "fail_mode": sealed["fail_mode"],
+                    "mode_locked": True,
+                    "require_coverage": list(sealed["require_coverage"]),
+                    "allow_uncovered": sorted(sealed["allow_uncovered"]),
+                    "session_id": self._session_id,
+                }
             return {
                 "mode": self._mode,
                 "fail_mode": self._fail_mode,
@@ -516,6 +540,14 @@ class CoverageRegistry:
                 ok = False
             surface = self.get(name)
             if surface and surface.status == ENFORCED and not ok:
+                evidence = {
+                    **(surface.evidence or {}),
+                    "tamper_detected": True,
+                    "operational": False,
+                    "configured": True,
+                    "installed": True,
+                    "verified": False,
+                }
                 with self._lock:
                     self._mark_unlocked(
                         canonical_surface_name(name),
@@ -526,15 +558,47 @@ class CoverageRegistry:
                         interceptor=surface.interceptor,
                         limitations=list(surface.limitations)
                         + ["Interceptor tamper detected — wrapper no longer installed."],
-                        evidence={**(surface.evidence or {}), "tamper_detected": True},
+                        evidence=evidence,
                     )
+                    self._tamper_events.append(
+                        {
+                            "surface": canonical_surface_name(name),
+                            "from": ENFORCED,
+                            "to": UNCOVERED,
+                            "reason": "tamper",
+                            "at": time.time(),
+                        }
+                    )
+                    if len(self._tamper_events) > 50:
+                        self._tamper_events = self._tamper_events[-50:]
                 changes.append({"surface": name, "from": ENFORCED, "to": UNCOVERED, "reason": "tamper"})
             elif surface and ok and surface.status == ENFORCED:
+                evidence = surface.evidence or {}
+                # Steady state is a pointer compare in the checker. Do not
+                # rewrite evidence on every guarded call once it is already
+                # operational. A failed checker above still downgrades.
+                if (
+                    surface.verified
+                    and surface.installed
+                    and surface.active
+                    and evidence.get("operational") is True
+                    and evidence.get("verified") is True
+                ):
+                    continue
                 with self._lock:
+                    if surface.status != ENFORCED:
+                        continue
                     surface.verified = True
                     surface.installed = True
                     surface.active = True
                     surface.last_verified = time.time()
+                    surface.evidence = {
+                        **(surface.evidence or {}),
+                        "operational": True,
+                        "configured": True,
+                        "installed": True,
+                        "verified": True,
+                    }
             elif surface and not ok and surface.installed:
                 with self._lock:
                     surface.verified = False
@@ -689,6 +753,7 @@ class CoverageRegistry:
         return blocking
 
     def strict_readiness(self, require: list[str] | None = None) -> dict[str, Any]:
+        self.verify()
         missing = self.missing_required(require)
         blocking = self.discovered_blocking()
         ready = not missing and not blocking
@@ -742,6 +807,7 @@ class CoverageRegistry:
                 "strict_readiness": self.strict_readiness(),
                 "require_coverage": list(self._require_coverage),
                 "accepted_exceptions": sorted(self._allow_uncovered),
+                "tamper_events": list(self._tamper_events),
                 "discovered": list(self._discovered.values()),
                 "known_bypass_surfaces": [
                     s.to_dict()

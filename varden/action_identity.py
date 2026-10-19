@@ -16,6 +16,7 @@ import os
 import re
 from typing import Any
 
+from varden.destination_binding import address_category, worst_category
 from varden.url_identity import canonicalize_destination, canonicalize_host_claim
 
 _TYPE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{0,63}$")
@@ -176,6 +177,54 @@ def types_match(actual: object, expected: object, *, mode: str, surface: str | N
     return False
 
 
+def _apply_connection_binding(meta: dict[str, Any], identity: dict[str, Any], dest: Any) -> None:
+    """Elevate a hostname's category from addresses the SDK resolved.
+
+    Client-supplied categories are ignored and recomputed. A literal IP
+    category is never weakened by a claimed address list. Absence of the
+    binding leaves the URL identity unchanged, including ``dns_rebinding``.
+    """
+    binding = meta.get("destination_binding")
+    if not isinstance(binding, dict):
+        return
+    status = binding.get("status")
+    if isinstance(status, str):
+        identity["connection_binding"] = status
+    raw_addresses = binding.get("addresses")
+    if not isinstance(raw_addresses, list):
+        return
+    classified: list[dict[str, str]] = []
+    for item in raw_addresses:
+        ip = item.get("ip") if isinstance(item, dict) else None
+        if not isinstance(ip, str):
+            continue
+        category = address_category(ip)
+        if category is None:
+            continue
+        classified.append({"ip": ip, "category": category})
+    if not classified:
+        return
+    identity["resolved_addresses"] = classified
+    if dest is None or not getattr(dest, "ok", False) or getattr(dest, "ip", None):
+        return
+    proposed = worst_category([item["category"] for item in classified])
+    current = identity.get("destination_category") or "hostname"
+    if proposed is None:
+        return
+    rank = {
+        "metadata": 0,
+        "loopback": 1,
+        "link_local": 2,
+        "private": 3,
+        "multicast": 4,
+        "reserved": 5,
+        "public": 6,
+        "hostname": 7,
+    }
+    if rank.get(proposed, 99) < rank.get(str(current), 99):
+        identity["destination_category"] = proposed
+
+
 def bind_security_identity(action: Any) -> Any | None:
     """Canonicalise ``action`` in place.
 
@@ -298,20 +347,26 @@ def bind_security_identity(action: Any) -> Any | None:
         "decision": decision_action,
         "dns_rebinding": dest.dns_rebinding if dest is not None and dest.ok else "not_applicable",
     }
+    _apply_connection_binding(meta, identity, dest)
     meta["identity"] = identity
     if dest is not None and dest.ok:
-        meta["destination"] = {
+        destination = {
             "scheme": dest.scheme,
             "host": dest.host,
             "port": dest.port,
             "path": dest.path,
             "query": dest.query,
             "canonical_url": dest.canonical_url,
-            "category": dest.category,
+            "category": identity.get("destination_category") or dest.category,
             "ip": dest.ip,
             "original_url": dest.evidence_url,
             "dns_rebinding": dest.dns_rebinding,
         }
+        if identity.get("connection_binding"):
+            destination["connection_binding"] = identity["connection_binding"]
+        if identity.get("resolved_addresses"):
+            destination["resolved_addresses"] = identity["resolved_addresses"]
+        meta["destination"] = destination
     action.metadata = meta
     if isinstance(original_tool, str):
         action.tool = original_tool.strip() if rejection != "ambiguous_tool" else original_tool
