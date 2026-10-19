@@ -189,7 +189,7 @@ Change: `classify_guard_response` distinguishes authoritative allow, authoritati
 
 Root cause: filesystem and LangChain used a depth counter around the whole operation, including policy evaluation and user code. `Session.send` skipped authorization for every nested send while `Session.request` was in progress.
 
-Change: filesystem passthrough is a set of path identities installed only around the original syscall, after the guard returns. A callback or `__fspath__` that opens a different path is enforced. LangChain skips a second charge only for `_run` / `_arun` of the tool whose `invoke` already guarded; a nested tool is a new decision. `Session.send` skips only when the URL is the hop just authorized. httpx rebuilds a redirect request without reading an unread body, so a cross-origin hop still reauthorizes and drops `Authorization` and `Cookie`.
+Change: filesystem passthrough is a set of path identities installed only around the original syscall, after the guard returns. A callback or `__fspath__` that opens a different path is enforced. LangChain skips a second charge only for `_run` / `_arun` of the tool whose `invoke` already guarded; a nested tool is a new decision. The requests URL-key skip described here was still too broad; section H replaces it. httpx rebuilds a redirect request without reading an unread body, so a cross-origin hop still reauthorizes and drops `Authorization` and `Cookie`.
 
 A task created during the original syscall can inherit the same-path passthrough. A different path in that task is still enforced. That residual is named on the filesystem coverage limitations. Coverage stays PARTIAL. TOCTOU, `dir_fd`, pre-existing hard links, raw descriptors, native code, `os.exec*` / `os.spawn*` / ctypes, and DNS rebinding are unchanged.
 
@@ -241,4 +241,36 @@ Deferred:
 
 No known P0 bypass remains on the declared supported paths that these tests execute. Explicit blocks prevent the sentinel side effect on those paths. Fail-open does not override a delivered denial. MCP privileged methods are not forwarded without authorization. Coverage claims for filesystem stay PARTIAL, and requests coverage drops when `Session.send` is unwrapped. DNS rebinding and filesystem TOCTOU are still open and are labeled as such.
 
-The review findings in section G are remediated on the paths those tests execute. DNS rebinding, filesystem TOCTOU, and the same-path passthrough inherited by a task created during the syscall remain open and labeled. This branch was not merged. Another independent review is required before merge.
+The review findings in section G are remediated on the paths those tests execute. Section H closes the remaining requests query/method bypass and the hostname-only credential check. DNS rebinding, filesystem TOCTOU, and the same-path passthrough inherited by a task created during the syscall remain open and labeled. This branch was not merged. Another independent review is required before merge.
+
+## H. Final HTTP remediation
+
+Reviewed commit: `b00748487701cc3b61ab5c851fcd873b4e57e1bf`.
+
+### Nested requests authorization
+
+Root cause: `_requests_same_authorized` treated two URLs as the same hop when scheme, host, port, and path matched. The query string and method were not part of that key, and a second `PreparedRequest` with the same URL skipped the guard while `Session.request` was on the stack.
+
+Before the fix, a local server recorded `GET /api/action?operation=delete` during an authorized `operation=read` call. The delete URL never appeared in a guard decision.
+
+Change: `Session.request` authorizes one operation, including the merged query, then calls the unpatched `Session.send` for that prepared request. There is no shared URL key and no token another request can carry. A nested `Session.send` is a new call on a new request object, so a different query, method, origin, or a second object with the same URL is authorized on its own. Redirect hops are authorized again. A `ValueError` raised while requests prepares an unsent next hop becomes a block and does not connect.
+
+### Cross-origin credentials
+
+Root cause: `_request_host` compared hostnames. `https://example.test`, `http://example.test`, and `https://example.test:8443` were treated as the same place, so `Authorization`, `Cookie`, and `Proxy-Authorization` were copied. `https://example.test` and `https://example.test:443` are the same origin because Phase 2 canonicalization uses the effective port.
+
+Before the fix, a capturing adapter saw `Bearer SECRET` and `sid=SECRET` on both the HTTPS hop and the HTTP hop, and again on port 8443.
+
+Change: an origin is `(scheme, canonical host, effective port)` from `canonicalize_destination`. `_strip_cross_origin_credentials`, `_prepared_redirect`, `_httpx_drop_cross_origin_credentials`, and the sync and async httpx redirect loops use that comparison. An origin change also passes `auth=None` into httpx so client authentication is not rebuilt, and the rebuilt request omits the cookie jar. Same-origin path and query changes, including a hostname that canonicalizes to the same host and an explicit default port, keep credentials. A malformed redirect is rejected before the next transport call.
+
+### Tests and limits
+
+`tests/security/pass2/test_p3_http_final_remediation.py` records guard decisions and the headers presented to a local server, a capturing `HTTPAdapter`, or `httpx.MockTransport` (sync and async). Blocked nested sends and blocked or malformed redirects do not make the next connection. An allowed request is one guard decision.
+
+These paths still do not pin DNS. aiohttp, raw sockets, and a direct urllib3 pool are not wrapped. A cookie the client jar would send to the same origin is still sent; that is same-origin behavior, not a cross-origin forward.
+
+### Validation
+
+`compileall` of `varden`, `varden_sdk`, `varden_langchain`, and `sdks/python` exited 0. `tests/security/pass2/` — 360 passed. `tests/security/test_guard_response_enforcement.py` — 36 passed. Provider and LangChain checks in `test_p3_review_remediation.py` — 10 passed. `tests/test_clean_wheel_smoke.py` — 4 passed. The full pytest run — 1189 passed, and 7 errors in `tests/browser/test_ui_smoke.py` because the Playwright Chromium binary is not installed. Those UI tests did not run. Ruff on `varden_sdk/sdk.py` reports the same 38 findings as the reviewed commit, shifted by the edit; `test_p3_http_final_remediation.py` is clean.
+
+DNS rebinding remains an open residual. Filesystem coverage remains PARTIAL. aiohttp, raw sockets, and direct urllib3 are not wrapped.

@@ -69,12 +69,10 @@ _current_lineage: contextvars.ContextVar[dict[str, Any] | None] = contextvars.Co
 _current_trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar('varden_trace_id', default=None)
 _current_parent_event_id: contextvars.ContextVar[int | None] = contextvars.ContextVar('varden_parent_event_id', default=None)
 _current_provenance: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar('varden_provenance', default=None)
-# Set while Session.request is already authorizing, so Session.send does not
-# authorize the same hop a second time. Direct Session.send stays at depth 0.
-# The depth counter is not an authorization bypass: a nested send is skipped
-# only when its URL is the hop just authorized. Any other URL is guarded.
-_requests_guard_depth: contextvars.ContextVar[int] = contextvars.ContextVar('varden_requests_guard_depth', default=0)
-_requests_authorized_url: contextvars.ContextVar[str | None] = contextvars.ContextVar('varden_requests_authorized_url', default=None)
+# Session.request authorizes one operation, then calls the unpatched
+# Session.send for that prepared request only. A nested Session.send is a
+# different call and a different request object, so it is authorized again.
+# There is no URL key and no token that another request can carry.
 _SENSITIVE_REDIRECT_HEADERS = frozenset({'authorization', 'cookie', 'proxy-authorization'})
 
 _PATCH_LOCK = threading.Lock()
@@ -1140,13 +1138,44 @@ def _authorize_http(current: VardenGuard, *, tool: str, url: str, method: str | 
 _MAX_HTTP_REDIRECTS = 30
 
 
-def _strip_cross_host_credentials(call_kwargs: dict[str, Any], previous: str, nxt: str) -> bool:
-    """Drop caller credentials when the next hop is a different host.
+def _same_http_origin(previous: str, nxt: str) -> bool:
+    """True when both URLs share scheme, canonical host, and effective port.
 
-    Returns True when the hop is cross-host. Session-level ``auth`` is cleared
+    ``https://host`` and ``https://host:443`` match. A scheme change, a
+    different host, or a different port does not. Malformed URLs do not match.
+    """
+    left = _origin(previous)
+    right = _origin(nxt)
+    return left is not None and left == right
+
+
+def _operation_identity(url: str, method: str) -> tuple[Any, ...] | None:
+    """One HTTP operation. The query string is kept; it is not rewritten."""
+    from varden.url_identity import canonicalize_destination
+
+    dest = canonicalize_destination(str(url))
+    if dest.rejection or not dest.scheme or not dest.host:
+        return None
+    port = dest.port or _DEFAULT_PORTS.get(dest.scheme)
+    if port is None:
+        return None
+    return (
+        dest.scheme,
+        dest.host,
+        port,
+        dest.path or "/",
+        dest.query or "",
+        str(method or "GET").upper(),
+    )
+
+
+def _strip_cross_origin_credentials(call_kwargs: dict[str, Any], previous: str, nxt: str) -> bool:
+    """Drop caller credentials when the next hop is a different origin.
+
+    Returns True when the hop changes origin. Session-level ``auth`` is cleared
     by the caller for that hop; this helper only edits the per-call kwargs.
     """
-    if _request_host(previous) == _request_host(nxt):
+    if _same_http_origin(previous, nxt):
         return False
     kept = {
         key: value
@@ -1181,8 +1210,8 @@ def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, ca
             call_kwargs.pop("data", None)
             call_kwargs.pop("json", None)
             call_kwargs.pop("files", None)
-        cross_host = _strip_cross_host_credentials(call_kwargs, str(getattr(response, "url", canonical)), nxt)
-        saved_auth = getattr(session, "auth", None) if session is not None and cross_host else None
+        cross_origin = _strip_cross_origin_credentials(call_kwargs, str(getattr(response, "url", canonical)), nxt)
+        saved_auth = getattr(session, "auth", None) if session is not None and cross_origin else None
         if saved_auth is not None:
             session.auth = None
         try:
@@ -1195,25 +1224,132 @@ def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, ca
     return response, result
 
 
-def _requests_url_key(url: str) -> tuple[Any, ...] | None:
-    origin = _origin(url)
-    if origin is None:
-        return None
-    path = urlparse(str(url)).path or "/"
-    return (*origin, path)
+_REQUEST_ARG_NAMES = (
+    "params", "data", "headers", "cookies", "files", "auth", "timeout",
+    "allow_redirects", "proxies", "hooks", "stream", "verify", "cert", "json",
+)
 
 
-def _requests_same_authorized(url: str) -> bool:
-    authorized = _requests_authorized_url.get()
-    if not authorized:
-        return False
-    key = _requests_url_key(url)
-    return key is not None and key == _requests_url_key(authorized)
+def _bind_request_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    bound = dict(kwargs)
+    for name, value in zip(_REQUEST_ARG_NAMES, args):
+        bound.setdefault(name, value)
+    return bound
 
 
-def _request_host(url: str) -> str | None:
-    origin = _origin(url)
-    return origin[1] if origin else None
+def _requests_target_url(session: Any, url: str, call_kwargs: dict[str, Any]) -> str:
+    """URL the next send will use, including query parameters merged by requests."""
+    import requests
+    from requests.sessions import merge_setting
+
+    params = merge_setting(call_kwargs.get("params"), getattr(session, "params", None))
+    prepared = requests.PreparedRequest()
+    prepared.prepare_url(url, params)
+    return str(prepared.url)
+
+
+def _prepare_session_call(session: Any, method: str, url: str, call_kwargs: dict[str, Any]) -> tuple[Any, dict[str, Any]]:
+    import requests
+
+    req = requests.Request(
+        method=str(method).upper(),
+        url=url,
+        headers=call_kwargs.get("headers"),
+        files=call_kwargs.get("files"),
+        data=call_kwargs.get("data") or {},
+        json=call_kwargs.get("json"),
+        params=call_kwargs.get("params") or {},
+        auth=call_kwargs.get("auth"),
+        cookies=call_kwargs.get("cookies"),
+        hooks=call_kwargs.get("hooks"),
+    )
+    prepared = session.prepare_request(req)
+    settings = session.merge_environment_settings(
+        prepared.url,
+        call_kwargs.get("proxies") or {},
+        call_kwargs.get("stream"),
+        call_kwargs.get("verify"),
+        call_kwargs.get("cert"),
+    )
+    send_kwargs = {"timeout": call_kwargs.get("timeout"), "allow_redirects": False}
+    send_kwargs.update(settings)
+    return prepared, send_kwargs
+
+
+def _raw_requests_send(session: Any, prepared: Any, send_kwargs: dict[str, Any]) -> Any:
+    """Send the prepared request that this hop already authorized.
+
+    This calls the unpatched ``Session.send``. A nested ``session.send`` uses
+    another request object and enters the wrapper, so it cannot reuse this hop.
+    """
+    original_send = _ORIGINALS.get("requests.sessions.Session.send")
+    if original_send is None:
+        raise RuntimeError("requests Session.send original is not installed")
+    try:
+        return original_send(session, prepared, **send_kwargs)
+    except ValueError as exc:
+        # requests parses Location while building the unsent next hop. That
+        # parse is not a connection. Only those failures become a block.
+        if not _raised_while_preparing_redirect(exc):
+            raise
+        raise VardenBlockedError(
+            "ambiguous destination: malformed",
+            {"action": "block", "reason": "ambiguous destination: malformed", "effective_action": "block"},
+        ) from exc
+
+
+def _raised_while_preparing_redirect(exc: BaseException) -> bool:
+    traceback = exc.__traceback__
+    while traceback is not None:
+        if traceback.tb_frame.f_code.co_name in {
+            "resolve_redirects",
+            "rebuild_proxies",
+            "rebuild_auth",
+            "should_bypass_proxies",
+        }:
+            return True
+        traceback = traceback.tb_next
+    return False
+
+
+def _send_authorized_request(
+    session: Any,
+    *,
+    method: str,
+    url: str,
+    follow: bool,
+    authorize: Any,
+    call_kwargs: dict[str, Any],
+) -> tuple[Any, Any]:
+    """Authorize ``method`` + URL, including the query, then send that one request."""
+    from urllib.parse import urljoin
+
+    target = _requests_target_url(session, url, call_kwargs)
+    canonical, result = authorize(target, method)
+    prepared, send_kwargs = _prepare_session_call(session, method, url, call_kwargs)
+    prepared_identity = _operation_identity(str(prepared.url), str(prepared.method))
+    if prepared_identity != _operation_identity(target, method):
+        canonical, result = authorize(str(prepared.url), str(prepared.method))
+    prepared = _retarget_prepared(prepared, canonical)
+    response = _raw_requests_send(session, prepared, send_kwargs)
+    hops = 0
+    current_method = str(getattr(prepared, "method", method) or method)
+    while follow and getattr(response, "is_redirect", False) and hops < _MAX_HTTP_REDIRECTS:
+        headers = getattr(response, "headers", {}) or {}
+        location = headers.get("Location") or headers.get("location")
+        if not location:
+            break
+        try:
+            nxt = urljoin(str(getattr(response, "url", canonical)), location)
+        except ValueError:
+            nxt = location
+        if getattr(response, "status_code", None) in (301, 302, 303) and current_method.upper() not in {"GET", "HEAD"}:
+            current_method = "GET"
+        canonical, result = authorize(nxt, current_method)
+        outbound = _prepared_redirect(response, current_method, canonical)
+        response = _raw_requests_send(session, outbound, send_kwargs)
+        hops += 1
+    return response, result
 
 
 def _retarget_prepared(request: Any, canonical: str) -> Any:
@@ -1233,18 +1369,18 @@ def _retarget_prepared(request: Any, canonical: str) -> Any:
 
 
 def _prepared_redirect(response: Any, method: str, canonical: str) -> Any:
-    """Build the next PreparedRequest without replaying cross-host credentials."""
+    """Build the next PreparedRequest without replaying cross-origin credentials."""
     import requests
 
     previous = str(getattr(response, "url", "") or "")
     source = getattr(getattr(response, "request", None), "headers", {}) or {}
-    same_host = _request_host(previous) == _request_host(canonical)
+    same_origin = _same_http_origin(previous, canonical)
     headers = {}
     for key, value in dict(source).items():
         lowered = str(key).lower()
         if lowered == "host":
             continue
-        if not same_host and lowered in _SENSITIVE_REDIRECT_HEADERS:
+        if not same_origin and lowered in _SENSITIVE_REDIRECT_HEADERS:
             continue
         headers[key] = value
     body = None
@@ -1266,15 +1402,18 @@ def _patch_requests(guard: VardenGuard) -> None:
         @functools.wraps(original)
         def wrapper(self, method: str, url: str, *args: Any, **kwargs: Any):
             current = current_guard() or guard
+            if isinstance(url, bytes):
+                url = url.decode('utf-8')
             if _is_control_plane_request(url, current):
                 return original(self, method, url, *args, **kwargs)
-            body = kwargs.get('json')
+            bound = _bind_request_call(args, kwargs)
+            body = bound.get('json')
             if body is None:
-                body = _decode_body_value(kwargs.get('data'))
-            payload = _minimize_http_payload({'args': list(args), 'kwargs': _json_safe(kwargs), 'body': _json_safe(body)})
+                body = _decode_body_value(bound.get('data'))
+            payload = _minimize_http_payload({'args': list(args), 'kwargs': _json_safe(bound), 'body': _json_safe(body)})
             metadata = {'runtime': {'surface': 'http', 'boundary': True}, **(payload.get('metadata') or {})}
-            follow = kwargs.get('allow_redirects', True)
-            call_kwargs = dict(kwargs)
+            follow = bool(bound.get('allow_redirects', True))
+            call_kwargs = dict(bound)
             call_kwargs['allow_redirects'] = False
 
             def authorize(target: str, verb: str):
@@ -1282,18 +1421,10 @@ def _patch_requests(guard: VardenGuard) -> None:
                     current, tool='requests', url=str(target), method=verb, args=payload, payload=payload, metadata=metadata,
                 )
 
-            def send(verb, canonical, send_args, send_kwargs):
-                url_token = _requests_authorized_url.set(str(canonical))
-                try:
-                    return original(self, verb, canonical, *send_args, **send_kwargs)
-                finally:
-                    _requests_authorized_url.reset(url_token)
-
             result = None
-            token = _requests_guard_depth.set(_requests_guard_depth.get() + 1)
             try:
-                response, result = _follow_requests(
-                    send, method=method, url=str(url), follow=bool(follow), authorize=authorize, call_kwargs=call_kwargs, args=args, session=self,
+                response, result = _send_authorized_request(
+                    self, method=method, url=str(url), follow=follow, authorize=authorize, call_kwargs=call_kwargs,
                 )
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', url))})
@@ -1304,8 +1435,6 @@ def _patch_requests(guard: VardenGuard) -> None:
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, error=str(exc))
                 raise
-            finally:
-                _requests_guard_depth.reset(token)
         return wrapper
 
     _reconcile_or_install(
@@ -1320,9 +1449,6 @@ def _patch_requests(guard: VardenGuard) -> None:
     def _make_send(original: Any):
         @functools.wraps(original)
         def send_wrapper(self, request: Any, **kwargs: Any):
-            request_url_early = str(getattr(request, 'url', '') or '')
-            if _requests_guard_depth.get() > 0 and _requests_same_authorized(request_url_early):
-                return original(self, request, **kwargs)
             current = current_guard() or guard
             request_url = str(getattr(request, 'url', '') or '')
             if _is_control_plane_request(request_url, current):
@@ -1341,38 +1467,28 @@ def _patch_requests(guard: VardenGuard) -> None:
 
             canonical, result = authorize(request_url, method)
             outbound = _retarget_prepared(request, canonical)
-            token = _requests_guard_depth.set(_requests_guard_depth.get() + 1)
-            url_token = _requests_authorized_url.set(str(canonical))
-            try:
-                response = original(self, outbound, **send_kwargs)
-                hops = 0
-                while follow and getattr(response, 'is_redirect', False) and hops < _MAX_HTTP_REDIRECTS:
-                    location = (getattr(response, 'headers', {}) or {}).get('Location') or (getattr(response, 'headers', {}) or {}).get('location')
-                    if not location:
-                        break
-                    from urllib.parse import urljoin
-                    try:
-                        nxt = urljoin(str(getattr(response, 'url', canonical)), location)
-                    except ValueError:
-                        nxt = location
-                    verb = method
-                    if getattr(response, 'status_code', None) in (301, 302, 303) and method.upper() not in {'GET', 'HEAD'}:
-                        verb = 'GET'
-                    method = verb
-                    canonical, result = authorize(nxt, verb)
-                    outbound = _prepared_redirect(response, verb, canonical)
-                    hop_token = _requests_authorized_url.set(str(canonical))
-                    try:
-                        response = original(self, outbound, **send_kwargs)
-                    finally:
-                        _requests_authorized_url.reset(hop_token)
-                    hops += 1
-                if result:
-                    current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', request_url))})
-                return response
-            finally:
-                _requests_authorized_url.reset(url_token)
-                _requests_guard_depth.reset(token)
+            response = _raw_requests_send(self, outbound, send_kwargs)
+            hops = 0
+            while follow and getattr(response, 'is_redirect', False) and hops < _MAX_HTTP_REDIRECTS:
+                location = (getattr(response, 'headers', {}) or {}).get('Location') or (getattr(response, 'headers', {}) or {}).get('location')
+                if not location:
+                    break
+                from urllib.parse import urljoin
+                try:
+                    nxt = urljoin(str(getattr(response, 'url', canonical)), location)
+                except ValueError:
+                    nxt = location
+                verb = method
+                if getattr(response, 'status_code', None) in (301, 302, 303) and method.upper() not in {'GET', 'HEAD'}:
+                    verb = 'GET'
+                method = verb
+                canonical, result = authorize(nxt, verb)
+                outbound = _prepared_redirect(response, verb, canonical)
+                response = _raw_requests_send(self, outbound, send_kwargs)
+                hops += 1
+            if result:
+                current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', request_url))})
+            return response
         return send_wrapper
 
     _reconcile_or_install(
@@ -1396,7 +1512,13 @@ def _httpx_request_body(request: httpx.Request):
 
 
 def _httpx_drop_cross_origin_credentials(request: httpx.Request, previous_url: str) -> httpx.Request:
-    if _request_host(previous_url) == _request_host(str(request.url)):
+    """Remove credentials when the redirect origin differs from the previous hop.
+
+    httpx rebuilds ``Cookie`` from the client jar on ``next_request``. A new
+    request without those headers is what the transport receives. Same-origin
+    redirects keep the request, including an explicit default port.
+    """
+    if _same_http_origin(previous_url, str(request.url)):
         return request
     headers = [
         (key, value)
@@ -1404,6 +1526,15 @@ def _httpx_drop_cross_origin_credentials(request: httpx.Request, previous_url: s
         if key.lower() not in _SENSITIVE_REDIRECT_HEADERS and key.lower() != "host"
     ]
     return httpx.Request(request.method, request.url, headers=headers, content=_httpx_request_body(request))
+
+
+def _httpx_hop_kwargs(send_kwargs: dict[str, Any], previous: str, nxt: str) -> dict[str, Any]:
+    """Stop httpx from reapplying client or per-request auth on an origin change."""
+    if _same_http_origin(previous, nxt):
+        return send_kwargs
+    hop = dict(send_kwargs)
+    hop["auth"] = None
+    return hop
 
 
 def _retarget_httpx_request(request: httpx.Request, canonical: str) -> httpx.Request:
@@ -1460,9 +1591,11 @@ def _patch_httpx(guard: VardenGuard) -> None:
                     canonical, result = _authorize_http(
                         current, tool='httpx', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
                     )
-                    nxt = _httpx_drop_cross_origin_credentials(nxt, str(getattr(response, "url", "")))
+                    previous = str(getattr(response, "url", ""))
+                    nxt = _httpx_drop_cross_origin_credentials(nxt, previous)
                     nxt = _retarget_httpx_request(nxt, canonical)
-                    response = original(self, nxt, *args, **send_kwargs)
+                    hop_kwargs = _httpx_hop_kwargs(send_kwargs, previous, canonical)
+                    response = original(self, nxt, *args, **hop_kwargs)
                     hops += 1
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(response.url)})
@@ -1521,9 +1654,11 @@ def _patch_httpx(guard: VardenGuard) -> None:
                     canonical, result = _authorize_http(
                         current, tool='httpx_async', url=nxt_url, method=nxt.method, args=payload, payload=payload, metadata=metadata,
                     )
-                    nxt = _httpx_drop_cross_origin_credentials(nxt, str(getattr(response, "url", "")))
+                    previous = str(getattr(response, "url", ""))
+                    nxt = _httpx_drop_cross_origin_credentials(nxt, previous)
                     nxt = _retarget_httpx_request(nxt, canonical)
-                    response = await original(self, nxt, *args, **send_kwargs)
+                    hop_kwargs = _httpx_hop_kwargs(send_kwargs, previous, canonical)
+                    response = await original(self, nxt, *args, **hop_kwargs)
                     hops += 1
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': response.status_code, 'url': str(response.url)})
