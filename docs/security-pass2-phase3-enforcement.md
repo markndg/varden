@@ -113,7 +113,7 @@ For an applicable, enforced operation, a definitive block prevents the protected
 ### F-LLM-01 — transport coverage could be marked ENFORCED without an async probe
 
 - Severity: medium (coverage honesty). A missing async create method no longer produces a silent ENFORCED mark. Missing async is PARTIAL. If nothing is patched, the catalog stays UNCOVERED.
-- Not executed against installed openai/anthropic packages in this environment.
+- Executed after the review remediation against openai 1.109.1 and anthropic 0.125.0. See section G.
 
 ### F-LC-01 — LangChain enforcement ignored the locked mode, and `_run` was unwrapped
 
@@ -122,16 +122,21 @@ For an applicable, enforced operation, a definitive block prevents the protected
 
 ## C. Decision matrix
 
-Fail-open is only for a control-plane outage: no HTTP decision was delivered (timeout, connection refusal, HTTP error without a deny body). A delivered deny, an ambiguous decision, HTTP 403, and `require_approval` / `approval_required` do not execute in guarded or strict mode, including when `fail_mode=open`.
+`classify_guard_response` is the shared contract for a completed HTTP body. Transport failure is not a response class. Fail-open applies only to `transport_failure` and to `service_failure_with_allow` (a non-success status whose body is an authoritative allow). An empty or malformed success body, and an HTTP error with no decision, do not execute in guarded or strict mode.
 
-| Mode | fail_mode | Control-plane result | Side effect |
+| Mode | fail_mode | Classification | Side effect |
 |---|---|---|---|
-| observe | open or closed | explicit block | executes (observe does not prevent) |
-| guarded or strict | closed | allow | executes |
-| guarded or strict | open or closed | block, require_approval, approval_required, HTTP 403, ambiguous decision | no side effect |
-| guarded | open | HTTP 200 with no decision, HTTP 500 with no decision, timeout, connection error | executes |
-| guarded | closed | those outages | no side effect |
+| observe | open or closed | any, including explicit block | executes (observe does not prevent) |
+| guarded or strict | closed | `authoritative_allow` on a 2xx | executes |
+| guarded or strict | open or closed | `authoritative_deny`, `approval_required`, `invalid_decision`, `no_decision`, `service_failure` | no side effect |
+| guarded | open | `service_failure_with_allow` (for example HTTP 503 whose decision is allow) | executes |
+| guarded | closed | `service_failure_with_allow` | no side effect |
+| guarded | open | `transport_failure` (connection refused, reset, timeout before a response) | executes |
+| guarded | closed | `transport_failure` | no side effect |
+| guarded | open | unexpected client exception that is not transport | no side effect |
 | strict | open | construction | `ValueError`; strict refuses fail-open |
+
+The MCP gateway and host do not implement fail-open. Only `authoritative_allow` forwards or runs the handler. A 5xx allow does not.
 
 `response_authorizes_execution` is true only for a recognized non-deny action (`allow`, `warn`, `warned`, `monitor`, `sanitise`) with no deny in another recognized slot.
 
@@ -161,12 +166,38 @@ Commands actually run on this branch (do not treat a row as passed unless it app
 - The two HTTP redirect tests bind `127.0.0.1` and `::1`. `127.0.0.2` cannot be bound on this Mac (`EADDRNOTAVAIL`).
 
 - Phase 3 gauntlet collected 49 tests. They are included in the full suite result below.
-- Full suite: `.venv/bin/python -m pytest -q --tb=line -p no:cacheprovider` — 1096 passed, 1 skipped, 31 warnings, 194.56s. A second run with `-rs` (192.93s) identified the skip: `tests/browser/test_ui_smoke.py` because `playwright` is not installed. No frontend files changed, so that browser pass was not required.
-- Clean wheel: `.venv/bin/python -m pytest tests/test_clean_wheel_smoke.py -q --tb=short -p no:cacheprovider` — 4 passed, 4.45s. The enforcement smoke installs the root wheel into a fresh venv with `PYTHONPATH` empty and checks that keyword `os.remove` of `id_rsa` does not delete the file after a delivered block.
+- Full suite before the review remediation: `.venv/bin/python -m pytest -q --tb=line -p no:cacheprovider` — 1096 passed, 1 skipped, 31 warnings, 194.56s.
+- Full suite after the review remediation: the same command — **1146 passed, 1 skipped, 49 warnings, 197.29s**. The skip is `tests/browser/test_ui_smoke.py` because `playwright` is not installed (`pytest tests/browser/test_ui_smoke.py -rs`).
+- Clean wheel after the remediation: `.venv/bin/python -m pytest tests/test_clean_wheel_smoke.py tests/browser/test_ui_smoke.py -q -rs` — 4 passed, 1 skipped, 4.04s. The enforcement smoke installs the root wheel into a fresh venv with `PYTHONPATH` empty and checks that keyword `os.remove` of `id_rsa` does not delete the file after a delivered block.
+- Compile: `.venv/bin/python -m compileall -q varden varden_sdk varden_langchain sdks/python` — exit 0.
 - Compile: `.venv/bin/python -m compileall -q` on the changed modules — exit 0.
 - Ruff: the new gauntlet file is clean. `ruff check` on the pre-existing modules still reports historical `BLE001` / import-order findings that this pass did not introduce and did not mass-rewrite. There is no ruff configuration or ruff job in `.github/`.
 
-Platform: macOS, CPython 3.13.13. CI Linux can bind extra loopback addresses this host cannot; the tests no longer require `127.0.0.2`. openai, anthropic, and langchain are not installed in `.venv`, so LLM async class layout was not executed.
+Platform: macOS, CPython 3.13.13. CI Linux can bind extra loopback addresses this host cannot; the tests no longer require `127.0.0.2`. Provider tests ran against openai 1.109.1, anthropic 0.125.0, and langchain-core 1.6.12. `.github/workflows/ci.yml` job `provider integrations` installs `.[test,providers]` and runs those tests so a missing SDK is not silent in CI.
+
+## G. Independent review remediation
+
+Reviewed commit: `8d4d5156e0f9c9ea737bd54b72d15620bc9783c7`.
+
+### Control-plane responses
+
+Root cause: `VardenClient.guard` turned a completed response with no usable decision into `KeyError` or `HTTPStatusError`. `guarded_action` treated every exception as an outage, so guarded/fail-open executed.
+
+Change: `classify_guard_response` distinguishes authoritative allow, authoritative deny, approval required, invalid decision, no decision, service failure, and service failure with an allow. Fail-open runs only for `is_transport_failure` (no HTTP response: connect, reset, timeout) and for the documented 5xx-with-allow case. Empty HTTP 200, malformed JSON, HTTP 401/404/429/500/502/503 without a decision, and unexpected client exceptions do not execute. The standalone tree classifies the same fixture set. The gateway and host stay fail-closed and forward only `authoritative_allow`.
+
+### Nested interception
+
+Root cause: filesystem and LangChain used a depth counter around the whole operation, including policy evaluation and user code. `Session.send` skipped authorization for every nested send while `Session.request` was in progress.
+
+Change: filesystem passthrough is a set of path identities installed only around the original syscall, after the guard returns. A callback or `__fspath__` that opens a different path is enforced. LangChain skips a second charge only for `_run` / `_arun` of the tool whose `invoke` already guarded; a nested tool is a new decision. `Session.send` skips only when the URL is the hop just authorized. httpx rebuilds a redirect request without reading an unread body, so a cross-origin hop still reauthorizes and drops `Authorization` and `Cookie`.
+
+A task created during the original syscall can inherit the same-path passthrough. A different path in that task is still enforced. That residual is named on the filesystem coverage limitations. Coverage stays PARTIAL. TOCTOU, `dir_fd`, pre-existing hard links, raw descriptors, native code, `os.exec*` / `os.spawn*` / ctypes, and DNS rebinding are unchanged.
+
+### Provider verification
+
+openai 1.109.1 and anthropic 0.125.0 expose the sync and async `create` methods the patch targets. A block does not call the installed fake `create`. An allow calls it once. Unwrapping async OpenAI `create` downgrades `llm.openai_transport` from ENFORCED to UNCOVERED. Removing `AsyncCompletions` before patch leaves the surface PARTIAL. No paid API call was made.
+
+Regression file: `tests/security/pass2/test_p3_review_remediation.py`.
 
 No frontend files changed, so the frontend build and browser pass were not run.
 
@@ -210,4 +241,4 @@ Deferred:
 
 No known P0 bypass remains on the declared supported paths that these tests execute. Explicit blocks prevent the sentinel side effect on those paths. Fail-open does not override a delivered denial. MCP privileged methods are not forwarded without authorization. Coverage claims for filesystem stay PARTIAL, and requests coverage drops when `Session.send` is unwrapped. DNS rebinding and filesystem TOCTOU are still open and are labeled as such.
 
-Independent review should re-run the full pytest suite and the clean-wheel smoke on a machine that matches CI before merge. This branch was not merged.
+The review findings in section G are remediated on the paths those tests execute. DNS rebinding, filesystem TOCTOU, and the same-path passthrough inherited by a task created during the syscall remain open and labeled. This branch was not merged. Another independent review is required before merge.

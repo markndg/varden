@@ -32,10 +32,7 @@ from typing import Any, Callable
 
 import httpx
 
-from varden.runtime.guard_response import (
-    guard_response_blocks,
-    response_authorizes_execution,
-)
+from varden.runtime.guard_response import AUTHORITATIVE_ALLOW, classify_guard_response
 
 
 @dataclass
@@ -196,15 +193,14 @@ class VardenMcpHost:
                 data = {}
             if not isinstance(data, dict):
                 data = {}
-            if guard_response_blocks(data, status_code=resp.status_code) or not response_authorizes_execution(data):
+            # Same contract as the gateway: no fail-open. A non-success status
+            # does not run the handler, including when the body says allow.
+            kind = classify_guard_response(data, status_code=resp.status_code)
+            if kind != AUTHORITATIVE_ALLOW:
                 detail = data.get("detail") if isinstance(data.get("detail"), dict) else data
                 decision = detail.get("decision") if isinstance(detail, dict) else None
                 if not isinstance(decision, dict):
-                    decision = {"action": "block", "reason": "missing_guard_decision"}
-                if resp.status_code >= 400 and not guard_response_blocks(data, status_code=resp.status_code):
-                    # A server error with no decision is an outage, not a forged allow.
-                    # Raising skips the handler. Callers do not see a successful tool result.
-                    resp.raise_for_status()
+                    decision = {"action": "block", "reason": kind}
                 return McpToolResult(
                     server_id=server_id,
                     tool=tool,

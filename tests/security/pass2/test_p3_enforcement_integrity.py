@@ -88,8 +88,9 @@ def _protect(**kwargs):
 
 # --- Decision matrix ---------------------------------------------------------
 # observe always executes. strict refuses fail_mode=open at construction.
-# A delivered deny, ambiguous decision, or missing decision under fail-closed
-# does not execute. fail_mode=open executes only when no decision was delivered.
+# A delivered deny, ambiguous decision, or completed response without a
+# decision does not execute. fail_mode=open executes for a transport failure,
+# and for a non-success status whose body is an authoritative allow.
 
 
 _MATRIX = [
@@ -103,10 +104,12 @@ _MATRIX = [
     ("guarded", "open", 200, {"decision": {"action": "approval_required"}}, None, False),
     ("guarded", "open", 403, {"decision": {"action": "allow"}}, None, False),
     ("guarded", "open", 200, {"decision": {"action": "not-a-decision"}}, None, False),
-    ("guarded", "open", 200, {}, None, True),
+    ("guarded", "open", 200, {}, None, False),
     ("guarded", "closed", 200, {}, None, False),
-    ("guarded", "open", 500, {"detail": "down"}, None, True),
+    ("guarded", "open", 500, {"detail": "down"}, None, False),
     ("guarded", "closed", 500, {"detail": "down"}, None, False),
+    ("guarded", "open", 503, {"decision": {"action": "allow"}, "action": {}, "event_id": 1}, None, True),
+    ("guarded", "closed", 503, {"decision": {"action": "allow"}, "action": {}, "event_id": 1}, None, False),
     ("guarded", "open", 503, {"detail": {"decision": {"action": "require_approval"}}}, None, False),
     ("guarded", "open", 200, _ALLOW, TimeoutError("timed out"), True),
     ("guarded", "closed", 200, _ALLOW, TimeoutError("timed out"), False),
@@ -490,7 +493,7 @@ def test_mcp_missing_decision_does_not_forward(monkeypatch):
     session = _gateway_session()
     resp = session.exchange({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "delete", "arguments": {}}})
     assert session._written == []
-    assert "missing_guard_decision" in json.dumps(resp)
+    assert "no_decision" in json.dumps(resp)
 
 
 def test_mcp_malformed_message_is_not_forwarded():

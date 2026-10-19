@@ -20,7 +20,13 @@ from urllib.parse import urlparse
 import httpx
 
 from varden.runtime.coverage import ENFORCED, NOT_ROUTED, OBSERVATIONAL, PARTIAL, UNCOVERED, format_startup_attestation, get_coverage_registry
-from varden.runtime.guard_response import guard_response_blocks, response_denies_execution
+from varden.runtime.guard_response import (
+    AUTHORITATIVE_ALLOW,
+    SERVICE_FAILURE_WITH_ALLOW,
+    classify_guard_response,
+    is_transport_failure,
+    response_denies_execution,
+)
 from varden.runtime.modes import GUARDED, default_fail_mode, enforce_compat_mode, is_enforcing, normalize_mode
 from varden.runtime.boundary import enrich_action_runtime_metadata
 from varden_sdk import patches as _runtime_patches
@@ -65,7 +71,10 @@ _current_parent_event_id: contextvars.ContextVar[int | None] = contextvars.Conte
 _current_provenance: contextvars.ContextVar[list[dict[str, Any]] | None] = contextvars.ContextVar('varden_provenance', default=None)
 # Set while Session.request is already authorizing, so Session.send does not
 # authorize the same hop a second time. Direct Session.send stays at depth 0.
+# The depth counter is not an authorization bypass: a nested send is skipped
+# only when its URL is the hop just authorized. Any other URL is guarded.
 _requests_guard_depth: contextvars.ContextVar[int] = contextvars.ContextVar('varden_requests_guard_depth', default=0)
+_requests_authorized_url: contextvars.ContextVar[str | None] = contextvars.ContextVar('varden_requests_authorized_url', default=None)
 _SENSITIVE_REDIRECT_HEADERS = frozenset({'authorization', 'cookie', 'proxy-authorization'})
 
 _PATCH_LOCK = threading.Lock()
@@ -109,6 +118,19 @@ class VardenBlockedError(RuntimeError):
     def __init__(self, message: str, decision: dict[str, Any] | None = None):
         super().__init__(message)
         self.decision = decision or {}
+
+
+class VardenControlPlaneFailure(Exception):
+    """A completed control-plane HTTP response that did not authorize execution.
+
+    ``eligible_for_fail_open`` is set only for a non-success status whose body
+    is an authoritative allow. Transport failures are a different exception.
+    """
+
+    def __init__(self, message: str, *, classification: str, eligible_for_fail_open: bool = False):
+        super().__init__(message)
+        self.classification = classification
+        self.eligible_for_fail_open = eligible_for_fail_open
 
 
 class VardenClient:
@@ -157,24 +179,32 @@ class VardenClient:
     def guard(self, payload: dict[str, Any]) -> GuardResult:
         self.ensure_credentials()
         resp = self._client.post(f'{self.base_url}/sdk/guard', headers=self.headers(), json=payload)
-        data = _parse_json(resp)
+        try:
+            data = _parse_json(resp)
+        except Exception:
+            # A completed response with unreadable JSON is not a transport failure.
+            data = {'decision': None}
         if not isinstance(data, dict):
             data = {'detail': data}
-        # A delivered deny is not a transport failure. Honour it on every status,
-        # including 200 and 503, before fail-open handling can turn it into None.
-        # HTTP 403 always denies. An unreadable decision object is not an allow.
-        if guard_response_blocks(data, status_code=resp.status_code):
-            detail = data.get('detail') if isinstance(data.get('detail'), (dict, str)) else data
-            decision = data.get('detail') if isinstance(data.get('detail'), dict) else data
-            raise VardenBlockedError(
-                detail or 'blocked by Varden',
-                decision if isinstance(decision, dict) else None,
+        kind = classify_guard_response(data, status_code=resp.status_code)
+        if kind == AUTHORITATIVE_ALLOW:
+            action = data.get('action') or {}
+            if isinstance(action, dict) and data.get('event_id') is not None:
+                action = {**action, 'guard_event_id': data.get('event_id')}
+            return GuardResult(decision=data['decision'], action=action, event_id=data.get('event_id'))
+        if kind == SERVICE_FAILURE_WITH_ALLOW:
+            # Documented compatibility: fail-open may proceed, fail-closed may not.
+            # The caller applies fail mode. This is not an authorization by itself.
+            raise VardenControlPlaneFailure(
+                'control plane returned a non-success status with an allow decision',
+                classification=kind,
+                eligible_for_fail_open=True,
             )
-        resp.raise_for_status()
-        action = data.get('action') or {}
-        if isinstance(action, dict) and data.get('event_id') is not None:
-            action = {**action, 'guard_event_id': data.get('event_id')}
-        return GuardResult(decision=data['decision'], action=action, event_id=data.get('event_id'))
+        detail = data.get('detail') if isinstance(data.get('detail'), (dict, str)) else data
+        decision = data.get('detail') if isinstance(data.get('detail'), dict) else data
+        if not isinstance(decision, dict) or 'action' not in decision:
+            decision = {'action': 'block', 'reason': kind}
+        raise VardenBlockedError(detail or 'blocked by Varden', decision if isinstance(decision, dict) else None)
 
     def log_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.ensure_credentials()
@@ -480,15 +510,29 @@ class VardenGuard:
                     )
                 return GuardResult(decision=detail or {'action': 'block', 'reason': str(exc)}, action=action, event_id=None)
             raise
+        except VardenControlPlaneFailure as exc:
+            # A delivered non-success allow is not a transport outage. Fail-open
+            # may proceed only for that documented case. Fail-closed blocks.
+            if exc.eligible_for_fail_open and not _live_fail_closed(self):
+                return None
+            if _live_enforcing(self):
+                raise VardenBlockedError(
+                    f"control plane service failure: {exc}",
+                    {"action": "block", "reason": exc.classification},
+                ) from exc
+            raise
         except Exception as exc:
             # Authoritative fail_mode comes from the locked contract when present.
             # A poisoned fail_mode=open guard must not open a locked closed runtime.
+            # Fail-open applies only when no HTTP response was obtained.
+            if is_transport_failure(exc) and not _live_fail_closed(self):
+                return None
+            if _live_enforcing(self):
+                raise VardenBlockedError(
+                    f"control plane unreachable under locked enforcing contract: {exc}",
+                    {"action": "block", "reason": "control_plane_unreachable"},
+                ) from exc
             if _live_fail_closed(self):
-                if _live_enforcing(self):
-                    raise VardenBlockedError(
-                        f"control plane unreachable under locked enforcing contract: {exc}",
-                        {"action": "block", "reason": "control_plane_unreachable"},
-                    ) from exc
                 raise
             return None
 
@@ -1151,6 +1195,22 @@ def _follow_requests(send, *, method: str, url: str, follow: bool, authorize, ca
     return response, result
 
 
+def _requests_url_key(url: str) -> tuple[Any, ...] | None:
+    origin = _origin(url)
+    if origin is None:
+        return None
+    path = urlparse(str(url)).path or "/"
+    return (*origin, path)
+
+
+def _requests_same_authorized(url: str) -> bool:
+    authorized = _requests_authorized_url.get()
+    if not authorized:
+        return False
+    key = _requests_url_key(url)
+    return key is not None and key == _requests_url_key(authorized)
+
+
 def _request_host(url: str) -> str | None:
     origin = _origin(url)
     return origin[1] if origin else None
@@ -1223,7 +1283,11 @@ def _patch_requests(guard: VardenGuard) -> None:
                 )
 
             def send(verb, canonical, send_args, send_kwargs):
-                return original(self, verb, canonical, *send_args, **send_kwargs)
+                url_token = _requests_authorized_url.set(str(canonical))
+                try:
+                    return original(self, verb, canonical, *send_args, **send_kwargs)
+                finally:
+                    _requests_authorized_url.reset(url_token)
 
             result = None
             token = _requests_guard_depth.set(_requests_guard_depth.get() + 1)
@@ -1256,7 +1320,8 @@ def _patch_requests(guard: VardenGuard) -> None:
     def _make_send(original: Any):
         @functools.wraps(original)
         def send_wrapper(self, request: Any, **kwargs: Any):
-            if _requests_guard_depth.get() > 0:
+            request_url_early = str(getattr(request, 'url', '') or '')
+            if _requests_guard_depth.get() > 0 and _requests_same_authorized(request_url_early):
                 return original(self, request, **kwargs)
             current = current_guard() or guard
             request_url = str(getattr(request, 'url', '') or '')
@@ -1277,6 +1342,7 @@ def _patch_requests(guard: VardenGuard) -> None:
             canonical, result = authorize(request_url, method)
             outbound = _retarget_prepared(request, canonical)
             token = _requests_guard_depth.set(_requests_guard_depth.get() + 1)
+            url_token = _requests_authorized_url.set(str(canonical))
             try:
                 response = original(self, outbound, **send_kwargs)
                 hops = 0
@@ -1295,12 +1361,17 @@ def _patch_requests(guard: VardenGuard) -> None:
                     method = verb
                     canonical, result = authorize(nxt, verb)
                     outbound = _prepared_redirect(response, verb, canonical)
-                    response = original(self, outbound, **send_kwargs)
+                    hop_token = _requests_authorized_url.set(str(canonical))
+                    try:
+                        response = original(self, outbound, **send_kwargs)
+                    finally:
+                        _requests_authorized_url.reset(hop_token)
                     hops += 1
                 if result:
                     current.record_result(action=result.action, decision=result.decision, input_payload=payload, output_payload={'status_code': getattr(response, 'status_code', None), 'url': str(getattr(response, 'url', request_url))})
                 return response
             finally:
+                _requests_authorized_url.reset(url_token)
                 _requests_guard_depth.reset(token)
         return send_wrapper
 
@@ -1312,6 +1383,18 @@ def _patch_requests(guard: VardenGuard) -> None:
     )
 
 
+def _httpx_request_body(request: httpx.Request):
+    """Return a body that can be copied onto a new request.
+
+    Redirect ``next_request`` objects are often unread. Touching ``.content``
+    then raises ``RequestNotRead`` and aborts a hop that still needs a decision.
+    """
+    try:
+        return request.content
+    except httpx.RequestNotRead:
+        return None
+
+
 def _httpx_drop_cross_origin_credentials(request: httpx.Request, previous_url: str) -> httpx.Request:
     if _request_host(previous_url) == _request_host(str(request.url)):
         return request
@@ -1320,14 +1403,14 @@ def _httpx_drop_cross_origin_credentials(request: httpx.Request, previous_url: s
         for key, value in request.headers.items()
         if key.lower() not in _SENSITIVE_REDIRECT_HEADERS and key.lower() != "host"
     ]
-    return httpx.Request(request.method, request.url, headers=headers, content=request.content)
+    return httpx.Request(request.method, request.url, headers=headers, content=_httpx_request_body(request))
 
 
 def _retarget_httpx_request(request: httpx.Request, canonical: str) -> httpx.Request:
     if canonical == str(request.url):
         return request
     headers = [(key, value) for key, value in request.headers.items() if key.lower() != "host"]
-    return httpx.Request(request.method, canonical, headers=headers, content=request.content)
+    return httpx.Request(request.method, canonical, headers=headers, content=_httpx_request_body(request))
 
 
 def _httpx_follow(kwargs: dict[str, Any], client: Any) -> bool:

@@ -177,7 +177,46 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
 
     from varden.runtime import filesystem as fs_mod
 
-    _fs_depth: contextvars.ContextVar[int] = contextvars.ContextVar("varden_fs_depth", default=0)
+    # Path-scoped continuation of a call that has already been authorized.
+    # A nested open of a different path is not in this set and is enforced.
+    # The set is installed only around the original syscall, never around
+    # policy evaluation, so a guard callback cannot inherit the bypass.
+    _fs_passthrough: contextvars.ContextVar[frozenset[str]] = contextvars.ContextVar(
+        "varden_fs_passthrough", default=frozenset()
+    )
+
+    def _fs_identity(path: Any) -> str | None:
+        if path is None or isinstance(path, int):
+            return None
+        try:
+            text = os.fsdecode(os.fspath(path))
+        except (TypeError, ValueError):
+            return None
+        if not text:
+            return None
+        return os.path.normcase(os.path.abspath(text))
+
+    def _fs_paths_authorized(paths: list[Any]) -> bool:
+        allowed = _fs_passthrough.get()
+        if not allowed:
+            return False
+        seen = False
+        for path in paths:
+            if path is None:
+                continue
+            ident = _fs_identity(path)
+            if ident is None or ident not in allowed:
+                return False
+            seen = True
+        return seen
+
+    def _fs_call_original(paths: list[Any], call: Callable[[], Any]) -> Any:
+        idents = frozenset(ident for ident in (_fs_identity(path) for path in paths) if ident)
+        token = _fs_passthrough.set(_fs_passthrough.get() | idents)
+        try:
+            return call()
+        finally:
+            _fs_passthrough.reset(token)
 
     def _should_enforce(path: Any, mode: str, info: dict[str, Any]) -> bool:
         # Secrets/system always; supply-chain workspace mutations always.
@@ -283,27 +322,23 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         def open_wrapper(file, *args, **kwargs):
             from varden_sdk.sdk import current_guard
 
-            if _fs_depth.get() > 0:
+            if _fs_paths_authorized([file]):
                 return originals[key](file, *args, **kwargs)
-            token = _fs_depth.set(_fs_depth.get() + 1)
-            try:
-                current = current_guard() or guard
-                path = file if isinstance(file, (str, os.PathLike)) else None
-                if path is not None:
-                    mode = args[0] if args else kwargs.get("mode", "r")
-                    info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
-                    payload = {
-                        "path": str(path),
-                        "mode": mode,
-                        "classification": info,
-                        "effective_path": info.get("real_path"),
-                        "resolution": info.get("resolution"),
-                    }
-                    _guard_filesystem(current, tool="open", path=path, mode=str(mode), info=info, payload=payload)
-                    _recheck_effective_target(current, tool="open", path=path, mode=str(mode), prior_info=info)
-                return originals[key](file, *args, **kwargs)
-            finally:
-                _fs_depth.reset(token)
+            current = current_guard() or guard
+            path = file if isinstance(file, (str, os.PathLike)) else None
+            if path is not None:
+                mode = args[0] if args else kwargs.get("mode", "r")
+                info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
+                payload = {
+                    "path": str(path),
+                    "mode": mode,
+                    "classification": info,
+                    "effective_path": info.get("real_path"),
+                    "resolution": info.get("resolution"),
+                }
+                _guard_filesystem(current, tool="open", path=path, mode=str(mode), info=info, payload=payload)
+                _recheck_effective_target(current, tool="open", path=path, mode=str(mode), prior_info=info)
+            return _fs_call_original([file], lambda: originals[key](file, *args, **kwargs))
 
         builtins.open = open_wrapper
 
@@ -318,29 +353,25 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
             def path_open(self, *args, **kwargs):
                 from varden_sdk.sdk import current_guard
 
-                if _fs_depth.get() > 0:
+                if _fs_paths_authorized([self]):
                     return originals[key_po](self, *args, **kwargs)
-                token = _fs_depth.set(_fs_depth.get() + 1)
-                try:
-                    current = current_guard() or guard
-                    mode = args[0] if args else kwargs.get("mode", "r")
-                    info = fs_mod.classify_path(self, workspace=os.getcwd(), mode=str(mode))
-                    payload = {
-                        "path": str(self),
-                        "classification": info,
-                        "mode": mode,
-                        "effective_path": info.get("real_path"),
-                        "resolution": info.get("resolution"),
-                    }
-                    _guard_filesystem(
-                        current, tool="pathlib.Path.open", path=self, mode=str(mode), info=info, payload=payload
-                    )
-                    _recheck_effective_target(
-                        current, tool="pathlib.Path.open", path=self, mode=str(mode), prior_info=info
-                    )
-                    return originals[key_po](self, *args, **kwargs)
-                finally:
-                    _fs_depth.reset(token)
+                current = current_guard() or guard
+                mode = args[0] if args else kwargs.get("mode", "r")
+                info = fs_mod.classify_path(self, workspace=os.getcwd(), mode=str(mode))
+                payload = {
+                    "path": str(self),
+                    "classification": info,
+                    "mode": mode,
+                    "effective_path": info.get("real_path"),
+                    "resolution": info.get("resolution"),
+                }
+                _guard_filesystem(
+                    current, tool="pathlib.Path.open", path=self, mode=str(mode), info=info, payload=payload
+                )
+                _recheck_effective_target(
+                    current, tool="pathlib.Path.open", path=self, mode=str(mode), prior_info=info
+                )
+                return _fs_call_original([self], lambda: originals[key_po](self, *args, **kwargs))
 
             Path.open = path_open
     except Exception:
@@ -359,9 +390,16 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
             def wrapper(*args, **kwargs):
                 from varden_sdk.sdk import current_guard
 
-                if _fs_depth.get() > 0:
+                targets = []
+                if tool in {"os.rename", "os.replace"}:
+                    targets = [
+                        _call_path(args, kwargs, 0, ("src", "path")),
+                        _call_path(args, kwargs, 1, ("dst",)),
+                    ]
+                else:
+                    targets = [_call_path(args, kwargs, 0, ("path", "src"))]
+                if _fs_paths_authorized(targets):
                     return original(*args, **kwargs)
-                token = _fs_depth.set(_fs_depth.get() + 1)
                 try:
                     current = current_guard() or guard
                     if tool in {"os.rename", "os.replace"}:
@@ -429,9 +467,9 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
                         )
                         if src is not None:
                             _recheck_effective_target(current, tool=tool, path=src, mode="w", prior_info=src_info)
-                    return original(*args, **kwargs)
+                    return _fs_call_original(targets, lambda: original(*args, **kwargs))
                 finally:
-                    _fs_depth.reset(token)
+                    pass
 
             return wrapper
 
@@ -444,29 +482,25 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         def os_open_wrapper(*args, **kwargs):
             from varden_sdk.sdk import current_guard
 
-            if _fs_depth.get() > 0:
+            path = _call_path(args, kwargs, 0, ("path", "file"))
+            if _fs_paths_authorized([path]):
                 return originals["os.open"](*args, **kwargs)
-            token = _fs_depth.set(_fs_depth.get() + 1)
-            try:
-                current = current_guard() or guard
-                path = _call_path(args, kwargs, 0, ("path", "file"))
-                flags = args[1] if len(args) > 1 else kwargs.get("flags")
-                if path is None or flags is None:
-                    return originals["os.open"](*args, **kwargs)
-                mode = "w" if _os_open_writes(flags) else "r"
-                info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=mode)
-                payload = {
-                    "path": str(path),
-                    "flags": flags,
-                    "classification": info,
-                    "effective_path": info.get("real_path"),
-                    "resolution": info.get("resolution"),
-                }
-                _guard_filesystem(current, tool="os.open", path=path, mode=mode, info=info, payload=payload)
-                _recheck_effective_target(current, tool="os.open", path=path, mode=mode, prior_info=info)
+            current = current_guard() or guard
+            flags = args[1] if len(args) > 1 else kwargs.get("flags")
+            if path is None or flags is None:
                 return originals["os.open"](*args, **kwargs)
-            finally:
-                _fs_depth.reset(token)
+            mode = "w" if _os_open_writes(flags) else "r"
+            info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=mode)
+            payload = {
+                "path": str(path),
+                "flags": flags,
+                "classification": info,
+                "effective_path": info.get("real_path"),
+                "resolution": info.get("resolution"),
+            }
+            _guard_filesystem(current, tool="os.open", path=path, mode=mode, info=info, payload=payload)
+            _recheck_effective_target(current, tool="os.open", path=path, mode=mode, prior_info=info)
+            return _fs_call_original([path], lambda: originals["os.open"](*args, **kwargs))
 
         os.open = os_open_wrapper
 
@@ -480,13 +514,12 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
             def wrapper(*args, **kwargs):
                 from varden_sdk.sdk import current_guard
 
-                if _fs_depth.get() > 0:
+                src = _call_path(args, kwargs, 0, ("src", "path"))
+                dst = _call_path(args, kwargs, 1, ("dst",))
+                if _fs_paths_authorized([src, dst]):
                     return original(*args, **kwargs)
-                token = _fs_depth.set(_fs_depth.get() + 1)
                 try:
                     current = current_guard() or guard
-                    src = _call_path(args, kwargs, 0, ("src", "path"))
-                    dst = _call_path(args, kwargs, 1, ("dst",))
                     src_info = fs_mod.classify_path(src, workspace=os.getcwd(), mode="w") if src is not None else {}
                     dst_info = fs_mod.classify_path(dst, workspace=os.getcwd(), mode="w") if dst is not None else {}
                     for side, info, side_path in (
@@ -533,9 +566,9 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
                         _recheck_effective_target(current, tool=tool, path=src, mode="w", prior_info=src_info)
                     if dst is not None:
                         _recheck_effective_target(current, tool=tool, path=dst, mode="w", prior_info=dst_info)
-                    return original(*args, **kwargs)
+                    return _fs_call_original([src, dst], lambda: original(*args, **kwargs))
                 finally:
-                    _fs_depth.reset(token)
+                    pass
 
             return wrapper
 
@@ -553,6 +586,7 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
             "Secrets, system paths, and supply-chain workspace mutations are mediated on those calls. Benign workspace and home reads and writes may not hit the control plane.",
             "dir_fd forms are classified from the path string only. A benign relative name opened against an untracked directory descriptor is not contained.",
             "Re-check before the syscall narrows TOCTOU. It does not close a race between that re-check and the kernel operation.",
+            "A path-scoped passthrough covers only the original syscall for paths already authorized. It is not installed during policy evaluation. A different path opened from a callback is enforced. A task created during the syscall can inherit that same-path passthrough.",
             "Hard links created before interception, raw file descriptors, os.read/os.write, shutil paths that avoid patched calls, and native extensions are not mediated.",
             "OS-global filesystem isolation is NOT GUARANTEED.",
         ],

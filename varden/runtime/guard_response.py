@@ -126,3 +126,85 @@ def response_authorizes_execution(payload: Any) -> bool:
         if effective is not None and effective not in _NON_DENY_ACTIONS:
             return False
     return True
+
+
+# Shared classification for every caller that reads ``/sdk/guard``.
+AUTHORITATIVE_ALLOW = "authoritative_allow"
+AUTHORITATIVE_DENY = "authoritative_deny"
+APPROVAL_REQUIRED = "approval_required"
+INVALID_DECISION = "invalid_decision"
+NO_DECISION = "no_decision"
+SERVICE_FAILURE = "service_failure"
+SERVICE_FAILURE_WITH_ALLOW = "service_failure_with_allow"
+TRANSPORT_FAILURE = "transport_failure"
+
+_APPROVAL_ACTIONS = frozenset({"require_approval", "approval_required"})
+_HARD_DENY_ACTIONS = frozenset({"block", "blocked", "unsupported"})
+
+# Fail-open is only these. A completed HTTP response is not a transport failure.
+_FAIL_OPEN_CLASSIFICATIONS = frozenset({TRANSPORT_FAILURE, SERVICE_FAILURE_WITH_ALLOW})
+
+
+def _decision_labels(payload: Any) -> list[str]:
+    labels: list[str] = []
+    for decision in candidate_decisions(payload):
+        action = _policy_action(decision, "action")
+        effective = _policy_action(decision, "effective_action")
+        if action is not None:
+            labels.append(action)
+        if effective is not None:
+            labels.append(effective)
+    return labels
+
+
+def classify_guard_response(payload: Any, *, status_code: int | None = None) -> str:
+    """Classify a completed HTTP response. Transport failure is not a response.
+
+    A 2xx body with no recognized decision is ``no_decision``, not an allow.
+    A 4xx/5xx body with no recognized decision is ``service_failure``.
+    An authoritative allow on a non-success status is
+    ``service_failure_with_allow``: fail-open may proceed, fail-closed may not.
+    HTTP 403 and any deny or approval action never authorize.
+    """
+    labels = _decision_labels(payload)
+    if status_code == 403 or response_denies_execution(payload):
+        if any(label in _APPROVAL_ACTIONS for label in labels) and not any(
+            label in _HARD_DENY_ACTIONS for label in labels
+        ):
+            return APPROVAL_REQUIRED
+        return AUTHORITATIVE_DENY
+    if response_decision_ambiguous(payload):
+        return INVALID_DECISION
+    if response_authorizes_execution(payload):
+        if status_code is not None and status_code >= 400:
+            return SERVICE_FAILURE_WITH_ALLOW
+        return AUTHORITATIVE_ALLOW
+    if status_code is not None and status_code >= 400:
+        return SERVICE_FAILURE
+    return NO_DECISION
+
+
+def fail_open_applies(classification: str) -> bool:
+    """True only for a transport outage or a non-success response that is an allow.
+
+    Empty success bodies, malformed decisions, and HTTP errors without a
+    decision are not outages.
+    """
+    return classification in _FAIL_OPEN_CLASSIFICATIONS
+
+
+def is_transport_failure(exc: BaseException) -> bool:
+    """True when no HTTP response was obtained.
+
+    ``HTTPStatusError`` and JSON decode errors are delivered responses.
+    Programming errors are not outages.
+    """
+    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+        return False
+    try:
+        import httpx
+    except Exception:
+        httpx = None  # type: ignore[assignment]
+    if httpx is not None and isinstance(exc, httpx.TransportError):
+        return True
+    return isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError))
