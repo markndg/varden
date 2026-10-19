@@ -147,8 +147,8 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
             from varden_sdk.sdk import VardenBlockedError
 
             raise VardenBlockedError(
-                "destination binding hook is not installed",
-                {"action": "block", "reason": "destination_binding_hook_missing", "effective_action": "block"},
+                f"destination binding failed: {exc.code}",
+                {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
             ) from exc
 
     urllib_request.urlopen = wrapper
@@ -186,9 +186,19 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
         urllib_request.HTTPRedirectHandler.redirect_request = redirect_request
     try:
         def _check_urllib() -> bool:
-            from varden.destination_binding import hook_installed
+            from varden.destination_binding import transport_binding_installed
 
-            return urllib_request.urlopen is wrapper and hook_installed()
+            transport_ok = transport_binding_installed()
+            url_ok = urllib_request.urlopen is wrapper
+            surface = get_coverage_registry().get("http.urllib")
+            if surface is not None:
+                surface.evidence = {
+                    **(surface.evidence or {}),
+                    "url_policy": bool(url_ok),
+                    "socket_binding": bool(transport_ok),
+                    "binding_scope": "operation" if transport_ok else "unavailable",
+                }
+            return bool(url_ok and transport_ok)
 
         get_coverage_registry().install_interceptor(
             "http.urllib",
@@ -196,8 +206,9 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
             interceptor="urllib.request.urlopen",
             limitations=[
                 "urllib.request.urlopen only; lower-level handlers may differ.",
-                "Direct connections pin socket.getaddrinfo to the authorized addresses.",
+                "A direct connection dials only the addresses authorized for that urlopen. Redirect hops push their own authorization in the same context.",
                 "Environment proxies are not destination-bound for the target host.",
+                "socket.getaddrinfo is not rewritten for other callers.",
             ],
         )
     except RuntimeError:
@@ -369,6 +380,17 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         newly security-sensitive destination after policy evaluation, fail closed
         under enforcing + fail-closed modes.
         """
+        fresh_canon = fs_mod.canonicalize_path(path, workspace=os.getcwd())
+        prior_eff = prior_info.get("real_path")
+        fresh_eff = fresh_canon.get("real_path")
+        mutated = prior_eff != fresh_eff or (
+            bool(fresh_canon.get("symlink_involved")) and not bool(prior_info.get("symlink_involved"))
+        ) or fresh_canon.get("resolution") != prior_info.get("resolution")
+        if not mutated:
+            # The fresh resolution names the same target. Pattern classification
+            # of that target was already computed for this call. Do not reuse it
+            # across a later open.
+            return prior_info
         fresh = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
         prior_eff = prior_info.get("real_path")
         fresh_eff = fresh.get("real_path")

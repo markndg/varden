@@ -7,24 +7,24 @@ HTTP clients:
 
 * Resolve the name once, before the policy decision.
 * Give policy every address and the most severe category.
-* While the authorized send runs, ``socket.getaddrinfo`` for that host
-  returns only those addresses. A later lookup cannot select a new IP.
-* The URL host is left unchanged, so TLS SNI and certificate verification
-  still use the hostname.
-* Pooled connections whose peer is not in the authorized set are closed
-  before the send.
+* The authorization is stored on the operation, not in a process-wide
+  hostname table. Another thread, task, or library lookup does not inherit it.
+* Supported clients dial those addresses directly. The URL host is left
+  unchanged, so TLS SNI and certificate verification still use the hostname.
+* A pooled connection is reused only when its peer is verified to be in
+  that operation's address set. An unknown or failed peer check is not reused.
 * An HTTP proxy is a different connection. The TCP peer is the proxy.
   The proxy resolves the target. That hop is not socket-bound.
 
-Custom transports and adapters are not bound. Replacing ``socket.getaddrinfo``
-removes the pin; coverage then refuses to stay ENFORCED. This is not an
-operating-system sandbox. ``ctypes`` connect and a saved socket reference
-are outside the hook.
+Custom transports and adapters are not bound. This is not an
+operating-system sandbox. ``ctypes`` connect, a saved socket, and a client
+that does not use these connection paths are outside the binding.
 """
 
 from __future__ import annotations
 
 import contextvars
+import errno
 import ipaddress
 import queue
 import socket
@@ -52,10 +52,17 @@ _SEVERITY = {
 _resolver: contextvars.ContextVar[Resolver | None] = contextvars.ContextVar(
     "varden_destination_resolver", default=None
 )
-_lock = threading.Lock()
-_original_getaddrinfo: Callable[..., Any] | None = None
-_pins: dict[str, list[tuple[str, ...]]] = {}
-_hook_installed = False
+# Bindings for the current operation only. Not a process-wide hostname map.
+_operation_bindings: contextvars.ContextVar[tuple[DestinationBinding, ...]] = contextvars.ContextVar(
+    "varden_operation_bindings", default=()
+)
+# Tokens pushed by redirect hops, reset when the enclosing operation exits.
+_redirect_tokens: contextvars.ContextVar[list[contextvars.Token[tuple[DestinationBinding, ...]]] | None] = contextvars.ContextVar(
+    "varden_redirect_tokens", default=None
+)
+_install_lock = threading.Lock()
+_saved_methods: dict[str, Any] = {}
+_transport_installed = False
 
 
 class DestinationBindingError(Exception):
@@ -119,12 +126,9 @@ class DestinationBinding:
             "proxy": self.proxy,
             "socket_bound": self.socket_bound,
             "reason": self.reason,
+            "binding_scope": "operation" if self.socket_bound else self.status,
+            "peer_verification": "required" if self.socket_bound else "not_applicable",
         }
-
-
-_redirect_pins: contextvars.ContextVar[list[DestinationBinding] | None] = contextvars.ContextVar(
-    "varden_redirect_pins", default=None
-)
 
 
 def address_category(text: str) -> str | None:
@@ -181,9 +185,8 @@ def resolver_scope(resolver: Resolver | None) -> Iterator[None]:
 
 
 def _default_resolver(host: str, port: int) -> list[str]:
-    lookup = _original_getaddrinfo or socket.getaddrinfo
     try:
-        rows = lookup(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        rows = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
     except UnicodeError as exc:
         raise DestinationBindingError("malformed") from exc
     except socket.gaierror as exc:
@@ -371,6 +374,21 @@ def resolve_binding(
     )
 
 
+def _norm_ip(text: str) -> str | None:
+    raw = str(text).strip()
+    if "%" in raw:
+        raw = raw.split("%", 1)[0]
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    try:
+        ip = ipaddress.ip_address(raw)
+    except ValueError:
+        return None
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return str(ip)
+
+
 def _pin_key(host: str) -> str:
     text = str(host).strip().lower()
     if text.startswith("[") and text.endswith("]"):
@@ -380,143 +398,569 @@ def _pin_key(host: str) -> str:
     return text
 
 
-def hook_installed() -> bool:
-    return _hook_installed and socket.getaddrinfo is _pinned_getaddrinfo
+def operation_bindings() -> tuple[DestinationBinding, ...]:
+    """Bindings active in this context. Empty in every other thread or task."""
+    return _operation_bindings.get()
 
 
-def install_resolution_hook() -> None:
-    """Install the getaddrinfo pin. Safe to call more than once."""
-    global _original_getaddrinfo, _hook_installed
-    with _lock:
-        current = socket.getaddrinfo
-        if current is _pinned_getaddrinfo:
-            _hook_installed = True
-            return
-        if _original_getaddrinfo is None or current is _original_getaddrinfo:
-            _original_getaddrinfo = current
-            socket.getaddrinfo = _pinned_getaddrinfo
-            _hook_installed = True
-            return
-        # A foreign resolver is already installed. Do not override it.
-        _hook_installed = False
+def binding_for_host(host: str | None) -> DestinationBinding | None:
+    """Innermost socket-bound authorization for ``host`` in this operation.
+
+    A nested operation hides an outer one for the same host. A different
+    context does not see this stack.
+    """
+    if not host:
+        return None
+    key = _pin_key(host)
+    for binding in reversed(_operation_bindings.get()):
+        if binding.socket_bound and binding.host and binding.addresses and _pin_key(binding.host) == key:
+            return binding
+    return None
 
 
-def restore_resolution_hook() -> None:
-    """Remove the pin hook when it is still ours. Do not touch a foreign one."""
-    global _hook_installed
-    with _lock:
-        if socket.getaddrinfo is _pinned_getaddrinfo and _original_getaddrinfo is not None:
-            socket.getaddrinfo = _original_getaddrinfo
-        _pins.clear()
-        _hook_installed = False
+def mark_request_binding(request: Any, binding: DestinationBinding) -> None:
+    """Attach this hop's addresses to the request the transport will dial.
 
-
-def _activate(binding: DestinationBinding) -> None:
-    if not binding.socket_bound or not binding.host or not binding.addresses:
-        return
-    key = _pin_key(binding.host)
-    with _lock:
-        _pins.setdefault(key, []).append(binding.address_ips)
-
-
-def _deactivate(binding: DestinationBinding) -> None:
-    if not binding.host:
-        return
-    key = _pin_key(binding.host)
-    with _lock:
-        stack = _pins.get(key)
-        if not stack:
-            return
-        needle = binding.address_ips
-        for index in range(len(stack) - 1, -1, -1):
-            if stack[index] == needle:
-                del stack[index]
-                break
-        if not stack:
-            _pins.pop(key, None)
-
-
-def note_redirect_binding(binding: DestinationBinding) -> None:
-    """Keep a redirect hop's pin until the enclosing ``pinned_connection`` exits.
-
-    urllib follows the redirect inside the original ``urlopen``, after
-    ``redirect_request`` has returned. The extra pin has to outlive that
-    method and end with the outer send.
+    httpcore reads this on the connection object. It does not consult a
+    process-wide hostname table, and it does not need the calling context
+    to survive a worker thread.
     """
     if not binding.socket_bound or not binding.addresses:
         return
-    current = _redirect_pins.get()
-    if current is None:
+    extensions = getattr(request, "extensions", None)
+    if not isinstance(extensions, dict):
         return
-    _activate(binding)
-    current.append(binding)
+    extensions["varden.socket_bound"] = True
+    extensions["varden.allowed_ips"] = tuple(binding.address_ips)
+
+
+def _allowed_set(binding: DestinationBinding) -> set[str]:
+    found = set()
+    for ip in binding.address_ips:
+        normal = _norm_ip(ip)
+        if normal:
+            found.add(normal)
+    return found
+
+
+def transport_binding_installed() -> bool:
+    return _transport_installed
+
+
+def hook_installed() -> bool:
+    """True when the operation-scoped transport bindings are installed.
+
+    This is not a ``socket.getaddrinfo`` hook. Unrelated lookups are unchanged.
+    """
+    return transport_binding_installed()
+
+
+def _method_key(owner: Any, name: str) -> str:
+    return f"{getattr(owner, '__module__', '?')}.{getattr(owner, '__qualname__', getattr(owner, '__name__', '?'))}.{name}"
+
+
+def _install_method(owner: Any, name: str, factory: Callable[[Any], Any]) -> bool:
+    current = getattr(owner, name, None)
+    if current is None:
+        return False
+    if getattr(current, "_varden_transport_binding", False):
+        return True
+    key = _method_key(owner, name)
+    saved = _saved_methods.get(key)
+    if saved is None:
+        _saved_methods[key] = current
+        saved = current
+    if current is not saved:
+        return False
+    wrapped = factory(saved)
+    wrapped._varden_transport_binding = True  # type: ignore[attr-defined]
+    setattr(owner, name, wrapped)
+    return True
+
+
+def _restore_method(owner: Any, name: str) -> None:
+    current = getattr(owner, name, None)
+    key = _method_key(owner, name)
+    saved = _saved_methods.get(key)
+    if saved is None or current is None:
+        return
+    if getattr(current, "_varden_transport_binding", False):
+        setattr(owner, name, saved)
+
+
+class _BoundSyncBackend:
+    def __init__(self, inner: Any, ips: tuple[str, ...]):
+        self._inner = inner
+        self._ips = ips
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def connect_tcp(self, host: str, port: int, timeout: float | None = None, local_address: str | None = None, socket_options: Any = None) -> Any:
+        last: BaseException | None = None
+        for ip in self._ips:
+            try:
+                return self._inner.connect_tcp(
+                    host=ip,
+                    port=port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except Exception as exc:
+                last = exc
+        raise last if last is not None else OSError("no authorized address")
+
+
+class _BoundAsyncBackend:
+    def __init__(self, inner: Any, ips: tuple[str, ...]):
+        self._inner = inner
+        self._ips = ips
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    async def connect_tcp(self, host: str, port: int, timeout: float | None = None, local_address: str | None = None, socket_options: Any = None) -> Any:
+        last: BaseException | None = None
+        for ip in self._ips:
+            try:
+                return await self._inner.connect_tcp(
+                    host=ip,
+                    port=port,
+                    timeout=timeout,
+                    local_address=local_address,
+                    socket_options=socket_options,
+                )
+            except Exception as exc:
+                last = exc
+        raise last if last is not None else OSError("no authorized address")
+
+
+def _dial_authorized(original: Any, connection: Any, request: Any, *, async_backend: bool) -> Any:
+    extensions = getattr(request, "extensions", None) or {}
+    if not extensions.get("varden.socket_bound"):
+        return original(connection, request)
+    if getattr(connection, "_uds", None):
+        raise DestinationBindingError("unix_socket_unbound")
+    ips = tuple(extensions.get("varden.allowed_ips") or ())
+    if not ips:
+        raise DestinationBindingError("binding_missing_addresses")
+    backend = connection._network_backend
+    replacement = _BoundAsyncBackend(backend, ips) if async_backend else _BoundSyncBackend(backend, ips)
+    connection._network_backend = replacement
+    try:
+        return original(connection, request)
+    finally:
+        connection._network_backend = backend
+
+
+def _make_sync_connect(original: Any) -> Any:
+    def _connect(self: Any, request: Any) -> Any:
+        return _dial_authorized(original, self, request, async_backend=False)
+
+    return _connect
+
+
+def _make_async_connect(original: Any) -> Any:
+    async def _connect(self: Any, request: Any) -> Any:
+        extensions = getattr(request, "extensions", None) or {}
+        if not extensions.get("varden.socket_bound"):
+            return await original(self, request)
+        if getattr(self, "_uds", None):
+            raise DestinationBindingError("unix_socket_unbound")
+        ips = tuple(extensions.get("varden.allowed_ips") or ())
+        if not ips:
+            raise DestinationBindingError("binding_missing_addresses")
+        backend = self._network_backend
+        self._network_backend = _BoundAsyncBackend(backend, ips)
+        try:
+            return await original(self, request)
+        finally:
+            self._network_backend = backend
+
+    return _connect
+
+
+def _make_stdlib_connect(original: Any) -> Any:
+    def connect(self: Any) -> None:
+        binding = binding_for_host(getattr(self, "host", None))
+        if binding is None:
+            original(self)
+            return
+        last: BaseException | None = None
+        for ip in binding.address_ips:
+            try:
+                self.sock = self._create_connection((ip, self.port), self.timeout, self.source_address)
+            except OSError as exc:
+                last = exc
+                sock = getattr(self, "sock", None)
+                if sock is not None:
+                    try:
+                        sock.close()
+                    except OSError:
+                        pass
+                    self.sock = None
+                continue
+            try:
+                self.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError as exc:
+                if exc.errno != errno.ENOPROTOOPT:
+                    raise
+            if getattr(self, "_tunnel_host", None):
+                self._tunnel()
+            return
+        raise last if last is not None else OSError("no authorized address")
+
+    return connect
+
+
+def _make_urllib3_new_conn(original: Any) -> Any:
+    def _new_conn(self: Any) -> Any:
+        binding = binding_for_host(getattr(self, "host", None))
+        if binding is None:
+            return original(self)
+        saved = getattr(self, "_dns_host", None)
+        last: BaseException | None = None
+        try:
+            for ip in binding.address_ips:
+                self._dns_host = ip
+                try:
+                    return original(self)
+                except Exception as exc:
+                    last = exc
+        finally:
+            self._dns_host = saved
+        raise last if last is not None else OSError("no authorized address")
+
+    return _new_conn
+
+
+def _urllib3_verdict(conn: Any, allowed: set[str]) -> str:
+    """``fresh``, ``reuse``, or ``drop``. Unknown and failed peers are ``drop``."""
+    sock = getattr(conn, "sock", None)
+    if sock is None:
+        return "fresh"
+    try:
+        from urllib3.util.connection import is_connection_dropped
+
+        if is_connection_dropped(conn):
+            return "drop"
+    except Exception:
+        return "drop"
+    try:
+        peer = sock.getpeername()
+    except Exception:
+        return "drop"
+    if not isinstance(peer, tuple) or not peer:
+        return "drop"
+    normal = _norm_ip(str(peer[0]))
+    if normal is None or normal not in allowed:
+        return "drop"
+    return "reuse"
+
+
+def _make_urllib3_get_conn(original: Any) -> Any:
+    def _get_conn(self: Any, timeout: float | None = None) -> Any:
+        binding = binding_for_host(getattr(self, "host", None))
+        pool = getattr(self, "pool", None)
+        if binding is None or pool is None:
+            return original(self, timeout)
+        allowed = _allowed_set(binding)
+        if not allowed:
+            raise DestinationBindingError("binding_missing_addresses")
+        limit = int(getattr(pool, "maxsize", 0) or 0) + 8
+        for _ in range(max(limit, 1)):
+            try:
+                conn = pool.get(block=False)
+            except queue.Empty:
+                if getattr(self, "block", False):
+                    from urllib3.exceptions import EmptyPoolError
+
+                    raise EmptyPoolError(self, "Pool is empty and a new connection can't be opened due to blocking mode.") from None
+                return self._new_conn()
+            except Exception as exc:
+                raise DestinationBindingError("pool_uninspectable") from exc
+            if conn is None:
+                continue
+            verdict = _urllib3_verdict(conn, allowed)
+            if verdict == "reuse" or verdict == "fresh":
+                return conn
+            try:
+                conn.close()
+            except Exception:
+                pass
+        return self._new_conn()
+
+    return _get_conn
+
+
+def _connection_peer(connection: Any) -> str | None:
+    inner = getattr(connection, "_connection", None)
+    stream = None
+    if inner is not None:
+        stream = getattr(inner, "_network_stream", None)
+    if stream is None:
+        stream = getattr(connection, "_network_stream", None)
+    if stream is None:
+        return None
+    if hasattr(stream, "get_extra_info"):
+        try:
+            info = stream.get_extra_info("server_addr")
+        except Exception:
+            info = None
+        if isinstance(info, tuple) and info:
+            return str(info[0])
+    sock = getattr(stream, "_sock", None)
+    if sock is None:
+        nested = getattr(stream, "_stream", None)
+        sock = getattr(nested, "_raw_socket", None) if nested is not None else None
+    if sock is None:
+        return None
+    try:
+        peer = sock.getpeername()
+    except Exception:
+        return None
+    if isinstance(peer, tuple) and peer:
+        return str(peer[0])
+    return None
+
+
+def _request_allowed_ips(request: Any) -> set[str] | None:
+    extensions = getattr(request, "extensions", None) or {}
+    if not extensions.get("varden.socket_bound"):
+        return None
+    found = set()
+    for ip in extensions.get("varden.allowed_ips") or ():
+        normal = _norm_ip(str(ip))
+        if normal:
+            found.add(normal)
+    return found
+
+
+def _queued_bound_request(pool: Any, origin: Any) -> Any | None:
+    for pool_request in list(getattr(pool, "_requests", ()) or ()):
+        try:
+            queued = pool_request.is_queued()
+        except Exception:
+            continue
+        if not queued:
+            continue
+        request = getattr(pool_request, "request", None)
+        if request is None:
+            continue
+        try:
+            if request.url.origin != origin:
+                continue
+        except Exception:
+            continue
+        if _request_allowed_ips(request) is not None:
+            return request
+    return None
+
+
+def _reuse_allowed(pool: Any, connection: Any, origin: Any) -> bool:
+    request = _queued_bound_request(pool, origin)
+    if request is None:
+        return True
+    allowed = _request_allowed_ips(request)
+    if not allowed:
+        return False
+    peer = _connection_peer(connection)
+    if peer is None:
+        return False
+    normal = _norm_ip(peer)
+    return normal is not None and normal in allowed
+
+
+def _guard_pool_reuse(pool: Any) -> None:
+    connections = getattr(pool, "_connections", None)
+    if not isinstance(connections, list):
+        return
+    for connection in list(connections):
+        if getattr(connection, "_varden_reuse_guard", False):
+            continue
+        original = getattr(connection, "can_handle_request", None)
+        if original is None:
+            continue
+
+        def can_handle_request(origin: Any, _conn: Any = connection, _orig: Any = original, _pool: Any = pool) -> bool:
+            try:
+                if not _orig(origin):
+                    return False
+            except Exception:
+                return False
+            return _reuse_allowed(_pool, _conn, origin)
+
+        connection.can_handle_request = can_handle_request
+        connection._varden_reuse_guard = True
+
+
+def _take_unverifiable(pool: Any) -> list[Any]:
+    """Remove idle established connections whose peer cannot be verified.
+
+    Called while the pool lock is held. The caller closes them outside the lock.
+    A verified peer that is simply outside this request's set stays in the pool
+    for the operation that authorized it.
+    """
+    connections = getattr(pool, "_connections", None)
+    if not isinstance(connections, list):
+        return []
+    if not any(_request_allowed_ips(getattr(item, "request", None)) is not None for item in list(getattr(pool, "_requests", ()) or ())):
+        # Still guard reuse below. Evict only when a socket-bound request is queued,
+        # otherwise an unrelated client keeps its own idle sockets.
+        return []
+    doomed: list[Any] = []
+    for connection in list(connections):
+        try:
+            idle = bool(connection.is_idle())
+        except Exception:
+            idle = False
+        if not idle:
+            continue
+        if _connection_peer(connection) is not None:
+            continue
+        inner = getattr(connection, "_connection", None)
+        established = inner is not None or getattr(connection, "_network_stream", None) is not None
+        if not established:
+            continue
+        try:
+            connections.remove(connection)
+        except ValueError:
+            continue
+        doomed.append(connection)
+    return doomed
+
+
+def _make_assign(original: Any) -> Any:
+    def _assign(self: Any) -> Any:
+        _guard_pool_reuse(self)
+        doomed = _take_unverifiable(self)
+        closing = original(self)
+        if isinstance(closing, list):
+            closing.extend(doomed)
+            return closing
+        return closing
+
+    return _assign
+
+
+_REQUIRED_TRANSPORTS: tuple[tuple[str, str, str], ...] = (
+    ("urllib3.connection", "HTTPConnection", "_new_conn"),
+    ("urllib3.connectionpool", "HTTPConnectionPool", "_get_conn"),
+    ("http.client", "HTTPConnection", "connect"),
+    ("httpcore._sync.connection", "HTTPConnection", "_connect"),
+    ("httpcore._async.connection", "AsyncHTTPConnection", "_connect"),
+    ("httpcore._sync.connection_pool", "ConnectionPool", "_assign_requests_to_connections"),
+    ("httpcore._async.connection_pool", "AsyncConnectionPool", "_assign_requests_to_connections"),
+)
+
+
+def _transport_targets() -> list[tuple[Any, str, Callable[[Any], Any]]]:
+    import http.client
+    import importlib
+
+    urllib3_connection = importlib.import_module("urllib3.connection")
+    urllib3_pool = importlib.import_module("urllib3.connectionpool")
+    sync_connection = importlib.import_module("httpcore._sync.connection")
+    async_connection = importlib.import_module("httpcore._async.connection")
+    sync_pool = importlib.import_module("httpcore._sync.connection_pool")
+    async_pool = importlib.import_module("httpcore._async.connection_pool")
+    return [
+        (urllib3_connection.HTTPConnection, "_new_conn", _make_urllib3_new_conn),
+        (urllib3_pool.HTTPConnectionPool, "_get_conn", _make_urllib3_get_conn),
+        (http.client.HTTPConnection, "connect", _make_stdlib_connect),
+        (sync_connection.HTTPConnection, "_connect", _make_sync_connect),
+        (async_connection.AsyncHTTPConnection, "_connect", _make_async_connect),
+        (sync_pool.ConnectionPool, "_assign_requests_to_connections", _make_assign),
+        (async_pool.AsyncConnectionPool, "_assign_requests_to_connections", _make_assign),
+    ]
+
+
+def _targets_current() -> bool:
+    try:
+        targets = _transport_targets()
+    except Exception:
+        return False
+    if len(targets) != len(_REQUIRED_TRANSPORTS):
+        return False
+    for owner, name, _factory in targets:
+        current = getattr(owner, name, None)
+        if not getattr(current, "_varden_transport_binding", False):
+            return False
+    return True
+
+
+def install_transport_bindings() -> bool:
+    """Install operation-scoped dialing and pool checks. Do not override a foreign method."""
+    global _transport_installed
+    with _install_lock:
+        try:
+            targets = _transport_targets()
+        except Exception:
+            _transport_installed = False
+            return False
+        ok = True
+        for owner, name, factory in targets:
+            if not _install_method(owner, name, factory):
+                ok = False
+        _transport_installed = ok and _targets_current()
+        return _transport_installed
+
+
+def restore_transport_bindings() -> None:
+    """Remove our transport wrappers. Leave a foreign replacement in place."""
+    global _transport_installed
+    with _install_lock:
+        try:
+            targets = _transport_targets()
+        except Exception:
+            targets = []
+        for owner, name, _factory in targets:
+            _restore_method(owner, name)
+        _transport_installed = False
+
+
+def install_resolution_hook() -> None:
+    install_transport_bindings()
+
+
+def restore_resolution_hook() -> None:
+    restore_transport_bindings()
+
+
+def note_redirect_binding(binding: DestinationBinding) -> None:
+    """Push a redirect hop's authorization until the enclosing operation exits.
+
+    urllib connects after ``redirect_request`` returns, still inside ``urlopen``.
+    The extra binding is visible only in this context.
+    """
+    if not binding.socket_bound or not binding.addresses or not binding.host:
+        return
+    extras = _redirect_tokens.get()
+    if extras is None:
+        return
+    token = _operation_bindings.set(_operation_bindings.get() + (binding,))
+    extras.append(token)
 
 
 @contextmanager
 def pinned_connection(binding: DestinationBinding) -> Iterator[DestinationBinding]:
-    """Force lookups of ``binding.host`` to the authorized addresses."""
-    if binding.socket_bound and binding.addresses and not hook_installed():
+    """Make ``binding`` the current operation's destination. It does not leak."""
+    if binding.socket_bound and binding.addresses and not transport_binding_installed():
         raise DestinationBindingError("binding_hook_missing")
-    token = _redirect_pins.set([])
-    _activate(binding)
+    extras: list[contextvars.Token[tuple[DestinationBinding, ...]]] = []
+    extra_token = _redirect_tokens.set(extras)
+    op_token = None
+    if binding.socket_bound and binding.addresses and binding.host:
+        op_token = _operation_bindings.set(_operation_bindings.get() + (binding,))
     try:
         yield binding
     finally:
-        extras = _redirect_pins.get() or []
-        for extra in extras:
-            _deactivate(extra)
-        _deactivate(binding)
-        _redirect_pins.reset(token)
-
-
-def _addrinfo_rows(addresses: tuple[str, ...], port: int, family: int, socktype: int, proto: int) -> list[tuple[Any, ...]]:
-    rows: list[tuple[Any, ...]] = []
-    for ip in addresses:
-        category_ip = ip.split("%", 1)[0]
-        try:
-            parsed = ipaddress.ip_address(category_ip)
-        except ValueError:
-            continue
-        if isinstance(parsed, ipaddress.IPv6Address) and parsed.ipv4_mapped is not None:
-            # Hand the mapped address back as IPv4 when that family was requested.
-            if family in (socket.AF_UNSPEC, socket.AF_INET):
-                sockaddr = (str(parsed.ipv4_mapped), port)
-                rows.append((socket.AF_INET, socktype or socket.SOCK_STREAM, proto, "", sockaddr))
-            continue
-        if isinstance(parsed, ipaddress.IPv4Address):
-            if family not in (socket.AF_UNSPEC, socket.AF_INET):
-                continue
-            rows.append((socket.AF_INET, socktype or socket.SOCK_STREAM, proto, "", (ip, port)))
-        else:
-            if family not in (socket.AF_UNSPEC, socket.AF_INET6):
-                continue
-            rows.append((socket.AF_INET6, socktype or socket.SOCK_STREAM, proto, "", (ip, port, 0, 0)))
-    return rows
-
-
-def _pinned_getaddrinfo(host: Any, port: Any, family: int = 0, socktype: int = 0, proto: int = 0, flags: int = 0) -> list[Any]:
-    if host is None:
-        lookup = _original_getaddrinfo or socket.getaddrinfo
-        return lookup(host, port, family, socktype, proto, flags)
-    key = _pin_key(str(host))
-    with _lock:
-        stack = list(_pins.get(key) or [])
-    if not stack:
-        lookup = _original_getaddrinfo
-        if lookup is None:
-            raise socket.gaierror(socket.EAI_FAIL, "destination binding hook has no resolver")
-        return lookup(host, port, family, socktype, proto, flags)
-    top = stack[-1]
-    if any(item != top for item in stack):
-        raise socket.gaierror(socket.EAI_FAIL, "conflicting destination pins")
-    try:
-        numeric_port = int(port) if port not in (None, "") else 0
-    except (TypeError, ValueError):
-        numeric_port = 0
-    rows = _addrinfo_rows(top, numeric_port, int(family or 0), int(socktype or 0), int(proto or 0))
-    if not rows:
-        raise socket.gaierror(socket.EAI_NONAME, "authorized address family is empty")
-    return rows
+        for token in reversed(extras):
+            _operation_bindings.reset(token)
+        if op_token is not None:
+            _operation_bindings.reset(op_token)
+        _redirect_tokens.reset(extra_token)
 
 
 def _peer_ip(sock: Any) -> str | None:
@@ -524,7 +968,7 @@ def _peer_ip(sock: Any) -> str | None:
         return None
     try:
         peer = sock.getpeername()
-    except OSError:
+    except Exception:
         return None
     if isinstance(peer, tuple) and peer:
         return str(peer[0])
@@ -538,15 +982,15 @@ def _hosts_match(left: str | None, right: str | None) -> bool:
 
 
 def scrub_urllib3_pools(session: Any, binding: DestinationBinding) -> int:
-    """Close pooled sockets for this host whose peer is not authorized.
+    """Drop idle pooled sockets that are not a verified allowed peer.
 
-    A reused connection does not call ``getaddrinfo`` again. Dropping a
-    mismatched peer forces the next send to connect under the pin.
-    ``None`` pool slots are preserved so the pool can open a new socket.
+    Checkout in ``_get_conn`` is the authoritative check. This pass removes
+    connections that are already idle so a later checkout cannot observe them.
+    An unknown peer is dropped. The pool lock is the queue itself.
     """
     if not binding.socket_bound or not binding.addresses or not binding.host:
         return 0
-    allowed = set(binding.address_ips)
+    allowed = _allowed_set(binding)
     dropped = 0
     adapters = getattr(session, "adapters", None) or {}
     for adapter in adapters.values():
@@ -585,8 +1029,8 @@ def _scrub_queue(q: Any, allowed: set[str]) -> int:
         if conn is None:
             saved.append(None)
             continue
-        peer = _peer_ip(getattr(conn, "sock", None))
-        if peer and peer not in allowed:
+        verdict = _urllib3_verdict(conn, allowed)
+        if verdict == "drop":
             try:
                 conn.close()
             except Exception:
@@ -608,33 +1052,14 @@ def _scrub_queue(q: Any, allowed: set[str]) -> int:
 
 
 def scrub_httpx_pool(client: Any, url: str, binding: DestinationBinding) -> int:
-    if not binding.socket_bound or not binding.addresses or not binding.host:
-        return 0
-    transport = _httpx_transport(client, url)
-    pool = getattr(transport, "_pool", None)
-    connections = getattr(pool, "_connections", None)
-    if not isinstance(connections, list):
-        return 0
-    allowed = set(binding.address_ips)
-    kept: list[Any] = []
-    dropped = 0
-    for conn in list(connections):
-        origin = getattr(conn, "_origin", None)
-        origin_host = getattr(origin, "host", None)
-        if isinstance(origin_host, bytes):
-            origin_host = origin_host.decode("ascii", "replace")
-        peer = _httpx_peer(conn)
-        if _hosts_match(None if origin_host is None else str(origin_host), binding.host) and peer and peer not in allowed:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            dropped += 1
-            continue
-        kept.append(conn)
-    connections[:] = kept
-    return dropped
+    """httpcore reuse is decided under the pool lock in ``_assign``.
 
+    Mutating ``_connections`` here would race a concurrent request. The
+    assignment wrapper refuses an unverified peer. This function reports that
+    the check is deferred rather than pretending a lock-free edit is complete.
+    """
+    del client, url, binding
+    return 0
 
 def _httpx_peer(conn: Any) -> str | None:
     stream = getattr(conn, "_network_stream", None)

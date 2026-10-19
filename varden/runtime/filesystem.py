@@ -309,9 +309,14 @@ def canonicalize_path(path: str | os.PathLike[str], *, workspace: str | None = N
 
 
 def classify_workspace_mutation(
-    path: str | os.PathLike[str], *, workspace: str | None = None, mode: str = "r"
+    path: str | os.PathLike[str],
+    *,
+    workspace: str | None = None,
+    mode: str = "r",
+    canonical: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    info = canonicalize_path(path, workspace=workspace)
+    # Reuse a resolution from the same classify_path call. A later call resolves again.
+    info = canonical if canonical is not None else canonicalize_path(path, workspace=workspace)
     writing = any(c in str(mode or "r") for c in "wxa+")
     real = info.get("real_path") or info.get("absolute") or ""
     name = os.path.basename(real).lower()
@@ -400,7 +405,7 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
         elif target.get("symlink_involved"):
             reasons.append("effective target outside workspace via symlink or traversal")
 
-    mutation = classify_workspace_mutation(path, workspace=workspace, mode=mode)
+    mutation = classify_workspace_mutation(path, workspace=workspace, mode=mode, canonical=info)
     if classification == "workspace" and str(mutation.get("mutation") or "").startswith("WRITE_"):
         classification = str(mutation["mutation"]).lower()
         reasons.append(f"workspace mutation={mutation['mutation']}")

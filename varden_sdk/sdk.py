@@ -946,10 +946,10 @@ def reconcile_runtime() -> dict[str, str]:
                 continue
             results[key] = "foreign"
         if hook_installed():
-            results["socket.getaddrinfo"] = "intact"
+            results["http.transport_binding"] = "intact"
         else:
             install_resolution_hook()
-            results["socket.getaddrinfo"] = "restored" if hook_installed() else "foreign"
+            results["http.transport_binding"] = "restored" if hook_installed() else "foreign"
     get_coverage_registry().verify()
     return results
 
@@ -1004,14 +1004,23 @@ def patch_runtime(guard: VardenGuard) -> None:
             def _check_requests():
                 try:
                     import requests
-                    from varden.destination_binding import hook_installed
+                    from varden.destination_binding import transport_binding_installed
                     request_ok = requests.sessions.Session.request is _WRAPPERS.get(
                         'requests.sessions.Session.request'
                     )
                     send_ok = requests.sessions.Session.send is _WRAPPERS.get(
                         'requests.sessions.Session.send'
                     )
-                    return request_ok and send_ok and hook_installed()
+                    transport_ok = transport_binding_installed()
+                    surface = reg.get('http.requests')
+                    if surface is not None:
+                        surface.evidence = {
+                            **(surface.evidence or {}),
+                            'url_policy': bool(request_ok and send_ok),
+                            'socket_binding': bool(transport_ok),
+                            'binding_scope': 'operation' if transport_ok else 'unavailable',
+                        }
+                    return bool(request_ok and send_ok and transport_ok)
                 except Exception:
                     return False
 
@@ -1022,9 +1031,12 @@ def patch_runtime(guard: VardenGuard) -> None:
                     interceptor='requests.Session.request+Session.send',
                     limitations=[
                         'Saved pre-patch Session.request or Session.send references bypass monkeypatching.',
-                        'Direct connections pin socket.getaddrinfo to the addresses authorized for that hop. The URL host is unchanged for TLS.',
-                        'HTTP proxies pin only the connection to the proxy. The proxy resolves the target.',
+                        'URL policy and operation-scoped socket binding are separate. ENFORCED requires both the request wrappers and the transport dial/pool checks.',
+                        'A direct connection dials only the addresses authorized for that operation. The URL host is unchanged for TLS. Another thread or task does not inherit the authorization.',
+                        'A pooled connection is reused only when its peer is verified in that operation address set. An unknown peer is not reused.',
+                        'HTTP proxies are not socket-bound. The proxy resolves the target.',
                         'Custom HTTPAdapter subclasses are not destination-bound.',
+                        'socket.getaddrinfo is not rewritten. Unrelated lookups are unaffected.',
                     ],
                 )
             except RuntimeError:
@@ -1039,10 +1051,19 @@ def patch_runtime(guard: VardenGuard) -> None:
                 )
         if 'httpx.Client.send' in _ORIGINALS:
             def _check_httpx():
-                from varden.destination_binding import hook_installed
+                from varden.destination_binding import transport_binding_installed
                 sync_ok = httpx.Client.send is _WRAPPERS.get('httpx.Client.send')
                 async_ok = httpx.AsyncClient.send is _WRAPPERS.get('httpx.AsyncClient.send')
-                return sync_ok and async_ok and hook_installed()
+                transport_ok = transport_binding_installed()
+                surface = reg.get('http.httpx')
+                if surface is not None:
+                    surface.evidence = {
+                        **(surface.evidence or {}),
+                        'url_policy': bool(sync_ok and async_ok),
+                        'socket_binding': bool(transport_ok),
+                        'binding_scope': 'operation' if transport_ok else 'unavailable',
+                    }
+                return bool(sync_ok and async_ok and transport_ok)
 
             try:
                 reg.install_interceptor(
@@ -1050,9 +1071,12 @@ def patch_runtime(guard: VardenGuard) -> None:
                     checker=_check_httpx,
                     interceptor='httpx.Client/AsyncClient.send',
                     limitations=[
-                        'Direct connections pin socket.getaddrinfo to the addresses authorized for that hop.',
-                        'HTTP proxies pin only the connection to the proxy. The proxy resolves the target.',
+                        'URL policy and operation-scoped socket binding are separate. ENFORCED requires both the send wrappers and the httpcore dial/pool checks.',
+                        'A direct connection dials only the addresses on that request. The URL host is unchanged for TLS. Another task does not inherit the authorization.',
+                        'A pooled connection, including an HTTP/2 connection, is reused only when its peer is verified in that request address set.',
+                        'HTTP proxies are not socket-bound. The proxy resolves the target.',
                         'Custom transports, including MockTransport, are not destination-bound.',
+                        'socket.getaddrinfo is not rewritten. Unrelated lookups are unaffected.',
                     ],
                 )
             except RuntimeError:
@@ -1272,36 +1296,36 @@ def _send_pinned_requests(session: Any, prepared: Any, send_kwargs: dict[str, An
             return _raw_requests_send(session, prepared, send_kwargs)
     except DestinationBindingError as exc:
         raise VardenBlockedError(
-            "destination binding hook is not installed",
-            {"action": "block", "reason": "destination_binding_hook_missing", "effective_action": "block"},
+            f"destination binding failed: {exc.code}",
+            {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
         ) from exc
 
 
 async def _send_pinned_httpx_async(client: Any, original: Any, request: Any, args: tuple[Any, ...], send_kwargs: dict[str, Any], binding: Any) -> Any:
-    from varden.destination_binding import DestinationBindingError, pinned_connection, scrub_httpx_pool
+    from varden.destination_binding import DestinationBindingError, mark_request_binding, pinned_connection
 
     try:
         with pinned_connection(binding):
-            scrub_httpx_pool(client, str(request.url), binding)
+            mark_request_binding(request, binding)
             return await original(client, request, *args, **send_kwargs)
     except DestinationBindingError as exc:
         raise VardenBlockedError(
-            "destination binding hook is not installed",
-            {"action": "block", "reason": "destination_binding_hook_missing", "effective_action": "block"},
+            f"destination binding failed: {exc.code}",
+            {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
         ) from exc
 
 
 def _send_pinned_httpx(client: Any, original: Any, request: Any, args: tuple[Any, ...], send_kwargs: dict[str, Any], binding: Any) -> Any:
-    from varden.destination_binding import DestinationBindingError, pinned_connection, scrub_httpx_pool
+    from varden.destination_binding import DestinationBindingError, mark_request_binding, pinned_connection
 
     try:
         with pinned_connection(binding):
-            scrub_httpx_pool(client, str(request.url), binding)
+            mark_request_binding(request, binding)
             return original(client, request, *args, **send_kwargs)
     except DestinationBindingError as exc:
         raise VardenBlockedError(
-            "destination binding hook is not installed",
-            {"action": "block", "reason": "destination_binding_hook_missing", "effective_action": "block"},
+            f"destination binding failed: {exc.code}",
+            {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
         ) from exc
 
 

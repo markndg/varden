@@ -7,6 +7,7 @@ about production latency behind a real policy service.
 
 from __future__ import annotations
 
+import os
 import socket
 import statistics
 import threading
@@ -18,6 +19,7 @@ import requests
 import varden
 from varden.destination_binding import hook_installed, resolver_scope
 from varden.runtime.coverage import get_coverage_registry
+from varden.runtime.filesystem import canonicalize_path, classify_path
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -65,6 +67,16 @@ def main() -> None:
             handle.read(1)
 
     print("unpatched open     ", _stats(_time(raw_open, 200)))
+    workspace = os.getcwd()
+
+    def canon():
+        canonicalize_path(__file__, workspace=workspace)
+
+    def classify():
+        classify_path(__file__, workspace=workspace, mode="rb")
+
+    print("canonicalize_path  ", _stats(_time(canon, 200)))
+    print("classify_path      ", _stats(_time(classify, 200)))
 
     raw_session = requests.Session()
     raw_session.trust_env = False
