@@ -15,7 +15,11 @@ from typing import Any
 
 import httpx
 
-from varden.runtime.guard_response import guard_response_blocks
+from varden.runtime.guard_response import (
+    AUTHORITATIVE_ALLOW,
+    classify_guard_response,
+    guard_response_blocks,
+)
 from varden.url_identity import canonicalize_destination
 
 
@@ -268,15 +272,30 @@ class McpGatewaySession:
         payload = {"action": action, "payload": params or {}}
         with httpx.Client(timeout=10.0) as client:
             resp = client.post(f"{self.base_url}/sdk/guard", headers=self._headers(), json=payload)
-            data = resp.json() if resp.content else {}
-            if guard_response_blocks(data, status_code=resp.status_code):
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            # The gateway has no fail-open. Only an authoritative allow on a
+            # successful status forwards. A 5xx body that says allow is a
+            # service failure, not permission to write to the downstream process.
+            kind = classify_guard_response(data, status_code=resp.status_code)
+            if kind != AUTHORITATIVE_ALLOW:
                 detail = data.get("detail") if isinstance(data, dict) else data
+                if not guard_response_blocks(data, status_code=resp.status_code):
+                    detail = {
+                        "decision": {
+                            "action": "block",
+                            "reason": kind,
+                        }
+                    }
                 return {
                     "blocked": True,
                     "status_code": resp.status_code,
                     "detail": detail if detail else data,
                 }
-            resp.raise_for_status()
             return {"blocked": False, "result": data}
 
     def _fetch_session_provenance(self) -> list[dict[str, Any]]:
