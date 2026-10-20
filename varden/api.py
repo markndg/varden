@@ -43,8 +43,11 @@ def build_app(config_path: str | None = None):
         logger.warning("config validation warnings: %s", message)
     return create_app(cfg)
 
-# ASGI entrypoint for `uvicorn varden.api:app`
-app = build_app(os.environ.get("VARDEN_CONFIG"))
+# ASGI entrypoint for `uvicorn varden.api:app`.
+# The CLI constructs its own app after parsing --config, so avoid eager
+# production validation before CLI arguments have been read.
+if __name__ != "__main__":
+    app = build_app(os.environ.get("VARDEN_CONFIG"))
 
 def main():
     parser = argparse.ArgumentParser()

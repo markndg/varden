@@ -245,7 +245,7 @@ def test_toctou_parent_symlink_mutation_detected_on_recheck(monkeypatch):
     }
     with TemporaryDirectory() as td:
         client, _ = make_app_client(td, policy=policy)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         ws = Path(td) / "ws"
         safe = ws / "safe_dir"
         safe.mkdir(parents=True)

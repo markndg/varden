@@ -34,7 +34,7 @@ def test_gauntlet_BEFORE_false_enforced_via_mark_and_poisoned_probe_is_blocked()
     """Pre-fix characterization retained: poison path must not yield ENFORCED."""
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             _protect(client, key)
             reg = get_coverage_registry()
@@ -61,7 +61,7 @@ def test_gauntlet_BEFORE_false_enforced_via_mark_and_poisoned_probe_is_blocked()
 def test_gauntlet_restore_original_clears_enforced_attestation_and_readiness():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = _protect(client, key)
             reg = get_coverage_registry()
@@ -87,7 +87,7 @@ def test_gauntlet_restore_original_clears_enforced_attestation_and_readiness():
 def test_gauntlet_reconcile_rewraps_restored_original_once():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             _protect(client, key)
             orig = sdk_mod._ORIGINALS["requests.sessions.Session.request"]
@@ -116,7 +116,7 @@ def test_gauntlet_reconcile_rewraps_restored_original_once():
 def test_gauntlet_foreign_wrapper_does_not_repatch_loop():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             _protect(client, key)
             orig = sdk_mod._ORIGINALS["requests.sessions.Session.request"]

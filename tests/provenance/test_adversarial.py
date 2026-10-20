@@ -40,7 +40,8 @@ def test_parallel_traces_do_not_contaminate():
     assert a1.sources[0].origin == "https://a.test"
     assert a2.sources[0].origin == "https://b.test"
     assert a1.causal.untrusted_ancestor
-    assert not a2.flow.untrusted_to_privileged or a2.sources[0].trust_level == "internal"
+    assert a2.sources[0].trust_level == "unknown"
+    assert a2.sources[0].metadata.get("forged_trust_claim") is True
 
 
 def test_graph_cycle_bounded():

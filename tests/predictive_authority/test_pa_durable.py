@@ -46,7 +46,7 @@ def _app(tmp_path: Path, *, env: dict | None = None):
             os.environ[k] = v
     app = create_app(cfg)
     client = TestClient(app)
-    key = client.get("/health").json().get("bootstrap_api_key") or "admin-demo-key"
+    key = client.get("/sdk/bootstrap").json().get("bootstrap_api_key") or "admin-demo-key"
     return client, {"x-api-key": key}, str(db)
 
 
@@ -438,7 +438,7 @@ def test_z9_z18_api_deep_links_and_labels(tmp_path):
         PredictiveAuthorityConfig(enabled=True, mode="observe", audit=True, max_depth=4)
     )
     tid = "deeplink"
-    tenant = client.get("/health").json()["tenant_id"]
+    tenant = client.get("/sdk/bootstrap").json()["tenant_id"]
     run_step(
         engine,
         Action(

@@ -85,6 +85,61 @@ def parse_session_argv(argv: list[str]) -> tuple[str, bool, list[str] | None, st
     return a[0], passive, a[1:], mode
 
 
+def _cleanup_dir(path: Path) -> None:
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _install_session_contract(env: dict[str, str], shim_dir: Path, *, mode: str, fail_mode: str, orig_path: str) -> int | None:
+    """Sign the session contract and, for guarded sessions, register it.
+
+    The signing secret is removed from the child environment. The child
+    receives only the purpose-separated verification key. That key lets the
+    shim detect tampering; it does not stop a same-user process from
+    replacing both the contract and the key.
+    """
+    import json
+
+    import httpx
+
+    from varden_monitor.session_contract import build_contract, principal_for, verify_key
+
+    secret = env.get("VARDEN_SIGNING_SECRET") or ""
+    if len(secret) < 16:
+        print("varden session: VARDEN_SIGNING_SECRET of at least 16 characters is required", file=sys.stderr)
+        return 126
+    contract = build_contract(
+        master_secret=secret,
+        session_id=env["VARDEN_SESSION_ID"],
+        principal=principal_for(env.get("VARDEN_API_KEY")),
+        mode=mode,
+        fail_mode=fail_mode,
+        trace_id=env.get("VARDEN_TRACE_ID") or "",
+        orig_path=orig_path,
+    )
+    path = shim_dir / "session-contract.json"
+    path.write_text(json.dumps(contract), encoding="utf-8")
+    os.chmod(path, 0o400)
+    env["VARDEN_SESSION_CONTRACT"] = str(path)
+    env["VARDEN_SESSION_VERIFY_KEY"] = verify_key(secret).hex()
+    env["VARDEN_SESSION_AUDIT"] = str(shim_dir / "override-audit.jsonl")
+    env.pop("VARDEN_SIGNING_SECRET", None)
+    if mode == "observe":
+        return None
+    base = env.get("VARDEN_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+    headers = {"content-type": "application/json"}
+    if env.get("VARDEN_API_KEY"):
+        headers["x-api-key"] = env["VARDEN_API_KEY"]
+    try:
+        response = httpx.post(f"{base}/runtime/session/contract", headers=headers, json=contract, timeout=2.0)
+    except Exception:
+        print("varden session: control plane unavailable; refusing to start a guarded session", file=sys.stderr)
+        return 126
+    if response.status_code != 200:
+        print("varden session: control plane rejected the session contract", file=sys.stderr)
+        return 126
+    return None
+
+
 def start_session(cwd: str, passive: bool, command: list[str] | None, mode: str = "guarded") -> int:
     cwd_path = Path(cwd).resolve()
     if not cwd_path.is_dir():
@@ -117,6 +172,16 @@ def start_session(cwd: str, passive: bool, command: list[str] | None, mode: str 
     env.setdefault("VARDEN_EXECUTION_SURFACE", "varden_session")
     # Correlation only — never client-authoritative trust/delegation claims.
     env.setdefault("VARDEN_BOUNDARY_URL", env.get("VARDEN_BASE_URL", "http://127.0.0.1:8000"))
+    contract_error = _install_session_contract(
+        env,
+        shim_dir,
+        mode="observe" if passive else mode,
+        fail_mode="open" if passive else "closed",
+        orig_path=orig_path,
+    )
+    if contract_error:
+        _cleanup_dir(shim_dir)
+        return contract_error
 
     def _cleanup() -> None:
         shutil.rmtree(shim_dir, ignore_errors=True)

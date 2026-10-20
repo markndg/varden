@@ -58,7 +58,7 @@ def test_sdk_guard_still_works_with_pa_off(tmp_path, monkeypatch):
     app = create_app(cfg)
     client = TestClient(app)
     # Bootstrap key from health.
-    health = client.get("/health").json()
+    health = client.get("/sdk/bootstrap").json()
     api_key = health.get("bootstrap_api_key") or "admin-demo-key"
     resp = client.post(
         "/sdk/guard",

@@ -9,20 +9,13 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import time
 from typing import Any
 
-from .resource import sanitize_identifier
+from varden.redaction import redact
 
-SNAPSHOT_SCHEMA_VERSION = 1
-
-_SECRET_KEY_RE = re.compile(
-    r"(?i)(password|secret|token|api[_-]?key|authorization|private[_-]?key|credential_value)"
-)
-_SECRET_VALUE_RE = re.compile(
-    r"(?i)(password|secret|token|api[_-]?key|authorization|credential|private[_-]?key)\s*[:=]\s*\S+"
-)
+SNAPSHOT_SCHEMA_VERSION = 2
+HISTORICAL_SCHEMA_VERSION = 1
 SENTINEL_SECRET = "VARDEN_TEST_SECRET_DO_NOT_PERSIST"
 
 
@@ -30,35 +23,26 @@ def _stable_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def redact_value(value: Any) -> Any:
-    """Recursively redact secret-like material from snapshot payloads."""
+def _replace_sentinel(value: Any) -> Any:
+    """The PA test canary is not a credential shape. Strip it before hashing."""
     if isinstance(value, str):
         if SENTINEL_SECRET in value:
             return "[REDACTED]"
-        text = sanitize_identifier(value, max_len=400)
-        if SENTINEL_SECRET in text:
-            return "[REDACTED]"
-        if _SECRET_VALUE_RE.search(text):
-            if "=" in text:
-                left, sep, _ = text.partition("=")
-                return f"{left}{sep}<redacted>"
-            if ":" in text:
-                left, sep, _ = text.partition(":")
-                return f"{left}{sep}<redacted>"
-            return "[REDACTED]"
-        return text
+        return value
     if isinstance(value, dict):
-        out: dict[str, Any] = {}
-        for k, v in value.items():
-            key = str(k)
-            if _SECRET_KEY_RE.search(key):
-                out[key] = "[REDACTED]"
-            else:
-                out[key] = redact_value(v)
-        return out
-    if isinstance(value, (list, tuple)):
-        return [redact_value(v) for v in value]
+        return {key: _replace_sentinel(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_sentinel(item) for item in value]
     return value
+
+
+def redact_value(value: Any, *, tenant_id: str | None = None) -> Any:
+    """Shared persistence redaction, then the PA sentinel.
+
+    This is the snapshot policy. It does not replace in-memory classification.
+    """
+    redacted = redact(value, tenant_id=str(tenant_id or "default"))
+    return _replace_sentinel(redacted)
 
 
 def snapshot_body_for_hash(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -67,9 +51,14 @@ def snapshot_body_for_hash(snapshot: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in snapshot.items() if k not in skip}
 
 
+def canonical_snapshot_bytes(snapshot: dict[str, Any]) -> bytes:
+    """Exact bytes covered by ``content_hash``. The hash field itself is excluded."""
+    return _stable_json(snapshot_body_for_hash(snapshot)).encode("utf-8")
+
+
 def snapshot_content_hash(snapshot: dict[str, Any]) -> str:
     """SHA-256 of canonical snapshot body (schema fields included, hash excluded)."""
-    return hashlib.sha256(_stable_json(snapshot_body_for_hash(snapshot)).encode("utf-8")).hexdigest()
+    return hashlib.sha256(canonical_snapshot_bytes(snapshot)).hexdigest()
 
 
 def build_historical_snapshot(
@@ -120,8 +109,10 @@ def build_historical_snapshot(
             "mode": result.config.mode if result.config else None,
         },
     }
-    snapshot = redact_value(raw)
-    assert isinstance(snapshot, dict)
+    snapshot = redact_value(raw, tenant_id=tenant_id)
+    if not isinstance(snapshot, dict):
+        snapshot = {"schema_version": SNAPSHOT_SCHEMA_VERSION, "truncated": True, "value": snapshot}
+    snapshot["schema_version"] = SNAPSHOT_SCHEMA_VERSION
     snapshot["content_hash"] = snapshot_content_hash(snapshot)
     return snapshot
 

@@ -87,7 +87,7 @@ def test_token_budget_reserves_on_pre_check_and_releases_on_post(tmp_path):
     )
     action = Action(type="llm_call", tool="openai", trace_id="trace-reserve", workflow_id="wf-reserve")
     payload = {"kwargs": {"model": "gpt-4o", "max_tokens": 100}}
-    store.pre_check(action, payload, rules)
+    store.pre_check(action, payload, rules, tenant_id="default", principal_hash="principal")
     rows = store.list_active_budgets()
     assert rows and float(rows[0].get("reserved_usd") or 0) > 0
     store.post_record(
@@ -95,6 +95,8 @@ def test_token_budget_reserves_on_pre_check_and_releases_on_post(tmp_path):
         input_payload=payload,
         output_payload={"usage": {"input_tokens": 100, "output_tokens": 50}, "model": "gpt-4o"},
         rules=rules,
+        tenant_id="default",
+        principal_hash="principal",
     )
     rows = store.list_active_budgets()
     assert float(rows[0]["reserved_usd"]) == 0.0
@@ -110,6 +112,8 @@ def test_token_budget_post_records_without_usage(tmp_path):
         input_payload={"kwargs": {"model": "gpt-4o", "messages": "hello world"}},
         output_payload={"text": "response without usage block"},
         rules=rules,
+        tenant_id="default",
+        principal_hash="principal",
     )
     rows = store.list_active_budgets()
     assert rows and float(rows[0]["current_usd"]) > 0

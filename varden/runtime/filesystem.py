@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import os
 import re
+import stat
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
 ResolutionStatus = Literal["resolution_success", "resolution_partial", "resolution_failed"]
+
+# Relative path plus a directory descriptor whose path cannot be read.
+DIR_FD_UNRESOLVED = object()
 
 _SECRET_PATTERNS = (
     re.compile(r"(^|/)\.ssh(/|$)", re.I),
@@ -306,9 +310,14 @@ def canonicalize_path(path: str | os.PathLike[str], *, workspace: str | None = N
 
 
 def classify_workspace_mutation(
-    path: str | os.PathLike[str], *, workspace: str | None = None, mode: str = "r"
+    path: str | os.PathLike[str],
+    *,
+    workspace: str | None = None,
+    mode: str = "r",
+    canonical: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    info = canonicalize_path(path, workspace=workspace)
+    # Reuse a resolution from the same classify_path call. A later call resolves again.
+    info = canonical if canonical is not None else canonicalize_path(path, workspace=workspace)
     writing = any(c in str(mode or "r") for c in "wxa+")
     real = info.get("real_path") or info.get("absolute") or ""
     name = os.path.basename(real).lower()
@@ -397,7 +406,7 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
         elif target.get("symlink_involved"):
             reasons.append("effective target outside workspace via symlink or traversal")
 
-    mutation = classify_workspace_mutation(path, workspace=workspace, mode=mode)
+    mutation = classify_workspace_mutation(path, workspace=workspace, mode=mode, canonical=info)
     if classification == "workspace" and str(mutation.get("mutation") or "").startswith("WRITE_"):
         classification = str(mutation["mutation"]).lower()
         reasons.append(f"workspace mutation={mutation['mutation']}")
@@ -426,6 +435,82 @@ def classify_path(path: str | os.PathLike[str], *, workspace: str | None = None,
         "resolution": info.get("resolution"),
         "symlink_involved": info.get("symlink_involved"),
     }
+
+
+def _descriptor_name(dir_fd: int) -> str | None:
+    """Platform name for an open descriptor. Not yet checked to be a directory."""
+    import sys
+
+    if sys.platform == "darwin":
+        try:
+            import fcntl
+
+            raw = fcntl.fcntl(dir_fd, fcntl.F_GETPATH, bytes(1024))
+        except (OSError, AttributeError):
+            return None
+        if not isinstance(raw, bytes):
+            return None
+        text = os.fsdecode(raw.split(b"\0", 1)[0])
+        return text or None
+    if sys.platform.startswith("linux"):
+        try:
+            return os.readlink(f"/proc/self/fd/{dir_fd}")
+        except OSError:
+            return None
+    return None
+
+
+def directory_fd_path(dir_fd: int) -> str | None:
+    """Path of a directory descriptor, or None when it cannot be trusted.
+
+    The descriptor must be a directory: ``os.fstat`` and ``stat.S_ISDIR``.
+    macOS then uses ``F_GETPATH``. Linux uses ``/proc/self/fd``. The named
+    path must be absolute and must still be that same directory. A pipe,
+    socket, ``anon_inode``, deleted path, or other non-directory is None
+    rather than a string that can be joined. Windows has no ``dir_fd``.
+    A later rename can make the returned path stale. This is not ``openat2``.
+    """
+    if isinstance(dir_fd, bool) or not isinstance(dir_fd, int) or dir_fd < 0:
+        return None
+    try:
+        held = os.fstat(dir_fd)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(held.st_mode):
+        return None
+    named = _descriptor_name(dir_fd)
+    if not named or not os.path.isabs(named):
+        return None
+    try:
+        current = os.stat(named)
+    except OSError:
+        return None
+    if not stat.S_ISDIR(current.st_mode):
+        return None
+    if current.st_dev != held.st_dev or current.st_ino != held.st_ino:
+        return None
+    return named
+
+
+def descriptor_relative_path(path: Any, dir_fd: Any) -> Any:
+    """Join a relative path to the directory a ``dir_fd`` refers to.
+
+    Absolute paths ignore ``dir_fd``, matching the kernel. Returns the
+    sentinel ``DIR_FD_UNRESOLVED`` when a relative path has a descriptor this
+    process cannot name. Returns ``path`` unchanged when ``dir_fd`` is absent.
+    """
+    if dir_fd is None or path is None or isinstance(path, int):
+        return path
+    try:
+        text = os.fspath(path)
+    except TypeError:
+        return path
+    if os.path.isabs(text):
+        return path
+    directory = directory_fd_path(dir_fd) if isinstance(dir_fd, int) and not isinstance(dir_fd, bool) else None
+    if not directory:
+        return DIR_FD_UNRESOLVED
+    return os.path.join(directory, text)
 
 
 def resolution_blocks_under_fail_closed(info: dict[str, Any]) -> bool:

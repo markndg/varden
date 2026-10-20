@@ -32,6 +32,8 @@ from typing import Any, Callable
 
 import httpx
 
+from varden.runtime.guard_response import AUTHORITATIVE_ALLOW, classify_guard_response
+
 
 @dataclass
 class McpToolResult:
@@ -106,11 +108,15 @@ class VardenMcpHost:
             "principal": server_id,
             "metadata": {"server_id": server_id, "tool": tool, "host": "VardenMcpHost"},
         }
+        gateway_key = os.environ.get("VARDEN_GATEWAY_API_KEY") or getattr(self, "gateway_api_key", None)
+        if not gateway_key:
+            return origin
+        headers = {"content-type": "application/json", "x-api-key": gateway_key}
         try:
             with httpx.Client(timeout=5.0) as client:
                 client.post(
                     f"{self.base_url}/runtime/session/provenance",
-                    headers=self._headers(),
+                    headers=headers,
                     json={
                         "trace_id": self.trace_id,
                         "session_id": self.session_id,
@@ -181,21 +187,30 @@ class VardenMcpHost:
                 headers=self._headers(),
                 json={"action": action, "payload": arguments},
             )
-            data = resp.json() if resp.content else {}
-            if resp.status_code == 403:
-                detail = data.get("detail") if isinstance(data, dict) else data
-                decision = detail.get("decision") if isinstance(detail, dict) else {"action": "block"}
+            try:
+                data = resp.json() if resp.content else {}
+            except Exception:
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            # Same contract as the gateway: no fail-open. A non-success status
+            # does not run the handler, including when the body says allow.
+            kind = classify_guard_response(data, status_code=resp.status_code)
+            if kind != AUTHORITATIVE_ALLOW:
+                detail = data.get("detail") if isinstance(data.get("detail"), dict) else data
+                decision = detail.get("decision") if isinstance(detail, dict) else None
+                if not isinstance(decision, dict):
+                    decision = {"action": "block", "reason": kind}
                 return McpToolResult(
                     server_id=server_id,
                     tool=tool,
                     content=None,
                     blocked=True,
-                    decision=decision if isinstance(decision, dict) else {"action": "block"},
+                    decision=decision,
                     trace_id=self.trace_id,
                 )
-            resp.raise_for_status()
 
-        # Execute downstream only after allow.
+        # Execute downstream only after a recognized non-deny decision.
         if server_id in self._handlers:
             content = self._handlers[server_id](tool, arguments)
         else:

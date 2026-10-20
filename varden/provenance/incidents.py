@@ -90,6 +90,8 @@ def _decision_label(event: dict[str, Any]) -> str:
     status = str(event.get("status") or "").lower()
     decision = event.get("decision") or {}
     action = str(decision.get("action") or "").lower()
+    if action == "unverified_observation" or status == "unverified":
+        return "unverified"
     if status == "blocked" or action in {"block", "blocked"}:
         return "blocked"
     if action in {"require_approval", "approval_required"}:
@@ -363,6 +365,17 @@ def _enforcement_outcome(event: dict[str, Any], *, decision: str, action_type: s
             "label": label,
             "detail": detail.strip(),
             "basis": basis,
+        }
+
+    if decision == "unverified":
+        return {
+            "enforced": False,
+            "executed": None,
+            "side_effect_prevented": None,
+            "label": "OBSERVED",
+            "detail": enf.get("note")
+            or "Unverified client observation. This is not an allow, block, or approval.",
+            "basis": "unverified_observation",
         }
 
     # Permitted actions: do not treat side_effect_prevented=false as "OBSERVED prevention failure".

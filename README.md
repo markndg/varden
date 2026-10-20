@@ -1292,7 +1292,9 @@ See:
 - `deploy/self_hosting.md`
 - `deploy/operations.md`
 
-Local defaults use SQLite.
+Local defaults use SQLite. Process startup defaults to production.
+For a laptop with the published demo keys, set `VARDEN_ENV=dev` and
+`VARDEN_ENABLE_DEV_BOOTSTRAP=true`, and keep the bind address on loopback.
 
 Outside:
 
@@ -1396,6 +1398,8 @@ A security system that silently stops enforcing is worse than one that reports a
 ## Fail closed where enforcement matters
 
 Guarded and strict runtime protection use fail-closed control-plane semantics by default.
+
+A response that contains a deny decision (`block`, `blocked`, `require_approval`, or `approval_required`) in `decision.action` or `decision.effective_action`, including a FastAPI `detail` wrapper, is enforced on every HTTP status. Nested JSON on the action is not a policy decision. `fail_mode=open` proceeds only when the control plane does not return a decision: disconnect, timeout, unexpected error, or a body with no decision slot. This is the 1.0.3 behaviour. It is not in the published 1.0.2 package.
 
 ## Don't invent coverage
 

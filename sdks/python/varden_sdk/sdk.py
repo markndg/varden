@@ -19,6 +19,11 @@ from urllib.parse import urlparse
 
 import httpx
 
+# Legacy standalone SDK. The supported package is the repository-root
+# ``varden_sdk``. This copy still refuses a delivered deny. ``fail_mode=open``
+# applies only when no decision was delivered.
+# It does not pin connection destinations, attest interceptor integrity, or
+# resolve directory descriptors. Those boundaries exist only in the root package.
 
 
 def _decode_body_value(value: Any) -> Any:
@@ -76,6 +81,119 @@ class TaggedData:
         return self.value
 
 
+_DENY_ACTIONS = frozenset({"block", "blocked", "require_approval", "approval_required", "unsupported"})
+_POLICY_ACTIONS = _DENY_ACTIONS | frozenset({"allow", "warn", "warned", "monitor", "sanitise"})
+
+
+def _policy_action(obj: Any, key: str) -> str | None:
+    if not isinstance(obj, dict):
+        return None
+    value = obj.get(key)
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    return text if text in _POLICY_ACTIONS else None
+
+
+def _decision_slots(payload: Any) -> list[Any]:
+    if not isinstance(payload, dict):
+        return []
+    slots: list[Any] = []
+    if "decision" in payload:
+        slots.append(payload.get("decision"))
+    detail = payload.get("detail")
+    if isinstance(detail, dict) and "decision" in detail:
+        slots.append(detail.get("decision"))
+    elif isinstance(payload.get("action"), str) and "decision" not in payload and "detail" not in payload:
+        slots.append(payload)
+    return slots
+
+
+def _response_denies(payload: Any) -> bool:
+    for slot in _decision_slots(payload):
+        if _policy_action(slot, "action") in _DENY_ACTIONS or _policy_action(slot, "effective_action") in _DENY_ACTIONS:
+            return True
+    return False
+
+
+def _response_ambiguous(payload: Any) -> bool:
+    """A present decision slot that is not a policy action is not an allow."""
+    if not isinstance(payload, dict):
+        return False
+    explicit: list[Any] = []
+    if "decision" in payload:
+        explicit.append(payload.get("decision"))
+    detail = payload.get("detail")
+    if isinstance(detail, dict) and "decision" in detail:
+        explicit.append(detail.get("decision"))
+    if not explicit:
+        return False
+    return any(_policy_action(slot, "action") is None for slot in explicit)
+
+
+def _response_blocks(payload: Any, *, status_code: int | None = None) -> bool:
+    if status_code == 403:
+        return True
+    if _response_denies(payload):
+        return True
+    return _response_ambiguous(payload)
+
+
+def _response_authorizes(payload: Any) -> bool:
+    if _response_denies(payload) or _response_ambiguous(payload):
+        return False
+    slots = _decision_slots(payload)
+    if not slots:
+        return False
+    for slot in slots:
+        action = _policy_action(slot, "action")
+        if action not in {"allow", "warn", "warned", "monitor", "sanitise"}:
+            return False
+        effective = _policy_action(slot, "effective_action")
+        if effective is not None and effective not in {"allow", "warn", "warned", "monitor", "sanitise"}:
+            return False
+    return True
+
+
+def _classify_response(payload: Any, *, status_code: int | None) -> str:
+    """Mirror ``varden.runtime.guard_response.classify_guard_response``."""
+    labels = []
+    for slot in _decision_slots(payload):
+        action = _policy_action(slot, "action")
+        effective = _policy_action(slot, "effective_action")
+        if action:
+            labels.append(action)
+        if effective:
+            labels.append(effective)
+    if status_code == 403 or _response_denies(payload):
+        if any(label in {"require_approval", "approval_required"} for label in labels) and not any(
+            label in {"block", "blocked", "unsupported"} for label in labels
+        ):
+            return "approval_required"
+        return "authoritative_deny"
+    if _response_ambiguous(payload):
+        return "invalid_decision"
+    if _response_authorizes(payload):
+        if status_code is not None and status_code >= 400:
+            return "service_failure_with_allow"
+        return "authoritative_allow"
+    if status_code is not None and status_code >= 400:
+        return "service_failure"
+    return "no_decision"
+
+
+def _is_transport_failure(exc: BaseException) -> bool:
+    if isinstance(exc, (KeyboardInterrupt, SystemExit, VardenBlockedError)):
+        return False
+    try:
+        import httpx
+    except Exception:
+        httpx = None
+    if httpx is not None and isinstance(exc, httpx.TransportError):
+        return True
+    return isinstance(exc, (TimeoutError, ConnectionError, BrokenPipeError))
+
+
 @dataclass
 class GuardResult:
     decision: dict[str, Any]
@@ -84,7 +202,7 @@ class GuardResult:
 
     @property
     def blocked(self) -> bool:
-        return (self.decision or {}).get('action') == 'block'
+        return _response_denies(self.decision)
 
     @property
     def warned(self) -> bool:
@@ -95,6 +213,15 @@ class VardenBlockedError(RuntimeError):
     def __init__(self, message: str, decision: dict[str, Any] | None = None):
         super().__init__(message)
         self.decision = decision or {}
+
+
+class VardenControlPlaneFailure(Exception):
+    """Non-success HTTP response carrying an allow. Not a transport failure."""
+
+    def __init__(self, classification: str):
+        super().__init__(classification)
+        self.classification = classification
+        self.eligible_for_fail_open = True
 
 
 class VardenClient:
@@ -131,13 +258,24 @@ class VardenClient:
     def guard(self, payload: dict[str, Any]) -> GuardResult:
         self.ensure_credentials()
         resp = self._client.post(f'{self.base_url}/sdk/guard', headers=self.headers(), json=payload)
-        data = _parse_json(resp)
-        if resp.status_code == 403:
-            detail = data.get('detail') if isinstance(data, dict) else str(data)
-            decision = data.get('detail') if isinstance(data, dict) and isinstance(data.get('detail'), dict) else data if isinstance(data, dict) else None
-            raise VardenBlockedError(detail or 'blocked by Varden', decision)
-        resp.raise_for_status()
-        return GuardResult(decision=data['decision'], action=data['action'], event_id=data.get('event_id'))
+        try:
+            data = _parse_json(resp)
+        except Exception:
+            data = {'decision': None}
+        if not isinstance(data, dict):
+            data = {'detail': data}
+        # A delivered deny is not a transport failure. Honour it before fail-open
+        # can turn a non-403 body into permission to execute.
+        kind = _classify_response(data, status_code=resp.status_code)
+        if kind == 'authoritative_allow':
+            return GuardResult(decision=data['decision'], action=data['action'], event_id=data.get('event_id'))
+        if kind == 'service_failure_with_allow':
+            raise VardenControlPlaneFailure(kind)
+        detail = data.get('detail') if isinstance(data.get('detail'), (dict, str)) else data
+        decision = data.get('detail') if isinstance(data.get('detail'), dict) else data
+        if not isinstance(decision, dict):
+            decision = {'action': 'block', 'reason': kind}
+        raise VardenBlockedError(detail or 'blocked by Varden', decision)
 
     def log_result(self, payload: dict[str, Any]) -> dict[str, Any]:
         self.ensure_credentials()
@@ -157,7 +295,7 @@ class VardenGuard:
         tenant: str = 'default',
         mode: str = 'enforce',
         auto_instrument: bool = True,
-        fail_mode: str = 'open',
+        fail_mode: str = 'closed',
         timeout: float = 5.0,
     ):
         self.client = VardenClient(base_url=base_url, api_key=api_key, bearer_token=bearer_token, timeout=timeout)
@@ -203,10 +341,33 @@ class VardenGuard:
             if result and result.event_id:
                 _current_trace_id.set(trace_id)
                 _current_parent_event_id.set(result.event_id)
+            if result and result.blocked and self.mode == 'enforce':
+                raise VardenBlockedError(
+                    f"blocked by Varden ({(result.decision or {}).get('action')})",
+                    result.decision,
+                )
             return result
         except VardenBlockedError:
+            if self.mode != 'enforce':
+                return GuardResult(decision={'action': 'block'}, action=action, event_id=None)
             raise
-        except Exception:
+        except VardenControlPlaneFailure as exc:
+            if self.fail_mode != 'closed':
+                return None
+            if self.mode == 'enforce':
+                raise VardenBlockedError(
+                    f"control plane service failure: {exc}",
+                    {"action": "block", "reason": exc.classification},
+                ) from exc
+            raise
+        except Exception as exc:
+            if _is_transport_failure(exc) and self.fail_mode != 'closed':
+                return None
+            if self.mode == 'enforce':
+                raise VardenBlockedError(
+                    f"control plane unreachable: {exc}",
+                    {"action": "block", "reason": "control_plane_unreachable"},
+                ) from exc
             if self.fail_mode == 'closed':
                 raise
             return None
@@ -752,7 +913,7 @@ def protect_from_env(**overrides: Any) -> VardenGuard:
         'tenant': os.getenv('VARDEN_TENANT', 'default'),
         'mode': os.getenv('VARDEN_MODE', 'enforce'),
         'auto_instrument': os.getenv('VARDEN_AUTO_INSTRUMENT', 'true').lower() == 'true',
-        'fail_mode': os.getenv('VARDEN_FAIL_MODE', 'open'),
+        'fail_mode': os.getenv('VARDEN_FAIL_MODE', 'closed'),
         'timeout': float(os.getenv('VARDEN_TIMEOUT', '5.0')),
     }
     cfg.update({k: v for k, v in overrides.items() if v is not None})

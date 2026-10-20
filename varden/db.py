@@ -596,6 +596,168 @@ def _apply_migrations(conn):
         )
         conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (12)")
 
+    if 13 not in versions:
+        # Budget reservations are a ledger. Window counters may reset; the
+        # ledger row is the debt and is charged to the window that created it.
+        budget_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_budgets'"
+        ).fetchone()
+        if budget_table:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(token_budgets)").fetchall()}
+            if "window_id" not in cols:
+                conn.execute("ALTER TABLE token_budgets ADD COLUMN window_id TEXT")
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS token_budget_reservations (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              guard_event_id INTEGER,
+              tenant_id TEXT NOT NULL DEFAULT 'default',
+              principal_hash TEXT,
+              policy_id TEXT NOT NULL,
+              window TEXT NOT NULL,
+              window_id TEXT NOT NULL,
+              trace_id TEXT,
+              workflow_id TEXT,
+              action_fingerprint TEXT,
+              reserved_usd REAL NOT NULL,
+              reported_usd REAL,
+              charged_usd REAL NOT NULL DEFAULT 0,
+              created_at REAL NOT NULL,
+              deadline_at REAL NOT NULL,
+              status TEXT NOT NULL,
+              evidence_json TEXT NOT NULL DEFAULT '{}'
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_token_res_guard
+              ON token_budget_reservations(guard_event_id, policy_id)
+              WHERE guard_event_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_token_res_status_deadline
+              ON token_budget_reservations(status, deadline_at);
+
+            CREATE TABLE IF NOT EXISTS token_budget_window_charges (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              policy_id TEXT NOT NULL,
+              window TEXT NOT NULL,
+              window_id TEXT NOT NULL,
+              trace_id TEXT NOT NULL DEFAULT '',
+              workflow_id TEXT NOT NULL DEFAULT '',
+              charged_usd REAL NOT NULL DEFAULT 0,
+              limit_usd REAL NOT NULL DEFAULT 0,
+              closed_at REAL,
+              UNIQUE(policy_id, window, window_id, trace_id, workflow_id)
+            );
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (13)")
+
+    if 14 not in versions:
+        # Budget counters are keyed by authenticated tenant and principal.
+        # Legacy rows keep a NULL tenant and are not assigned to anyone.
+        budget_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_budgets'"
+        ).fetchone()
+        if budget_table:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(token_budgets)").fetchall()}
+            if "tenant_id" not in cols:
+                conn.execute("ALTER TABLE token_budgets ADD COLUMN tenant_id TEXT")
+            if "principal_hash" not in cols:
+                conn.execute("ALTER TABLE token_budgets ADD COLUMN principal_hash TEXT")
+            conn.execute("DROP INDEX IF EXISTS idx_token_budgets_key")
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_token_budgets_scope
+                ON token_budgets(
+                  policy_id,
+                  window,
+                  COALESCE(tenant_id, ''),
+                  COALESCE(principal_hash, ''),
+                  COALESCE(trace_id, ''),
+                  COALESCE(workflow_id, '')
+                )
+                """
+            )
+        charges = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_budget_window_charges'"
+        ).fetchone()
+        if charges:
+            charge_cols = {row[1] for row in conn.execute("PRAGMA table_info(token_budget_window_charges)").fetchall()}
+            if "tenant_id" not in charge_cols:
+                conn.executescript(
+                    """
+                    CREATE TABLE token_budget_window_charges_v14 (
+                      id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      policy_id TEXT NOT NULL,
+                      window TEXT NOT NULL,
+                      window_id TEXT NOT NULL,
+                      trace_id TEXT NOT NULL DEFAULT '',
+                      workflow_id TEXT NOT NULL DEFAULT '',
+                      tenant_id TEXT NOT NULL DEFAULT '',
+                      principal_hash TEXT NOT NULL DEFAULT '',
+                      charged_usd REAL NOT NULL DEFAULT 0,
+                      limit_usd REAL NOT NULL DEFAULT 0,
+                      closed_at REAL,
+                      UNIQUE(policy_id, window, window_id, trace_id, workflow_id, tenant_id, principal_hash)
+                    );
+                    INSERT INTO token_budget_window_charges_v14(
+                      id, policy_id, window, window_id, trace_id, workflow_id,
+                      tenant_id, principal_hash, charged_usd, limit_usd, closed_at
+                    )
+                    SELECT
+                      id, policy_id, window, window_id, trace_id, workflow_id,
+                      '', '', charged_usd, limit_usd, closed_at
+                    FROM token_budget_window_charges;
+                    DROP TABLE token_budget_window_charges;
+                    ALTER TABLE token_budget_window_charges_v14 RENAME TO token_budget_window_charges;
+                    """
+                )
+        else:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS token_budget_window_charges (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  policy_id TEXT NOT NULL,
+                  window TEXT NOT NULL,
+                  window_id TEXT NOT NULL,
+                  trace_id TEXT NOT NULL DEFAULT '',
+                  workflow_id TEXT NOT NULL DEFAULT '',
+                  tenant_id TEXT NOT NULL DEFAULT '',
+                  principal_hash TEXT NOT NULL DEFAULT '',
+                  charged_usd REAL NOT NULL DEFAULT 0,
+                  limit_usd REAL NOT NULL DEFAULT 0,
+                  closed_at REAL,
+                  UNIQUE(policy_id, window, window_id, trace_id, workflow_id, tenant_id, principal_hash)
+                );
+                """
+            )
+        events = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'token_events'"
+        ).fetchone()
+        if events:
+            event_cols = {row[1] for row in conn.execute("PRAGMA table_info(token_events)").fetchall()}
+            if "tenant_id" not in event_cols:
+                conn.execute("ALTER TABLE token_events ADD COLUMN tenant_id TEXT")
+            if "principal_hash" not in event_cols:
+                conn.execute("ALTER TABLE token_events ADD COLUMN principal_hash TEXT")
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (14)")
+
+    if 15 not in versions:
+        # Integrity findings are not backfilled onto old guard events.
+        # Absence of guard-time budget evidence stays "unknown", not "unbudgeted".
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS token_budget_accounting_findings (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              guard_event_id INTEGER NOT NULL,
+              tenant_id TEXT NOT NULL,
+              principal_hash TEXT,
+              status TEXT NOT NULL,
+              detail_json TEXT NOT NULL DEFAULT '{}',
+              created_at REAL NOT NULL,
+              UNIQUE(guard_event_id, status)
+            );
+            """
+        )
+        conn.execute("INSERT OR IGNORE INTO schema_migrations(version) VALUES (15)")
+
 
 class _AutoCloseConnection(sqlite3.Connection):
     """sqlite3.Connection used as a context manager only commits/rolls back

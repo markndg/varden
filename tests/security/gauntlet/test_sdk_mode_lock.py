@@ -52,7 +52,7 @@ def test_gauntlet_BEFORE_contextvar_swap_disagrees_with_attestation_labels():
     """
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             strong = _protect(client, key, mode="guarded")
             weak = sdk_mod.VardenGuard(
@@ -78,7 +78,7 @@ def test_gauntlet_BEFORE_contextvar_swap_disagrees_with_attestation_labels():
 def test_gauntlet_registry_reset_refused_while_locked():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             strong = _protect(client, key, mode="guarded")
             reg = get_coverage_registry()
@@ -105,7 +105,7 @@ def test_gauntlet_registry_reset_refused_while_locked():
 def test_gauntlet_cannot_expand_allow_uncovered_after_lock():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             _protect(client, key, mode="guarded", allow_uncovered=_ALLOW)
             reg = get_coverage_registry()
@@ -124,7 +124,7 @@ def test_gauntlet_cannot_expand_allow_uncovered_after_lock():
 def test_gauntlet_object_setattr_bypass_does_not_weaken_enforcement():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = _protect(client, key, mode="strict")
             object.__setattr__(guard, "product_mode", "observe")
@@ -143,7 +143,7 @@ def test_gauntlet_object_setattr_bypass_does_not_weaken_enforcement():
 def test_gauntlet_failed_weaker_activate_does_not_replace_guard():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             strong = _protect(client, key, mode="guarded")
             with pytest.raises(RuntimeError, match="locked|downgrade"):
@@ -165,7 +165,7 @@ def test_gauntlet_failed_weaker_activate_does_not_replace_guard():
 def test_gauntlet_failed_strict_readiness_rolls_back_first_activation():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             with pytest.raises(RuntimeError, match="not ready"):
                 varden.protect(
@@ -187,7 +187,7 @@ def test_gauntlet_failed_strict_readiness_rolls_back_first_activation():
 def test_gauntlet_copied_context_still_uses_locked_contract():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             strong = _protect(client, key, mode="guarded")
             ctx = contextvars.copy_context()
@@ -216,7 +216,7 @@ def test_gauntlet_copied_context_still_uses_locked_contract():
 def test_gauntlet_concurrent_protect_downgrade_attempts():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             strong = _protect(client, key, mode="guarded")
 
@@ -250,7 +250,7 @@ def test_gauntlet_async_protect_downgrade_refused():
     async def _run():
         with TemporaryDirectory() as tmpdir:
             client, _ = make_app_client(tmpdir)
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             try:
                 strong = _protect(client, key, mode="guarded")
 
@@ -278,7 +278,7 @@ def test_gauntlet_async_protect_downgrade_refused():
 def test_gauntlet_same_contract_reentry_succeeds():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             first = _protect(client, key, mode="guarded", fail_mode="closed")
             second = _protect(client, key, mode="guarded", fail_mode="closed")
@@ -294,7 +294,7 @@ def test_gauntlet_observe_mode_benign_allows_blocked_policy_action():
     """Observation-only: policy may classify block, but side effect is not prevented."""
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = _protect(client, key, mode="observe", fail_mode="open")
             assert get_coverage_registry().attestation()["mode"] == "observe"
@@ -309,7 +309,7 @@ def test_gauntlet_observe_mode_benign_allows_blocked_policy_action():
 def test_gauntlet_attestation_matches_live_enforcing():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             for mode in ("guarded", "strict"):
                 guard = _protect(client, key, mode=mode)
@@ -327,7 +327,7 @@ def test_gauntlet_attestation_matches_live_enforcing():
 def test_gauntlet_nested_weaker_protect_refused():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             outer = _protect(client, key, mode="strict")
 
@@ -354,7 +354,7 @@ def test_gauntlet_guarded_fail_open_still_blocks_reachable_deny():
     """fail_mode=open weakens only unreachable-CP paths; policy deny still blocks."""
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             with pytest.warns(UserWarning, match="fail_mode=open"):
                 guard = _protect(client, key, mode="guarded", fail_mode="open")
@@ -381,7 +381,7 @@ def test_gauntlet_surface_mark_cannot_weaken_live_enforcing():
 
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             guard = _protect(client, key, mode="guarded")
             reg = get_coverage_registry()
@@ -405,7 +405,7 @@ def test_gauntlet_surface_mark_cannot_weaken_live_enforcing():
 def test_gauntlet_stale_guard_reference_still_enforces():
     with TemporaryDirectory() as tmpdir:
         client, _ = make_app_client(tmpdir)
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         try:
             first = _protect(client, key, mode="guarded")
             second = _protect(client, key, mode="guarded")

@@ -124,11 +124,13 @@ def _finish(proc: subprocess.Popen, output: list[str]) -> float:
 
 
 def _open_stream(port: int) -> socket.socket:
-    health = _http("127.0.0.1", port, "/health").decode("latin1", errors="ignore")
+    health = _http("127.0.0.1", port, "/health")
+    assert b"bootstrap_api_key" not in health
+    bootstrap = _http("127.0.0.1", port, "/sdk/bootstrap").decode("latin1", errors="ignore")
     marker = '"bootstrap_api_key":"'
-    start = health.find(marker)
-    assert start >= 0, health[-500:]
-    token = health[start + len(marker):].split('"', 1)[0]
+    start = bootstrap.find(marker)
+    assert start >= 0, bootstrap[-500:]
+    token = bootstrap[start + len(marker):].split('"', 1)[0]
     sock = socket.create_connection(("127.0.0.1", port), timeout=5)
     sock.settimeout(5)
     sock.sendall(

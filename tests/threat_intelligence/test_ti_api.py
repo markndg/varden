@@ -21,6 +21,9 @@ def _client(tmp_path, *, enabled=False):
     policy.write_text(json.dumps({"block": [], "require_approval": [], "warn": [], "monitor": [], "allow": []}), encoding="utf-8")
     cfg = AppConfig(
         env="dev",
+        host="127.0.0.1",
+        enable_dev_bootstrap=True,
+        unsafe_dev_bind=False,
         db_path=str(tmp_path / "varden.db"),
         auth_db_path=str(tmp_path / "auth.db"),
         policy_file=str(policy),
@@ -43,7 +46,9 @@ def _exposed_facts():
 def test_status_when_disabled_is_not_a_protection_claim(tmp_path):
     client, _policy = _client(tmp_path)
     with client:
-        key = client.get("/health").json()["bootstrap_api_key"]
+        assert "bootstrap_api_key" not in client.get("/health").json()
+        assert client.get("/threat-intelligence/status").status_code == 403
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         body = client.get("/threat-intelligence/status", headers={"x-api-key": key}).json()
         assert body["watcher"] == "DISABLED"
         assert body["protection_claim"] is False
@@ -59,7 +64,8 @@ def test_api_approval_is_explicit(tmp_path):
         service._facts_provider = _exposed_facts
         raw = json.loads((FIXTURES / "nvd_page.json").read_text(encoding="utf-8"))["vulnerabilities"][0]["cve"]
         service.ingest_raw("nvd", [{"cve": raw}])
-        key = client.get("/health").json()["bootstrap_api_key"]
+        assert client.get("/threat-intelligence/items").status_code == 403
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         headers = {"x-api-key": key}
         listed = client.get("/threat-intelligence/items", headers=headers)
         assert listed.status_code == 200

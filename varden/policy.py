@@ -71,15 +71,17 @@ def _suggest(word: str, choices) -> str:
 
 
 def action_surface(action) -> str | None:
-    """The runtime surface an action belongs to (subprocess, http, filesystem, ...)."""
-    meta = getattr(action, "metadata", None) or {}
-    if isinstance(meta, dict):
-        runtime = meta.get("runtime")
-        if isinstance(runtime, dict) and runtime.get("surface"):
-            return str(runtime["surface"])
-        if meta.get("execution_surface"):
-            return str(meta["execution_surface"])
-    return None
+    """Server-derived surface. Caller ``runtime.surface`` is not authoritative."""
+    if getattr(action, "_varden_identity_bound", False):
+        meta = getattr(action, "metadata", None) or {}
+        if isinstance(meta, dict):
+            identity = meta.get("identity")
+            if isinstance(identity, dict) and identity.get("issuer") == "varden":
+                surface = identity.get("surface")
+                return str(surface) if surface else None
+    from .action_identity import surface_for
+
+    return surface_for(getattr(action, "type", None), getattr(action, "tool", None))
 
 
 # Buckets that must be present on publish/replace so clients cannot omit keys
@@ -247,8 +249,13 @@ class PolicyEngine:
             except (TypeError, ValueError):
                 errors.append(f"{where}: min_risk_score must be a number")
             return errors
-        if key in ("type", "field:type") and isinstance(expected, str) and expected not in KNOWN_ACTION_TYPES:
-            warnings.append(f"{where}: action type {expected!r} is not one Varden emits{_suggest(expected, KNOWN_ACTION_TYPES)}")
+        if key in ("type", "field:type") and isinstance(expected, str):
+            from .action_identity import HTTP_ALIASES, RECOGNIZED_TYPES, SHELL_ALIASES
+
+            folded = expected.lower()
+            known = folded in {name.lower() for name in RECOGNIZED_TYPES} or folded in HTTP_ALIASES or folded in SHELL_ALIASES
+            if not known:
+                warnings.append(f"{where}: action type {expected!r} is not one Varden emits{_suggest(expected, KNOWN_ACTION_TYPES)}")
         if isinstance(expected, dict):
             if not expected:
                 errors.append(f"{where}.{key}: operator object cannot be empty")
@@ -305,7 +312,12 @@ class PolicyEngine:
             "warn_internal_and_secret_data": {"block":[],"warn":[{"classifier:internal": True},{"classifier:secrets": True},{"classifier:source_internal": True}],"monitor":[],"allow":[]},
             "block_cardholder_data_exfiltration": {"block":[{"type":"http_request","classifier:credit_card": True},{"type":"llm_call","classifier:credit_card": True},{"type":"http_request","classifier:financial": True,"field:domain":{"exists": True}}],"warn":[],"monitor":[],"allow":[]},
             "warn_high_risk_llm": {"block":[],"warn":[{"type":"llm_call","field:risk_score":{"gte":60}}],"monitor":[],"allow":[]},
-            "block_cloud_metadata_access": {"block":[{"type":"http_request","field:url":{"contains":"169.254.169.254"}},{"type":"http_request","field:url":{"contains":"metadata.google.internal"}},{"type":"http_request","field:url":{"contains":"latest/meta-data"}}],"warn":[],"monitor":[],"allow":[]},
+            "block_cloud_metadata_access": {"block":[
+                {"type":"http_request","field:metadata.destination.category":"metadata"},
+                {"type":"http_request","field:domain":"169.254.169.254"},
+                {"type":"http_request","field:domain":"metadata.google.internal"},
+                {"type":"http_request","field:domain":"metadata.azure.com"},
+            ],"warn":[],"monitor":[],"allow":[]},
             "warn_suspicious_sequences": {"block":[],"warn":[{"field:metadata.behavior.suspicious_sequence": True},{"field:metadata.behavior.previous_blocked": True,"type":"http_request"}],"monitor":[],"allow":[]},
             "block_dangerous_database_operations": {
                 "block": [
@@ -398,7 +410,12 @@ class PolicyEngine:
         return {"published_version": version_id, "policy": candidate}
 
     def evaluate(self, action, *, policy_doc: dict | None = None):
+        from .action_identity import bind_security_identity, enforce_known_type
         from .models import Decision
+
+        terminal = bind_security_identity(action)
+        if terminal is not None:
+            return terminal
 
         if policy_doc is not None:
             policy = policy_doc
@@ -413,30 +430,33 @@ class PolicyEngine:
                 if not isinstance(rule, dict) or rule.get("enabled") is False:
                     continue
 
-                if self._matches(action, rule):
-                    return Decision(
+                if self._matches(action, rule, mode=mode):
+                    decision = Decision(
                         action=mode,
                         reason=_rule_match_reason(mode, rule),
                         matched_rule=rule,
                         effective_action=mode,
                     )
+                    return enforce_known_type(action, decision)
 
         fallback, scope = self.default_decision(action, policy)
 
         if fallback == "allow" and scope is None:
-            return Decision(
+            decision = Decision(
                 action="allow",
                 reason="no matching rule",
                 matched_rule=None,
                 effective_action="allow",
             )
+            return enforce_known_type(action, decision)
 
-        return Decision(
+        decision = Decision(
             action=fallback,
             reason=f"no matching rule; default {fallback} for {scope}",
             matched_rule=None,
             effective_action=fallback,
         )
+        return enforce_known_type(action, decision)
 
     @staticmethod
     def default_decision(action, policy) -> tuple[str, str | None]:
@@ -456,7 +476,7 @@ class PolicyEngine:
 
         return "allow", None
 
-    def _matches(self, action, rule):
+    def _matches(self, action, rule, mode: str = "allow"):
         has_predicate = False
         for key, expected in rule.items():
             if key in RULE_META_KEYS:
@@ -478,7 +498,7 @@ class PolicyEngine:
                 continue
             actual = self._get_field(action, key)
             if isinstance(expected, dict):
-                if not self._match_operator(actual, expected):
+                if not self._match_operator(actual, expected, field=key, mode=mode, surface=action_surface(action)):
                     return False
                 continue
             if actual is None:
@@ -486,22 +506,46 @@ class PolicyEngine:
             if isinstance(expected, bool):
                 if bool(actual) is not expected:
                     return False
+            elif key in ("type", "field:type"):
+                from .action_identity import types_match
+
+                if not types_match(actual, expected, mode=mode, surface=action_surface(action)):
+                    return False
+            elif key in ("domain", "field:domain"):
+                from .url_identity import hosts_equivalent
+
+                if not hosts_equivalent(actual, expected):
+                    return False
+            elif _path_field(key):
+                if not _path_equivalent(actual, expected) and str(actual).lower() != str(expected).lower():
+                    return False
             else:
                 if str(actual).lower() != str(expected).lower():
                     return False
         return has_predicate
 
-    def _contains_deep(self, actual, needle):
+    def _contains_deep(self, actual, needle, field: str | None = None):
         if actual is None:
             return False
         needle_s = str(needle).lower()
         if isinstance(actual, dict):
-            return any(self._contains_deep(v, needle_s) for v in actual.values())
+            return any(self._contains_deep(v, needle_s, field=field) for v in actual.values())
         if isinstance(actual, (list, tuple, set)):
-            return any(self._contains_deep(v, needle_s) for v in actual)
-        return needle_s in str(actual).lower()
+            return any(self._contains_deep(v, needle_s, field=field) for v in actual)
+        if _path_field(field) and _path_equivalent(actual, needle):
+            return True
+        text = str(actual).lower()
+        if needle_s in text:
+            return True
+        if field in ("url", "field:url"):
+            from .url_identity import canonicalize_destination
 
-    def _match_operator(self, actual, spec):
+            dest = canonicalize_destination(str(actual))
+            if dest.canonical_url and needle_s in dest.canonical_url.lower():
+                return True
+        return False
+
+    def _match_operator(self, actual, spec, field: str | None = None, mode: str = "allow", surface: str | None = None):
         matched_operator = False
         for operator, expected_value in spec.items():
             matched_operator = True
@@ -512,11 +556,27 @@ class PolicyEngine:
             if actual is None:
                 return False
             if operator == 'eq':
-                if expected_value is None or expected_value == "" or str(actual).lower() != str(expected_value).lower():
+                if expected_value is None or expected_value == "":
+                    return False
+                if field in ("domain", "field:domain"):
+                    from .url_identity import hosts_equivalent
+
+                    if not hosts_equivalent(actual, expected_value):
+                        return False
+                    continue
+                if field in ("type", "field:type"):
+                    from .action_identity import types_match
+
+                    if not types_match(actual, expected_value, mode=mode, surface=surface):
+                        return False
+                    continue
+                if _path_field(field) and _path_equivalent(actual, expected_value):
+                    continue
+                if str(actual).lower() != str(expected_value).lower():
                     return False
                 continue
             if operator == 'contains':
-                if expected_value is None or expected_value == "" or not self._contains_deep(actual, expected_value):
+                if expected_value is None or expected_value == "" or not self._contains_deep(actual, expected_value, field=field):
                     return False
                 continue
             if operator == 'startswith':
@@ -607,7 +667,7 @@ class PolicyEngine:
         for row in trace_events:
             action_data = dict(row.get("action") or {})
             action = Action(
-                type=action_data.get("type", "tool_call"),
+                type=action_data.get("type") or "",
                 tool=action_data.get("tool"),
                 method=action_data.get("method"),
                 url=action_data.get("url"),
@@ -642,6 +702,11 @@ class PolicyEngine:
     def _get_field(self, action, key):
         if key.startswith('field:'):
             key = key.split('field:', 1)[1]
+        if key == "url" and getattr(action, "_varden_identity_bound", False):
+            meta = getattr(action, "metadata", None) or {}
+            identity = meta.get("identity") if isinstance(meta, dict) else None
+            if isinstance(identity, dict) and identity.get("canonical_url"):
+                return identity["canonical_url"]
         if hasattr(action, key):
             return getattr(action, key)
         if key.startswith("classifier:"):
@@ -664,6 +729,23 @@ class PolicyEngine:
                     return None
             return cur
         return None
+
+
+def _path_field(key: str | None) -> bool:
+    if not key:
+        return False
+    leaf = key.split(".")[-1]
+    return leaf in {"path", "file", "src", "dest", "destination"} or leaf.endswith("_path")
+
+
+def _path_equivalent(actual, expected) -> bool:
+    if not isinstance(actual, str) or not isinstance(expected, str):
+        return False
+    if "\x00" in actual or "\x00" in expected:
+        return False
+    import os
+
+    return os.path.normpath(actual) == os.path.normpath(expected)
 
 
 def _rule_match_reason(mode: str, rule: dict) -> str:

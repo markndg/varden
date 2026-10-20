@@ -12,11 +12,20 @@ Be candid:
   pre-use re-check, but Python-level interception cannot eliminate all
   **TOCTOU** races between check and use, nor mediate unpatched APIs.
 * PATH wrappers in `varden session` are one layer — not a complete security boundary.
+  A signed session contract fails closed when the control plane is unavailable,
+  and the child environment cannot downgrade a contract the shim still verifies
+  with the original key. The verification key is placed in the child environment.
+  The same user can replace that key and the contract, point `VARDEN_BASE_URL`
+  at an endpoint that returns HTTP 200, skip the shim, or execute the real binary.
+  None of those are blocked by the signature check.
 * OS sandbox backends (namespaces, seccomp, eBPF, macOS sandbox, Windows job
   objects) are **not** claimed by this milestone.
 * Audit hash chaining provides **tamper evidence**, not confidentiality, and
   cannot alone prove against an attacker replacing or truncating the entire
   audit store and any trusted chain head without an external checkpoint.
 * Do not describe the audit chain as “tamper-proof”.
+* `varden audit redact-migrate` rewrites logical event rows and rebuilds hash
+  commitments. It does **not** securely erase prior plaintext from SQLite WAL
+  files, rollback journals, free pages, backups or filesystem snapshots.
 
 Coverage attestation exists specifically so these gaps are visible.

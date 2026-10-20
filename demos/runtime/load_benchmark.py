@@ -58,7 +58,7 @@ def main() -> int:
                 "allow": [],
             },
         )
-        key = client.get("/health").json()["bootstrap_api_key"]
+        key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
         headers = {"x-api-key": key}
 
         def timed(fn):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import inspect
 import types
@@ -9,7 +10,13 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from varden import current_guard
-from varden_sdk.sdk import GuardResult, VardenBlockedError, VardenGuard, _json_safe
+from varden_sdk.sdk import GuardResult, VardenBlockedError, VardenGuard, _json_safe, _live_enforcing
+
+# Tools whose invoke/run already guarded this logical call. ``_run`` / ``_arun``
+# of those tools skip a second charge. A different tool, or a new invoke, does not.
+_langchain_guarded_tools: contextvars.ContextVar[frozenset[int]] = contextvars.ContextVar(
+    "varden_langchain_guarded_tools", default=frozenset()
+)
 
 try:
     from langchain_core.callbacks import BaseCallbackHandler as _LangChainBaseCallbackHandler
@@ -219,7 +226,7 @@ def _record_tool_result(guard: VardenGuard | None, result: GuardResult | None, *
 
 def _maybe_block(guard: VardenGuard | None, result: GuardResult | None, tool_name: str) -> None:
     effective_guard = guard or current_guard()
-    if result and result.blocked and effective_guard and effective_guard.mode == 'enforce':
+    if result and result.blocked and _live_enforcing(effective_guard):
         raise VardenBlockedError(f'LangChain tool {tool_name} blocked', result.decision)
 
 
@@ -247,17 +254,24 @@ def instrument_tool(
 
         @functools.wraps(original)
         def wrapped(*args: Any, **kwargs: Any):
+            if method_name in {'_run', '_arun'} and id(tool) in _langchain_guarded_tools.get():
+                return original(*args, **kwargs)
+            token = _langchain_guarded_tools.set(_langchain_guarded_tools.get() | {id(tool)})
             config = kwargs.get('config') if method_name in {'invoke', 'ainvoke'} else None
             payload = _tool_payload(tool, args=args, kwargs=kwargs, config=config)
-            result = _guard_tool_call(tool, guard=guard, agent_name=agent_name, workflow_id=workflow_id, framework=framework, extra_metadata=extra_metadata, payload=payload)
-            _maybe_block(guard, result, getattr(tool, 'name', tool.__class__.__name__))
+            result = None
             try:
+                result = _guard_tool_call(tool, guard=guard, agent_name=agent_name, workflow_id=workflow_id, framework=framework, extra_metadata=extra_metadata, payload=payload)
+                _maybe_block(guard, result, getattr(tool, 'name', tool.__class__.__name__))
                 value = original(*args, **kwargs)
                 _record_tool_result(guard, result, input_payload=payload, output_payload=value)
                 return value
             except Exception as exc:
-                _record_tool_result(guard, result, input_payload=payload, error=str(exc))
+                if result is not None and not isinstance(exc, VardenBlockedError):
+                    _record_tool_result(guard, result, input_payload=payload, error=str(exc))
                 raise
+            finally:
+                _langchain_guarded_tools.reset(token)
 
         setattr(tool, method_name, types.MethodType(wrapped.__func__ if hasattr(wrapped, '__func__') else wrapped, tool) if inspect.ismethod(original) else wrapped)
 
@@ -271,17 +285,24 @@ def instrument_tool(
 
         @functools.wraps(original)
         async def wrapped(*args: Any, **kwargs: Any):
+            if method_name in {'_run', '_arun'} and id(tool) in _langchain_guarded_tools.get():
+                return await original(*args, **kwargs)
+            token = _langchain_guarded_tools.set(_langchain_guarded_tools.get() | {id(tool)})
             config = kwargs.get('config') if method_name in {'invoke', 'ainvoke'} else None
             payload = _tool_payload(tool, args=args, kwargs=kwargs, config=config)
-            result = _guard_tool_call(tool, guard=guard, agent_name=agent_name, workflow_id=workflow_id, framework=framework, extra_metadata=extra_metadata, payload=payload)
-            _maybe_block(guard, result, getattr(tool, 'name', tool.__class__.__name__))
+            result = None
             try:
+                result = _guard_tool_call(tool, guard=guard, agent_name=agent_name, workflow_id=workflow_id, framework=framework, extra_metadata=extra_metadata, payload=payload)
+                _maybe_block(guard, result, getattr(tool, 'name', tool.__class__.__name__))
                 value = await original(*args, **kwargs)
                 _record_tool_result(guard, result, input_payload=payload, output_payload=value)
                 return value
             except Exception as exc:
-                _record_tool_result(guard, result, input_payload=payload, error=str(exc))
+                if result is not None and not isinstance(exc, VardenBlockedError):
+                    _record_tool_result(guard, result, input_payload=payload, error=str(exc))
                 raise
+            finally:
+                _langchain_guarded_tools.reset(token)
 
         setattr(tool, method_name, types.MethodType(wrapped, tool) if inspect.ismethod(original) else wrapped)
 
@@ -301,6 +322,14 @@ def instrument_tool(
         wrap_async('ainvoke')
     if hasattr(tool, 'arun'):
         wrap_async('arun')
+    if hasattr(tool, '_run'):
+        original_run = getattr(tool, '_run')
+        if inspect.iscoroutinefunction(original_run):
+            wrap_async('_run')
+        else:
+            wrap_sync('_run')
+    if hasattr(tool, '_arun'):
+        wrap_async('_arun')
 
     setattr(tool, '__varden_langchain_originals__', originals)
     setattr(tool, '__varden_langchain_protected__', True)

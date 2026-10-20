@@ -136,12 +136,14 @@ is logged.
 
 When no rule matches, Varden picks the first of these that is set:
 
-1. `defaults[<surface>]`, using `metadata.runtime.surface` or `metadata.execution_surface` (`subprocess`, `http`, `filesystem`, `mcp`, ...)
-2. `defaults[<action type>]` (`tool_call`, `http_request`, `llm_call`, ...)
+1. `defaults[<surface>]`. The surface is derived by the control plane from the action type and tool (`http`, `subprocess`, `filesystem`, `mcp`, `webmcp`). A client `metadata.runtime.surface` or `metadata.execution_surface` is recorded as a claim and is not the lookup key.
+2. `defaults[<action type>]` (`tool_call`, `http_request`, `llm_call`, ...). The type is the canonical spelling. `HTTP_REQUEST` matches `http_request`. An unrecognized type matches the lowercased spelling.
 3. `default`
-4. `allow`
+4. `allow` for a recognized type. An unrecognized type with no explicit matching rule is `unsupported`, not `allow`. An explicit `allow` rule for that type still allows it. `fail_mode=open` does not turn `unsupported` or `block` into execution.
 
 Valid values are `block`, `require_approval`, `warn`, `monitor` and `allow`.
+
+Domain equality compares canonical hosts. `Example.COM.` and `example.com` are the same host. A URL and a `domain` field that name different hosts are a conflict and are blocked before rules. `contains` is still a substring operator; it is not how destination trust is decided. Cloud metadata rules match `metadata.destination.category` = `metadata`.
 
 `block` rules are still evaluated before `allow` rules, so something on an
 allowlist can still be blocked. Merging a policy pack never changes your

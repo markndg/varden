@@ -16,6 +16,7 @@ from .hazardous import HazardousFinding
 # Strongest → weakest numeric rank (mirrors PolicyEngine.MODES priority).
 DECISION_RANK: dict[str, int] = {
     "block": 50,
+    "unsupported": 50,
     "require_approval": 40,
     "approval_required": 40,
     "sanitise": 30,

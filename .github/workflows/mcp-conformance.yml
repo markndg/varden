@@ -38,9 +38,11 @@ jobs:
           "
 
       - name: Start Varden control plane
+        env:
+          VARDEN_CONFIG: examples/dev.env
         run: |
-          python -m varden.api --config examples/dev.env &
-          echo "VARDEN_PID=$!" >> $GITHUB_ENV
+          python -m varden.api --config examples/dev.env > /tmp/varden.log 2>&1 &
+          echo "VARDEN_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for control plane
         run: |

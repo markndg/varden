@@ -68,7 +68,7 @@ def test_resolve_mcp_scan_paths_accepts_single_path(tmp_path):
 def test_mcp_scan_rejects_missing_path(tmp_path):
     with TemporaryDirectory() as tmpdir:
         with _client(tmpdir) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             headers = {"x-api-key": key}
             response = client.post(
                 "/mcp/scan",
@@ -117,7 +117,8 @@ def test_mcp_inventory_redacts_sensitive_args(tmp_path):
     store.scan(paths=[config_path], policy={"block": [], "warn": [], "monitor": [], "allow": []})
     server = store.inventory()["servers"][0]
     args = json.loads(server["args_json"])
-    assert args[1] == "[REDACTED]"
+    assert args[1].startswith("[REDACTED:")
+    assert "super-secret-token-value" not in args[1]
 
 
 def test_mcp_inventory_api_scan_and_list(tmp_path):
@@ -128,7 +129,7 @@ def test_mcp_inventory_api_scan_and_list(tmp_path):
     )
     with TemporaryDirectory() as tmpdir:
         with _client(tmpdir) as client:
-            key = client.get("/health").json()["bootstrap_api_key"]
+            key = client.get("/sdk/bootstrap").json()["bootstrap_api_key"]
             headers = {"x-api-key": key}
             scanned = client.post(
                 "/mcp/scan",

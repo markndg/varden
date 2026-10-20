@@ -4,14 +4,14 @@ import logging
 import asyncio
 import json
 import shutil
+import sqlite3
 import time
 from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -34,9 +34,15 @@ from .policy import PolicyEngine
 from .policy_packs import list_policy_packs, load_policy_pack, merge_policy_pack
 from .queue import SQLiteQueue
 from .redaction import redact
+from .server_owned import action_fingerprint, strip_untrusted_metadata
 from .ratelimit import BucketConfig, RateLimiter
 from .stores import EventStore, WorkflowStore
-from .token_budget import TokenBudgetStore, simulate_budget_trace
+from .token_budget import (
+    ACCOUNTING_INTEGRITY,
+    TokenBudgetStore,
+    budget_evidence_document,
+    simulate_budget_trace,
+)
 from .rules.registry import load_budget_rules
 from .webshield.routes import register_webshield_routes
 from .webshield.store import WebShieldStore
@@ -67,6 +73,7 @@ class EventStreamBroker:
     def __init__(self):
         self._subscribers: set[asyncio.Queue] = set()
         self._closed = False
+        self.last_message: dict[str, Any] | None = None
 
     @property
     def closed(self) -> bool:
@@ -86,6 +93,7 @@ class EventStreamBroker:
     def publish(self, message: dict[str, Any]):
         if self._closed or message is None:
             return
+        self.last_message = message
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(message)
@@ -211,7 +219,15 @@ def create_app(config: AppConfig) -> FastAPI:
             threat_scheduler.stop()
             background.stop()
 
-    app = FastAPI(title="Varden Integrated Platform", version="3.0.0", lifespan=lifespan)
+    publish_docs = config.env == "dev" or config.enable_api_docs
+    app = FastAPI(
+        title="Varden Integrated Platform",
+        version="3.0.0",
+        lifespan=lifespan,
+        docs_url="/docs" if publish_docs else None,
+        redoc_url="/redoc" if publish_docs else None,
+        openapi_url="/openapi.json" if publish_docs else None,
+    )
     app.state.event_broker = broker
 
     def request_shutdown() -> None:
@@ -321,7 +337,7 @@ def create_app(config: AppConfig) -> FastAPI:
             for rule in budget_rules
             if isinstance(rule, dict)
         }
-        active_rows = token_budget_store.list_active_budgets(policy_rules=rules_by_id)
+        active_rows = token_budget_store.list_active_budgets(policy_rules=rules_by_id, tenant_id=tenant_id)
         enriched_rows = []
         for row in active_rows:
             rule = rules_by_id.get(str(row.get("policy_id") or ""), {})
@@ -509,7 +525,7 @@ def create_app(config: AppConfig) -> FastAPI:
 
     def status_from_decision(action: str | None) -> str:
         text = str(action or "").strip().lower()
-        if text in {"block", "blocked"}:
+        if text in {"block", "blocked", "require_approval", "approval_required", "unsupported"}:
             return "blocked"
         # require_approval without a scoped approval token must not execute.
         # Until SDK-scoped approvals exist, treat as blocked at the guard boundary.
@@ -537,23 +553,17 @@ def create_app(config: AppConfig) -> FastAPI:
         return record
 
     def normalize_action(payload: dict[str, Any], tenant_id: str) -> Action:
-        metadata = payload.get("metadata") or {}
-        if isinstance(metadata, dict):
-            # Server-computed keys: a client must never be able to pre-set them.
-            # Agent-supplied Predictive Authority config or results could
-            # otherwise disable enforcement or forge audit/UI evidence.
-            metadata = {k: v for k, v in metadata.items() if k not in AGENT_RESERVED_METADATA_KEYS}
-        else:
-            metadata = {}
+        from .action_identity import bind_security_identity
+
+        metadata = strip_untrusted_metadata(payload.get("metadata"))
         args = payload.get("args") or {}
-        url = payload.get("url")
-        domain = payload.get("domain") or (urlparse(url).netloc if url else None)
-        return Action(
-            type=payload.get("type", "tool_call"),
+        claimed_type = payload.get("type")
+        action = Action(
+            type=claimed_type if isinstance(claimed_type, str) else "",
             tool=payload.get("tool"),
             method=payload.get("method"),
-            url=url,
-            domain=domain,
+            url=payload.get("url"),
+            domain=payload.get("domain"),
             args=args,
             metadata=metadata,
             agent_name=payload.get("agent_name"),
@@ -563,6 +573,9 @@ def create_app(config: AppConfig) -> FastAPI:
             # Tenant comes from the credential, never from the client payload.
             tenant_id=tenant_id,
         )
+        action._claimed_type = claimed_type
+        bind_security_identity(action)
+        return action
 
     def enrich_action(action: Action, payload: Any) -> Action:
         meta = dict(action.metadata or {})
@@ -580,6 +593,13 @@ def create_app(config: AppConfig) -> FastAPI:
             # Always compute lightweight base risk so warned/blocked actions are never shown as riskless.
             action = intelligence.enrich(action)
             meta["scan"]["depth"] = "fast"
+        # Derived signal from a minimized SDK payload. The secret itself is
+        # not present; the field name is enough for the secrets classifier.
+        signals = meta.get("credential_signals")
+        if isinstance(signals, list) and signals:
+            action.classifiers = dict(action.classifiers or {})
+            action.classifiers["secrets"] = True
+            action.classifiers["sensitive"] = True
         # Provenance-aware authority-flow enrichment. Missing provenance becomes
         # explicit unknown — never silent trust. Runs before PolicyEngine.
         action.metadata = meta
@@ -634,9 +654,18 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception:
             pass
 
+        tenant = str(action.tenant_id or "default")
+        secret = config.signing_secret
+        action_dict = redact(action_dict, tenant_id=tenant, master_secret=secret)
+        decision_dict = decision.to_dict() if hasattr(decision, "to_dict") else decision
+        decision_dict = redact(decision_dict, tenant_id=tenant, master_secret=secret)
+        input_payload = redact(input_payload, tenant_id=tenant, master_secret=secret)
+        output_payload = redact(output_payload, tenant_id=tenant, master_secret=secret)
+        error = redact(error, tenant_id=tenant, master_secret=secret) if error is not None else None
+
         event_id = event_store.log(EventRecord.new(
             action=action_dict,
-            decision=decision.to_dict() if hasattr(decision, 'to_dict') else decision,
+            decision=decision_dict,
             status=status,
             input_payload=input_payload,
             output_payload=output_payload,
@@ -701,16 +730,31 @@ def create_app(config: AppConfig) -> FastAPI:
         })
         return event_id
 
-    def evaluate_action(payload: dict[str, Any], raw_payload: Any, tenant_id: str):
+    def evaluate_action(
+        payload: dict[str, Any],
+        raw_payload: Any,
+        tenant_id: str,
+        principal_hash: str | None = None,
+    ):
         action = normalize_action(payload, tenant_id)
         action = enrich_action(action, raw_payload)
         # One coherent policy snapshot for evaluate + budget + PA on this decision.
         policy_doc = policy.get_policy()
         decision = policy.evaluate(action, policy_doc=policy_doc)
         budget_rules = load_budget_rules(policy_doc)
-        if action.type == "llm_call" and budget_rules:
+        budget_reservation_ids: list[int] = []
+        budget_entries: list[dict[str, Any]] = []
+        if action.type == "llm_call" and budget_rules and decision.action in {"allow", "monitor", "warn", "warned", "sanitise"}:
             try:
-                budget_decision = token_budget_store.pre_check(action, raw_payload, budget_rules)
+                budget_decision = token_budget_store.pre_check(
+                    action,
+                    raw_payload,
+                    budget_rules,
+                    tenant_id=tenant_id,
+                    principal_hash=principal_hash,
+                    reservation_ids=budget_reservation_ids,
+                    evidence=budget_entries,
+                )
             except PolicyViolation as exc:
                 decision = Decision(
                     action="block",
@@ -718,11 +762,15 @@ def create_app(config: AppConfig) -> FastAPI:
                     matched_rule=exc.rule or {"type": "token_budget"},
                     effective_action="block",
                 )
+                token_budget_store.release_verified(budget_reservation_ids, reason="pre_execution_denial")
+                budget_reservation_ids = []
             else:
                 if budget_decision and budget_decision.action == "warn" and decision.action in {"allow", "monitor"}:
                     decision = budget_decision
                 elif budget_decision and budget_decision.action == "block":
                     decision = budget_decision
+                    token_budget_store.release_verified(budget_reservation_ids, reason="pre_execution_denial")
+                    budget_reservation_ids = []
         # Predictive Authority: optional post-policy enrichment. Disabled by
         # default. Observe records recommendations without changing decisions;
         # enforce may strengthen but never weaken the existing decision.
@@ -741,10 +789,29 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception:
             # Predictive Authority must never bypass or break core enforcement.
             pass
+        identity = (action.metadata or {}).get("identity") if isinstance(action.metadata, dict) else None
+        if isinstance(identity, dict) and identity.get("decision") in {"block", "unsupported"}:
+            if decision.action not in {"block", "unsupported", "require_approval"}:
+                decision = Decision(
+                    action=identity["decision"],
+                    reason=f"action identity {identity.get('rejection') or identity['decision']}",
+                    matched_rule={"type": "action_identity", "code": identity.get("rejection")},
+                    effective_action=identity["decision"],
+                )
+        from .token_budget import BUDGET_EXECUTES
+
+        if budget_reservation_ids and decision.action not in BUDGET_EXECUTES:
+            token_budget_store.release_verified(budget_reservation_ids, reason="pre_execution_denial")
+            budget_reservation_ids = []
+        action.budget_reservation_ids = budget_reservation_ids
         recent_events = event_store.list_events(limit=120, tenant_id=tenant_id)
         trace_events = event_store.list_trace_events(action.trace_id, tenant_id=tenant_id, limit=60) if action.trace_id else []
         action = intelligence.apply_decision_context(action, decision, recent_events=recent_events, trace_events=trace_events)
         decision.route_target = action.route_target
+        if action.type == "llm_call" and decision.action in BUDGET_EXECUTES:
+            meta = dict(action.metadata or {})
+            meta["budget_evidence"] = budget_evidence_document(budget_entries)
+            action.metadata = meta
         return action, decision
 
     def record_tool(tool_name: str, args: list, kwargs: dict, tenant_id: str, agent_name: str | None = None, workflow_id: str | None = None):
@@ -757,7 +824,7 @@ def create_app(config: AppConfig) -> FastAPI:
             "tenant_id": tenant_id,
         }
         action, decision = evaluate_action(action_payload, {"args": args, "kwargs": kwargs}, tenant_id)
-        if decision.action == "block":
+        if decision.action in {"block", "unsupported"}:
             persist_event(action=action, decision=decision, status="blocked", input_payload={"args": args, "kwargs": kwargs}, replay_key=tool_name, error=f"[Varden BLOCKED] {decision.reason}")
             raise HTTPException(status_code=403, detail=f"[Varden BLOCKED] {decision.reason}")
         result = blaze.execute_local({"args": args, "kwargs": kwargs}) if action.route_target == "local_blaze" else {"status": "cloud_ok"}
@@ -768,32 +835,44 @@ def create_app(config: AppConfig) -> FastAPI:
     def root():
         return RedirectResponse(url="/ui")
 
+    _LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost", "testclient"}
+
+    def _peer_host(request: Request) -> str:
+        peer = request.client.host if request.client else ""
+        if peer in set(config.trusted_proxy_hosts or ()):
+            forwarded = request.headers.get("x-forwarded-for", "")
+            if forwarded:
+                return forwarded.split(",")[0].strip()
+        return peer
+
+    def _dev_credentials_visible(request: Request) -> bool:
+        if config.env != "dev" or not config.enable_dev_bootstrap or config.unsafe_dev_bind:
+            return False
+        return _peer_host(request) in _LOOPBACK_HOSTS
+
     @app.get("/health")
     def health_summary():
+        return {"status": "ok"}
+
+    @app.get("/health/detail")
+    def health_detail(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+        require(x_api_key, authorization, "viewer", scope="read")
         return {
             "status": "ok",
-            "bootstrap_api_key": bootstrap_key["api_key"] if config.enable_dev_bootstrap else None,
-            "bootstrap_bearer_token": bootstrap_token if config.enable_dev_bootstrap else None,
-            "bootstrap_agent_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
-            "tenant_id": OSS_TENANT_ID,
-            "metrics": event_store.metrics(OSS_TENANT_ID),
-            "public_base_url": config.public_base_url,
-            "auth_mode": config.auth_mode,
             "env": config.env,
+            "auth_mode": config.auth_mode,
             "scan_mode": current_scan_mode["value"],
+            "public_base_url": config.public_base_url,
         }
 
     @app.get("/sdk/bootstrap")
-    def sdk_bootstrap():
-        return {
-            "base_url": config.public_base_url,
-            # Protected processes get the ingest-only agent key, never an admin key.
-            "bootstrap_api_key": bootstrap_agent_key["api_key"] if config.enable_dev_bootstrap else None,
-            "bootstrap_role": "agent" if config.enable_dev_bootstrap else None,
-            "tenant_id": OSS_TENANT_ID,
-            "default_policy": policy.get_policy(),
-            "scan_mode": current_scan_mode["value"],
-        }
+    def sdk_bootstrap(request: Request):
+        body = {"base_url": config.public_base_url, "tenant_id": OSS_TENANT_ID}
+        if _dev_credentials_visible(request):
+            body["bootstrap_api_key"] = bootstrap_key["api_key"]
+            body["bootstrap_agent_api_key"] = bootstrap_agent_key["api_key"]
+            body["bootstrap_bearer_token"] = bootstrap_token
+        return body
 
     @app.get("/auth/whoami")
     def auth_whoami(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -889,14 +968,14 @@ def create_app(config: AppConfig) -> FastAPI:
         return dashboard_bootstrap_payload(record["tenant_id"])
 
     @app.get("/ui/bootstrap")
-    def ui_bootstrap(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
+    def ui_bootstrap(request: Request, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
         """Return everything the UI needs in one shaped payload.
 
         In local/dev bootstrap mode the UI can start with no prior token and receive a
         bootstrap API key plus the initial dashboard snapshot in a single round-trip.
         In normal mode this endpoint behaves like the authenticated dashboard bootstrap.
         """
-        if config.enable_dev_bootstrap and not x_api_key and not authorization:
+        if _dev_credentials_visible(request) and not x_api_key and not authorization:
             # Dev/demo only — AppConfig.validate() refuses enable_dev_bootstrap
             # when env != "dev". Production must not expose bootstrap credentials.
             payload = dashboard_bootstrap_payload(OSS_TENANT_ID)
@@ -1046,17 +1125,26 @@ def create_app(config: AppConfig) -> FastAPI:
                     if not isinstance(src, dict):
                         continue
                     item = dict(src)
-                    if item.get("trust_level") in {"trusted", "delegated"}:
+                    claimed = str(item.get("trust_level") or "unknown")
+                    if claimed not in {"unknown", "untrusted", "hostile"}:
+                        item["claimed_trust_level"] = claimed[:64]
                         item["trust_level"] = "unknown"
+                        item["forged_trust_claim"] = True
+                    item["provenance_complete"] = False
                     cleaned.append(item)
                 for src in session_sources:
                     if src not in cleaned:
                         cleaned.append(src)
                 meta_in["provenance_sources"] = cleaned
-                meta_in["provenance_complete"] = True
+                meta_in.pop("provenance_complete", None)
         action_payload = {**action_payload, "metadata": meta_in}
 
-        action, decision = evaluate_action(action_payload, raw_payload, record["tenant_id"])
+        action, decision = evaluate_action(
+            action_payload,
+            raw_payload,
+            record["tenant_id"],
+            principal_hash=str(record.get("key_hash") or ""),
+        )
         # Stamp pre-execution enforcement evidence for the incident read model.
         # /sdk/guard intercepts before side effects; never invent this client-side.
         meta = dict(action.metadata or {})
@@ -1103,6 +1191,12 @@ def create_app(config: AppConfig) -> FastAPI:
                 action.metadata = meta
 
         status = status_from_decision(decision.action)
+        meta["audit_binding"] = {
+            "principal_hash": record.get("key_hash"),
+            "tenant_id": record["tenant_id"],
+            "action_fingerprint": action_fingerprint(action.to_dict()),
+        }
+        action.metadata = meta
         audit_failed = False
         event_id = None
         try:
@@ -1157,8 +1251,19 @@ def create_app(config: AppConfig) -> FastAPI:
             )
             raise HTTPException(status_code=403, detail=response)
 
-        if decision.action == "block":
-            # Block wins even if audit write failed — never convert to allow.
+        pending_reservations = list(getattr(action, "budget_reservation_ids", []) or [])
+        if event_id and pending_reservations and decision.action in {"allow", "warn", "warned", "monitor", "sanitise"}:
+            token_budget_store.bind_guard_event(
+                int(event_id),
+                tenant_id=record["tenant_id"],
+                principal_hash=str(record.get("key_hash") or ""),
+                reservation_ids=pending_reservations,
+            )
+        elif pending_reservations:
+            token_budget_store.release_verified(pending_reservations, reason="pre_execution_denial")
+
+        if decision.action in {"block", "unsupported"}:
+            # An identity rejection or policy block wins even if audit write failed.
             raise HTTPException(status_code=403, detail=response)
 
         if audit_failed:
@@ -1172,6 +1277,35 @@ def create_app(config: AppConfig) -> FastAPI:
             )
         return response
 
+    def _bound_guard_event(guard_event_id, action: Action, record: dict) -> dict | None:
+        if guard_event_id is None:
+            return None
+        try:
+            event_id = int(guard_event_id)
+        except (TypeError, ValueError):
+            return None
+        event = event_store.get_event(event_id, tenant_id=record["tenant_id"])
+        if not event:
+            return None
+        stored_action = event.get("action") or {}
+        binding = ((stored_action.get("metadata") or {}).get("audit_binding") or {})
+        if binding.get("tenant_id") != record["tenant_id"]:
+            return None
+        if binding.get("principal_hash") != record.get("key_hash"):
+            return None
+        if binding.get("action_fingerprint") != action_fingerprint(action.to_dict()):
+            return None
+        decision = event.get("decision") or {}
+        if not isinstance(decision, dict) or not decision.get("action"):
+            return None
+        stored_meta = stored_action.get("metadata") if isinstance(stored_action.get("metadata"), dict) else {}
+        return {
+            "id": event_id,
+            "decision": decision,
+            "status": event.get("status"),
+            "budget_evidence": stored_meta.get("budget_evidence") if isinstance(stored_meta.get("budget_evidence"), dict) else None,
+        }
+
     @app.post("/sdk/log")
     @app.post("/v1/actions/log")
     def sdk_log(payload: dict, x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
@@ -1183,26 +1317,57 @@ def create_app(config: AppConfig) -> FastAPI:
         """
         record = require(x_api_key, authorization, "agent", scope="ingest")
         action_payload = payload.get("action") or {}
-        decision_payload = payload.get("decision") or {"action": "allow", "reason": "sdk log (audit-only; not an enforcement decision)"}
         action = normalize_action(action_payload, record["tenant_id"])
         meta = dict(action.metadata or {})
-        meta["enforcement"] = {
-            "surface": "sdk_log",
-            "intercepted": False,
-            "pre_execution": False,
-            "side_effect_prevented": None,
-            "note": "Observational audit log — Varden cannot verify whether execution was prevented.",
-        }
+        client_status = payload.get("status")
+        guard_event_id = payload.get("guard_event_id")
+        bound = _bound_guard_event(guard_event_id, action, record)
+        if bound is None:
+            decision_payload = {
+                "action": "unverified_observation",
+                "reason": "no matching server guard event",
+                "effective_action": "unverified_observation",
+            }
+            status = "unverified"
+            meta["evidence_class"] = "unverified_observation"
+            meta["execution_outcome"] = {"reported_status": client_status, "authoritative": False}
+            meta["enforcement"] = {
+                "surface": "sdk_log",
+                "intercepted": False,
+                "pre_execution": False,
+                "side_effect_prevented": None,
+                "note": "Unverified client observation. This is not an allow, block, approval, or coverage decision.",
+            }
+        else:
+            decision_payload = bound["decision"]
+            status = bound["status"]
+            meta["evidence_class"] = "server_decision"
+            meta["guard_event_id"] = bound["id"]
+            meta["execution_outcome"] = {"reported_status": client_status, "authoritative": False}
+            meta["enforcement"] = {
+                "surface": "sdk_log",
+                "intercepted": False,
+                "pre_execution": False,
+                "side_effect_prevented": None,
+                "note": "Execution report bound to a server guard event. The decision is the server's.",
+            }
         action.metadata = meta
-        status = payload.get("status") or status_from_decision(decision_payload.get("action"))
         event_id = persist_event(action=action, decision=decision_payload, status=status, input_payload=payload.get("input_payload"), output_payload=payload.get("output_payload"), error=payload.get("error"), replay_key=action.tool)
-        if action.type == "llm_call" and status != "blocked":
+        accounted = False
+        accounting_status = "unverified_guard" if bound is None else "not_applicable"
+        executes = bound is not None and action.type == "llm_call" and bound["decision"].get("action") in {"allow", "warn", "warned", "monitor", "sanitise"}
+        if executes:
             try:
-                token_budget_store.post_record(
+                result = token_budget_store.post_record(
                     action,
                     input_payload=payload.get("input_payload"),
                     output_payload=payload.get("output_payload"),
                     rules=load_budget_rules(policy.get_policy()),
+                    guard_event_id=int(bound["id"]),
+                    tenant_id=record["tenant_id"],
+                    principal_hash=str(record.get("key_hash") or ""),
+                    client_status=None if client_status is None else str(client_status),
+                    guard_evidence=bound.get("budget_evidence"),
                 )
             except PolicyViolation as exc:
                 raise HTTPException(
@@ -1210,17 +1375,55 @@ def create_app(config: AppConfig) -> FastAPI:
                     detail={
                         "logged": True,
                         "event_id": event_id,
+                        "evidence_class": "server_decision",
+                        "usage_accounted": True,
+                        "accounting_status": "reconciled",
                         "error": str(exc),
                         "rule": exc.rule,
                         "current_usd": exc.current_usd,
                         "limit_usd": exc.limit_usd,
                     },
                 )
-        return {"logged": True, "event_id": event_id}
+            except sqlite3.OperationalError:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "logged": True,
+                        "event_id": event_id,
+                        "evidence_class": "server_decision",
+                        "usage_accounted": False,
+                        "accounting_status": "retryable_failure",
+                        "retryable": True,
+                        "error": "budget accounting is locked",
+                    },
+                )
+            accounted = bool(result.usage_accounted)
+            accounting_status = result.status
+            if result.status == ACCOUNTING_INTEGRITY:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "logged": True,
+                        "event_id": event_id,
+                        "evidence_class": meta["evidence_class"],
+                        "usage_accounted": False,
+                        "accounting_status": result.status,
+                        "retryable": False,
+                        "finding_id": result.finding_id,
+                        "error": "budget reservation named at guard time could not be reconciled",
+                    },
+                )
+        return {
+            "logged": True,
+            "event_id": event_id,
+            "evidence_class": meta["evidence_class"],
+            "usage_accounted": accounted,
+            "accounting_status": accounting_status,
+        }
 
     @app.get("/token-budgets")
     def list_token_budgets(x_api_key: str | None = Header(default=None), authorization: str | None = Header(default=None)):
-        require(x_api_key, authorization, "analyst", scope="read")
+        record = require(x_api_key, authorization, "analyst", scope="read")
         policy_doc = policy.get_policy()
         rules_by_id = {
             str(rule.get("id") or ""): rule
@@ -1228,7 +1431,7 @@ def create_app(config: AppConfig) -> FastAPI:
             if isinstance(rule, dict)
         }
         items = []
-        for row in token_budget_store.list_active_budgets(policy_rules=rules_by_id):
+        for row in token_budget_store.list_active_budgets(policy_rules=rules_by_id, tenant_id=record["tenant_id"]):
             rule = rules_by_id.get(str(row.get("policy_id") or ""), {})
             limit_usd = float(rule.get("limit_usd") or row.get("limit_usd") or 0)
             current_usd = float(row.get("current_usd") or 0)
@@ -1457,6 +1660,8 @@ def create_app(config: AppConfig) -> FastAPI:
         session_provenance_store=session_provenance_store,
         get_strict_readiness=lambda: get_coverage_registry().strict_readiness_report(),
         get_posture=lambda: evaluate_posture().to_dict(),
+        db_path=config.db_path,
+        signing_secret=config.signing_secret,
     )
     register_threat_intelligence_routes(app, require=require, service=threat_service)
 

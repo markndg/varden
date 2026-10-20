@@ -138,6 +138,20 @@ Status legend: **FIXED** | **PARTIALLY FIXED** | **DOCUMENTED LIMITATION** | **V
 | **Residual gaps** | In-process restoration of originals still bypasses monkeypatches until reconcile/`protect` re-entry (attestation then refuses ENFORCED). Arbitrary malicious code in the same interpreter remains out of scope. Control-plane policy content remains mutable by authorized admins by design. |
 | **Status** | **FIXED** (integrity gate) |
 | **Claims** | Do not claim that freezing `product_mode` alone closes this class; claim locked enforcement contract + refuse weaker activation + denied side effect still blocked |
+| **Follow-up** | Response-shape handling was a separate hole. See G-SDK-RESP-01. Mode lock did not close it. |
+
+---
+
+## G-SDK-RESP-01 — Delivered deny treated as a transport failure
+
+| Field | Detail |
+|-------|--------|
+| **Severity** | Medium. Default `fail_mode=closed` against an unmodified `/sdk/guard` still blocks HTTP 403. The bypass needs `fail_mode=open` or a non-403 body the stock server does not emit for `block`. |
+| **Affected versions** | Tags `v1.0.0`, `v1.0.1`, `v1.0.2`. Not fixed by commit `5924532` (that commit covers `decision.action == block` without HTTP 403, and locked fail-closed on exceptions). |
+| **Reproduction** | Isolated tag checkouts, side-effect counter. `v1.0.2` + `fail_mode=closed` + HTTP 200 `approval_required`: tool executed (`side_effects=1`). `v1.0.2` + `fail_mode=open` + HTTP 503 `detail.decision.action=require_approval`: tool executed. Same inputs on this branch: `blocked`, `side_effects=0`. |
+| **Stock server** | `/sdk/guard` raises HTTP 403 for `block` and `require_approval` / `approval_required`. Approval-record persistence failure is HTTP 503 with the deny nested under `detail`. |
+| **Status** | **FIXED** in 1.0.3 (this branch). Not in the published 1.0.2 tag. |
+| **Evidence** | `tests/security/test_guard_response_enforcement.py`; `docs/security/V1.0.2-ENFORCEMENT-ASSESSMENT.md` |
 
 ---
 

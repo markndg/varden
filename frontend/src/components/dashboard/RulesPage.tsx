@@ -46,7 +46,15 @@ export function RulesPage({ policy, policyText, setPolicyText, templates, policy
   const activeRules = getBucketRules(workingPolicy, selectedBucket);
   const activeRule = activeRules[selectedRuleIndex] || null;
   const ruleKey = (bucket: string, idx: number) => `${bucket}:${idx}`;
-  const scrollSelectedRuleIntoView = (bucket = selectedBucket, index = selectedRuleIndex) => { const target = ruleItemRefs.current[ruleKey(bucket, index)]; if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start', inline: 'nearest' }); };
+  const scrollSelectedRuleIntoView = (bucket = selectedBucket, index = selectedRuleIndex) => {
+    const target = ruleItemRefs.current[ruleKey(bucket, index)];
+    const list = target?.closest('.ruleList');
+    if (!target || !list) return;
+    const listRect = list.getBoundingClientRect();
+    const targetRect = target.getBoundingClientRect();
+    if (targetRect.top >= listRect.top && targetRect.bottom <= listRect.bottom) return;
+    list.scrollTop += targetRect.top - listRect.top;
+  };
   const resetRuleEditorScroll = () => { if (ruleEditorPaneRef.current) ruleEditorPaneRef.current.scrollTop = 0; };
   const activeRuleDefinedFields = (rule: any) => { if (!rule) return []; const fields: string[] = []; if (rule.type) fields.push('type'); if (rule.tool) fields.push('tool'); if (rule.priority !== undefined) fields.push('priority'); if (rule.title || rule.name) fields.push('title'); if (rule.description || rule.reason) fields.push('description'); if (rule.enabled !== undefined) fields.push('enabled'); for (const key of Object.keys(rule || {})) if (String(key).startsWith('classifier:') || String(key).startsWith('field:')) fields.push(String(key)); for (const [key] of customRuleEntries(rule)) fields.push(String(key)); return Array.from(new Set(fields)); };
   const fieldClass = (fieldKey: string, extra?: string) => classNames(extra, highlightedFields.includes(fieldKey) && 'ruleField--matched');

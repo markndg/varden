@@ -112,7 +112,10 @@ def control_plane(tmp_path_factory):
 
 
 def _agent_key(port: int) -> str:
-    body = _http("127.0.0.1", port, "GET", "/health").decode("latin1", errors="ignore")
+    health = _http("127.0.0.1", port, "GET", "/health")
+    assert b"bootstrap_api_key" not in health
+    assert b"bootstrap_agent_api_key" not in health
+    body = _http("127.0.0.1", port, "GET", "/sdk/bootstrap").decode("latin1", errors="ignore")
     marker = '"bootstrap_agent_api_key":"'
     start = body.find(marker)
     assert start >= 0, body[-400:]
