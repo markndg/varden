@@ -59,3 +59,4 @@ TODO-OSS.md
 .tmp/
 data/reports/ui-consistency/
 data/reports/ui-stability/
+/node_modules/
