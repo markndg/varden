@@ -18,7 +18,7 @@
 
 - The threat intelligence workspace separates mapped contracts from unmapped records and from runtime protection. Unmapped identifiers stay in review with the stored reason. A healthy watcher is not shown as protection.
 
-## 1.1.0 (unreleased) — Security hardening pass 2
+## 1.1.0  — Security hardening pass 2 + UI refinement + threat intelligence
 
 Security hardening pass 2 (Phases 1–4) has been merged into main. See docs/security-hardening-pass-2.md for scope and residual limitations.
 
