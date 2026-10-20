@@ -3,7 +3,7 @@
  * Renders authoritative backend graph/view models only.
  * Never invents nodes, edges, hazards, or confidence.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CapabilityGroup,
   DisplayLabel,
@@ -43,52 +43,9 @@ const GRAPH_H = 460;
 const NODE_W = 148;
 const NODE_H = 56;
 
-function Icon({ name }: { name: string }) {
-  const common = { width: 12, height: 12, viewBox: '0 0 16 16', 'aria-hidden': true as const };
-  switch (name) {
-    case 'message':
-      return (
-        <svg {...common}>
-          <path fill="currentColor" d="M2 3h12v8H8l-3 2v-2H2V3zm2 2v1h8V5H4zm0 3v1h5V8H4z" />
-        </svg>
-      );
-    case 'file':
-      return (
-        <svg {...common}>
-          <path fill="currentColor" d="M4 1h6l3 3v11H4V1zm6 1.5V5h2.5L10 2.5zM6 8h5v1H6V8zm0 2h5v1H6v-1zm0 2h4v1H6v-1z" />
-        </svg>
-      );
-    case 'key':
-      return (
-        <svg {...common}>
-          <path fill="currentColor" d="M8 2a4 4 0 00-1.5 7.7V14h2v-1h2v-2H9.5V9.7A4 4 0 008 2zm0 2a2 2 0 110 4 2 2 0 010-4z" />
-        </svg>
-      );
-    case 'cloud':
-      return (
-        <svg {...common}>
-          <path fill="currentColor" d="M6 5a3 3 0 015.8.8A2.5 2.5 0 0113 11H5.5A2.5 2.5 0 015 6.1 3 3 0 016 5z" />
-        </svg>
-      );
-    case 'globe':
-      return (
-        <svg {...common}>
-          <path fill="currentColor" d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 1.5c1.2 0 2.3 2.3 2.5 5H5.5c.2-2.7 1.3-5 2.5-5zm-2.5 6.5h5c-.2 2.7-1.3 5-2.5 5s-2.3-2.3-2.5-5zM3.2 8c.3-1.5.9-2.9 1.7-3.8A5.5 5.5 0 003.2 8zm8 0a5.5 5.5 0 01-1.7 3.8c.8-.9 1.4-2.3 1.7-3.8z" />
-        </svg>
-      );
-    case 'filter':
-      return (
-        <svg {...common}>
-          <path fill="currentColor" d="M2 3h12l-4 5v4l-4 2V8L2 3z" />
-        </svg>
-      );
-    default:
-      return (
-        <svg {...common}>
-          <circle cx="8" cy="8" r="5" fill="none" stroke="currentColor" strokeWidth="1.5" />
-        </svg>
-      );
-  }
+function clipLabel(value: string, max: number) {
+  const text = String(value || '');
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
 function NodeCard({
@@ -98,6 +55,7 @@ function NodeCard({
   onPath,
   selected,
   onSelect,
+  onHover,
   classNames,
 }: {
   n: GraphNode;
@@ -106,24 +64,26 @@ function NodeCard({
   onPath: boolean;
   selected: boolean;
   onSelect: () => void;
+  onHover: (text: string | null, event?: React.MouseEvent<SVGGElement>) => void;
   classNames: Helpers['classNames'];
 }) {
   const potential = isPotentialNode(n);
+  const tip = `${label.title} / ${label.subtitle} / ${label.state}`;
   return (
     <g
-      transform={`translate(${0},${0})`}
-      opacity={1}
       onClick={(e) => {
         e.stopPropagation();
         onSelect();
       }}
+      onMouseEnter={(event) => onHover(tip, event)}
+      onMouseLeave={() => onHover(null)}
       style={{ cursor: 'pointer' }}
       data-testid={`pa-node-${nid(n)}`}
       data-emphasis={emphasis}
       data-predicted={potential ? 'true' : 'false'}
       data-on-path={onPath ? 'true' : 'false'}
     >
-      <title>{`${label.title}\n${String(n.label || nid(n))}\n${label.state}`}</title>
+      <title>{tip}</title>
       <rect
         x={-NODE_W / 2}
         y={-NODE_H / 2}
@@ -139,18 +99,15 @@ function NodeCard({
         )}
         strokeDasharray={potential ? '4 3' : undefined}
       />
-      <foreignObject x={-NODE_W / 2 + 6} y={-NODE_H / 2 + 6} width={NODE_W - 12} height={NODE_H - 12}>
-        <div className={classNames('paNodeInner', potential && 'is-potential', onPath && 'is-path')}>
-          <div className="paNodeInner__top">
-            <span className="paNodeInner__icon">
-              <Icon name={label.icon} />
-            </span>
-            <span className="paNodeInner__state">{label.state}</span>
-          </div>
-          <div className="paNodeInner__title">{label.title}</div>
-          <div className="paNodeInner__sub">{label.subtitle}</div>
-        </div>
-      </foreignObject>
+      <text className="paNodeState" x={NODE_W / 2 - 10} y={-NODE_H / 2 + 14} textAnchor="end">
+        {label.state}
+      </text>
+      <text className="paNodeLabel" x={-NODE_W / 2 + 10} y={2}>
+        {clipLabel(label.title, 18)}
+      </text>
+      <text className="paNodeKind" x={-NODE_W / 2 + 10} y={16}>
+        {clipLabel(label.subtitle, 22)}
+      </text>
     </g>
   );
 }
@@ -186,6 +143,24 @@ export function PredictiveAuthorityPage({
   const [groupsCollapsed, setGroupsCollapsed] = useState<Record<string, boolean>>({});
   const [matrixOpen, setMatrixOpen] = useState(true);
   const [fitTick, setFitTick] = useState(0);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+
+  const showTip = useCallback((text: string | null, event?: React.MouseEvent<SVGGElement>) => {
+    const panel = panelRef.current;
+    if (!text || !event || !panel) {
+      setTip(null);
+      return;
+    }
+    const box = panel.getBoundingClientRect();
+    const rawX = event.clientX - box.left + 14;
+    const rawY = event.clientY - box.top + 14;
+    setTip({
+      text,
+      x: Math.min(Math.max(8, box.width - 228), Math.max(8, rawX)),
+      y: Math.min(Math.max(8, box.height - 64), Math.max(8, rawY)),
+    });
+  }, []);
 
   useEffect(() => {
     setHistoricalEventId(initialEventId);
@@ -565,7 +540,7 @@ export function PredictiveAuthorityPage({
       </div>
 
       <div className={classNames('paLayout', !inspectorOpen && 'paLayout--wide')}>
-        <div className="paGraphPanel" data-testid="graph-panel">
+        <div className="paGraphPanel" data-testid="graph-panel" ref={panelRef}>
           <div className="paCanvasMeta">
             <span data-testid="observed-predicted-banner">
               {mode === 'before'
@@ -588,7 +563,11 @@ export function PredictiveAuthorityPage({
               <marker id="paArrowHazard" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
                 <path d="M0,0 L6,3 L0,6 Z" className="paArrowHead paArrowHead--hazard" />
               </marker>
+              <clipPath id="paViewportClip">
+                <rect x="0" y="0" width={GRAPH_W} height={GRAPH_H} />
+              </clipPath>
             </defs>
+            <g clipPath="url(#paViewportClip)" data-testid="graph-clip">
             {mode !== 'before' ? regionLabels : (
               <text x={70} y={22} className="paRegionLabel">
                 OBSERVED / CURRENT
@@ -712,6 +691,14 @@ export function PredictiveAuthorityPage({
               if (groups.some((g) => groupsCollapsed[g.id] && g.memberIds.includes(id))) return null;
               const p = layout[id];
               if (!p) return null;
+              if (
+                p.x < NODE_W / 2 ||
+                p.y < NODE_H / 2 ||
+                p.x > GRAPH_W - NODE_W / 2 ||
+                p.y > GRAPH_H - NODE_H / 2
+              ) {
+                return null;
+              }
               const emph = modeFilter.emphasis[id] || 'primary';
               const op = opacityForEmphasis(emph, mode);
               if (op <= 0) return null;
@@ -726,6 +713,7 @@ export function PredictiveAuthorityPage({
                     onPath={onPath}
                     selected={selectedNode != null && nid(selectedNode) === id}
                     classNames={classNames}
+                    onHover={showTip}
                     onSelect={() => {
                       setSelectedNode(n);
                       setSelectedEdge(null);
@@ -758,7 +746,7 @@ export function PredictiveAuthorityPage({
 
             {showGate && mode !== 'before' ? (
               <g
-                transform={`translate(${layout.__gate__?.x || GRAPH_W - 70},${layout.__gate__?.y || GRAPH_H / 2})`}
+                transform={`translate(${layout.__gate__?.x || GRAPH_W - 96},${layout.__gate__?.y || GRAPH_H / 2})`}
                 data-testid="enforcement-point"
                 data-gate="true"
                 onClick={() => {
@@ -783,7 +771,13 @@ export function PredictiveAuthorityPage({
                 </text>
               </g>
             ) : null}
+            </g>
           </svg>
+          {tip ? (
+            <div className="paTooltip" data-testid="pa-tooltip" role="tooltip" style={{ left: tip.x, top: tip.y }}>
+              {tip.text}
+            </div>
+          ) : null}
 
           {matrixOpen && awsMatrix.aws.length >= 3 && mode !== 'before' ? (
             <div className="paMatrix" data-testid="capability-matrix">

@@ -116,16 +116,13 @@ def test_socket_descriptor_is_refused(tmp_path):
 
 
 def test_closed_descriptor_is_refused(tmp_path):
-    import fcntl
-
-    held = os.open(tmp_path, os.O_RDONLY)
-    closed = fcntl.fcntl(held, fcntl.F_DUPFD, 1000)
-    os.close(held)
-    os.close(closed)
     _install(_guard(), lambda action: _allow())
+    held = os.open(tmp_path, os.O_RDONLY)
+    os.close(held)
     with pytest.raises(VardenBlockedError) as caught:
-        os.open("notes.txt", os.O_RDONLY, dir_fd=closed)
+        os.open("notes.txt", os.O_RDONLY, dir_fd=held)
     assert caught.value.decision.get("reason") == "filesystem_dir_fd_unresolved"
+    assert not (tmp_path / "notes.txt").exists()
 
 
 def test_invalid_descriptor_is_refused():

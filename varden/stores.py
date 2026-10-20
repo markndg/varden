@@ -444,6 +444,19 @@ class EventStore:
                 "matched_rule": matched_rule,
                 "matched_rule_label": matched_rule_label,
                 "trace_id": e.get("trace_id") or action.get("trace_id"),
+                "action_type": action.get("type"),
+                "method": action.get("method"),
+                "coverage_status": (
+                    (action.get("metadata") or {}).get("coverage_status")
+                    or (action.get("metadata") or {}).get("surface_status")
+                    or ""
+                ),
+                "provenance_present": bool(
+                    e.get("trace_id")
+                    or action.get("trace_id")
+                    or (action.get("metadata") or {}).get("provenance")
+                    or (action.get("metadata") or {}).get("session_id")
+                ),
                 "has_predictive": bool(
                     isinstance((action.get("metadata") or {}).get("predictive_authority"), dict)
                     and (action.get("metadata") or {}).get("predictive_authority")

@@ -142,11 +142,11 @@ export function WebShieldPage({ token, onOpenPolicy, helpers }: WebShieldPagePro
         <MetricCard title="Cross-Origin Alerts" value={fmtNum(overview?.cross_origin_alerts)} subtitle={`${fmtNum(overview?.contaminated_outputs)} contaminated outputs`} tone="warn" />
       </div>
 
-      <div className="card">
+      <div className="card webshieldIntro">
         <div className="sectionHeader sectionHeader--tight">
           <div>
-            <div className="eyebrow">Varden Web Shield</div>
-            <h3>Browser WebMCP tool surface</h3>
+            <div className="eyebrow">Tool surface</div>
+            <h3>Browser WebMCP inventory</h3>
           </div>
           <div className="toggleRow">
             {(['inventory', 'approvals', 'sessions'] as Tab[]).map((value) => (
@@ -164,9 +164,7 @@ export function WebShieldPage({ token, onOpenPolicy, helpers }: WebShieldPagePro
           </div>
         </div>
         <p className="muted">
-          Runtime governance and tool-surface security for browser agents: every WebMCP tool a page registers, every
-          invocation an agent makes, and every result a tool returns is normalised, scanned by seven layered
-          classifiers and scored before policy decides what happens next.
+          Registered tools, invocations, and results are normalised and scored before policy acts. Inventory, approvals, and sessions stay on this page.
         </p>
       </div>
 

@@ -179,6 +179,7 @@ ROUTES = [
     ("/ui/coverage-gaps", "Policy coverage gaps"),
     ("/ui/web-shield", "Web Shield"),
     ("/ui/authority", "Authority & Provenance"),
+    ("/ui/threat-intelligence", "Threat Intelligence"),
 ]
 
 

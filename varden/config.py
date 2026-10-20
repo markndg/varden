@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass
 from pathlib import Path
 import os
@@ -45,6 +46,9 @@ class AppConfig:
     # Treat an invalid or missing policy file as fatal even in dev.
     # Always on outside env=dev.
     strict_policy: bool = False
+    # Threat Intelligence is advisory and off by default. The firewall does not
+    # consult it during enforcement. See docs/threat-intelligence.md.
+    threat_intel_enabled: bool = False
     # Hosts allowed to supply X-Forwarded-For. Empty means ignore that header.
     trusted_proxy_hosts: tuple[str, ...] = ()
     # Explicit operator override for binding dev to a non-loopback address.
@@ -54,7 +58,6 @@ class AppConfig:
 
     @classmethod
     def from_env(cls) -> "AppConfig":
-
         host = os.getenv("VARDEN_HOST", "127.0.0.1")
         port = os.getenv("VARDEN_PORT", "8000")
         env_name = os.getenv("VARDEN_ENV", "production")
@@ -76,8 +79,8 @@ class AppConfig:
             auth_db_path=os.getenv("VARDEN_AUTH_DB_PATH", "varden_auth.db"),
             policy_file=os.getenv("VARDEN_POLICY_FILE", "policy.json"),
             signing_secret=os.getenv("VARDEN_SIGNING_SECRET", "change-me"),
-            host=os.getenv("VARDEN_HOST", "127.0.0.1"),
-            port=int(os.getenv("VARDEN_PORT", "8000")),
+            host=host,
+            port=int(port),
             queue_backend=os.getenv("VARDEN_QUEUE_BACKEND", "sqlite"),
             redis_url=os.getenv("VARDEN_REDIS_URL", "redis://localhost:6379/0"),
             worker_poll_interval=float(os.getenv("VARDEN_WORKER_POLL_INTERVAL", "1.0")),
@@ -95,7 +98,7 @@ class AppConfig:
             ingest_rate_limit_per_minute=int(os.getenv("VARDEN_INGEST_RATE_LIMIT_PER_MINUTE", "12000")),
             stream_connect_rate_limit_per_minute=int(os.getenv("VARDEN_STREAM_CONNECT_RATE_LIMIT_PER_MINUTE", "120")),
             webhook_signing_secret=os.getenv("VARDEN_WEBHOOK_SIGNING_SECRET", "change-me-webhook"),
-            public_base_url = os.getenv("VARDEN_PUBLIC_BASE_URL",f"http://{host}:{port}"),
+            public_base_url=os.getenv("VARDEN_PUBLIC_BASE_URL", f"http://{host}:{port}"),
             backup_dir=os.getenv("VARDEN_BACKUP_DIR", "backups"),
             enable_dev_bootstrap=enable_dev_bootstrap,
             trusted_proxy_hosts=proxies,
@@ -106,6 +109,7 @@ class AppConfig:
             max_output_body_bytes=int(os.getenv("VARDEN_MAX_OUTPUT_BODY_BYTES", "450000")),
             bootstrap_admin_api_key=(os.getenv("VARDEN_BOOTSTRAP_ADMIN_API_KEY") or None),
             strict_policy=os.getenv("VARDEN_STRICT_POLICY", "false").lower() in {"1", "true", "yes"},
+            threat_intel_enabled=os.getenv("VARDEN_TI_ENABLED", "false").lower() in {"1", "true", "yes"},
         )
 
     @classmethod

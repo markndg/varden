@@ -87,4 +87,14 @@ describe('predictiveGraphLayout', () => {
     ]);
     expect(primary.pattern).toContain('privileged');
   });
+
+  it('keeps node centers inset from the viewport edges', () => {
+    const layout = computeStableLayout(demoNodes as any, 980, 460);
+    for (const point of Object.values(layout)) {
+      expect(point.x).toBeGreaterThanOrEqual(90);
+      expect(point.x).toBeLessThanOrEqual(890);
+      expect(point.y).toBeGreaterThanOrEqual(40);
+      expect(point.y).toBeLessThanOrEqual(420);
+    }
+  });
 });

@@ -274,4 +274,3 @@ A control-plane timeout with `fail_mode=open` is still a transport failure. An a
 ### Tests
 
 `tests/security/pass2/test_p2_decision_correctness.py` covers equivalent URLs, forged identity, surface and domain spoofing, aliases, metadata category, DNS-rebinding marking, redirects, MCP method aliases and discovery, unknown types, and `fail_mode=open`.
-

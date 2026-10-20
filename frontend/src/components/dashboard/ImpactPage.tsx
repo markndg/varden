@@ -219,7 +219,8 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
   const selectedRow = bucketRows.find((row: any) => row.id === selectedRuleId) || bucketRows[0] || null;
   const maxBucketValue = Math.max(...bucketRows.map((row: any) => analyticsMode === 'detections' ? row.detections : analyticsMode === 'fp' ? row.falsePositiveRate : row.impactScore), 1);
   const allDetections = bucketRows.reduce((sum: number, row: any) => sum + row.detections, 0);
-  const activeRules = bucketRows.filter((row: any) => row.detections > 0).length;
+  const enabledRules = bucketRows.filter((row: any) => row.enabled).length;
+  const matchedRules = bucketRows.filter((row: any) => row.detections > 0).length;
   const selectedFalsePositiveRate = Math.max(0, Math.min(100, Number(selectedRow?.falsePositiveRate || 0)));
   const donutStyle = { background: `conic-gradient(rgba(255,191,90,.95) 0 ${selectedFalsePositiveRate}%, rgba(255,255,255,.08) ${selectedFalsePositiveRate}% 100%)` };
 
@@ -241,7 +242,7 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
               <div className="toggleRow">
                 <button type="button" className={classNames('segmented', analyticsMode === 'impact' && 'is-active')} onClick={() => setAnalyticsMode('impact')}>Impact</button>
                 <button type="button" className={classNames('segmented', analyticsMode === 'detections' && 'is-active')} onClick={() => setAnalyticsMode('detections')}>Detections</button>
-                <button type="button" className={classNames('segmented', analyticsMode === 'fp' && 'is-active')} onClick={() => setAnalyticsMode('fp')}>False positive</button>
+                <button type="button" className={classNames('segmented', analyticsMode === 'fp' && 'is-active')} onClick={() => setAnalyticsMode('fp')} title="Sort by the false-positive proxy. This is not a verified false-positive rate.">FP proxy</button>
               </div>
             </div>
           </div>
@@ -254,13 +255,13 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
             ))}
           </div>
           <div className="impactSummaryRow">
-            <div className="bucketCard"><span>Visible rules</span><strong>{bucketRows.length}</strong></div>
-            <div className="bucketCard"><span>Active rules</span><strong>{activeRules}</strong></div>
-            <div className="bucketCard"><span>Detections</span><strong>{allDetections}</strong></div>
-            <div className="bucketCard"><span>Mode</span><strong>{analyticsMode}</strong></div>
+            <div className="bucketCard" title="Rules configured in this bucket"><span>Configured</span><strong>{bucketRows.length}</strong></div>
+            <div className="bucketCard" title="Configured rules that are enabled"><span>Enabled</span><strong>{enabledRules}</strong></div>
+            <div className="bucketCard" title="Enabled or configured rules with at least one match in the selected window"><span>Matched</span><strong>{matchedRules}</strong></div>
+            <div className="bucketCard" title="Events attributed to rules in this bucket"><span>Detections</span><strong>{allDetections}</strong></div>
           </div>
           <div className="impactTable">
-            <div className="impactTable__header"><span>Rule</span><span>Annotations</span><span>{analyticsMode === 'impact' ? 'Impact' : analyticsMode === 'detections' ? 'Detections' : 'False positive'}</span><span>Coverage</span><span>Enabled</span><span>False positive</span></div>
+            <div className="impactTable__header"><span>Rule</span><span>Annotations</span><span>{analyticsMode === 'impact' ? 'Impact' : analyticsMode === 'detections' ? 'Detections' : 'FP proxy'}</span><span>Coverage</span><span>Enabled</span><span title="Proxy from low-risk and localhost hits. Not a verified false-positive rate.">FP proxy</span></div>
             <div className="impactTable__body">
               {bucketRows.length ? bucketRows.map((row: any) => {
                 const heatValue = analyticsMode === 'detections' ? row.detections : analyticsMode === 'fp' ? row.falsePositiveRate : row.impactScore;
@@ -288,7 +289,7 @@ export function ImpactPage({ overview, policy, onOpenDecision, onOpenRules, help
               <div className="impactTrendCard"><div className="subheading">Recent trend</div><div className="impactTrend">{selectedRow.timeline.map((point: any) => { const max = Math.max(...selectedRow.timeline.map((entry: any) => entry.count), 1); const height = Math.max(10, (point.count / max) * 100); return (<div key={point.day} className="impactTrend__barWrap" title={`${point.day} · ${point.count} hits`}><div className="impactTrend__bar" style={{ height: `${height}%` }} /><span>{point.day.slice(5)}</span></div>); })}</div></div>
               <div className="layout layout--impactLists"><div className="impactListCard"><div className="subheading">Top agents</div><div className="barList">{selectedRow.topAgents.map(([label, value]: any) => (<div key={label} className="barList__row"><span>{label}</span><div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topAgents[0]?.[1] || 1, 1)) * 100}%` }} /></div><strong>{value}</strong></div>))}</div></div><div className="impactListCard"><div className="subheading">Top tools</div><div className="barList">{selectedRow.topTools.map(([label, value]: any) => (<div key={label} className="barList__row"><span>{label}</span><div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topTools[0]?.[1] || 1, 1)) * 100}%` }} /></div><strong>{value}</strong></div>))}</div></div></div>
               <div className="impactListCard"><div className="subheading">Top domains</div><div className="barList">{selectedRow.topDomains.map(([label, value]: any) => (<div key={label} className="barList__row"><span>{label}</span><div className="barList__track"><div className="barList__fill" style={{ width: `${(value / Math.max(selectedRow.topDomains[0]?.[1] || 1, 1)) * 100}%` }} /></div><strong>{value}</strong></div>))}</div></div>
-              <div className="impactListCard"><div className="subheading">False positive candidates</div><div className="eventRail">{selectedRow.falsePositiveCandidates.length ? selectedRow.falsePositiveCandidates.map((event: any) => (<button key={event.id} type="button" className="eventRow" onClick={() => onOpenDecision(event.id)}><div className={classNames('eventRow__dot', `is-${statusTone(event.outcome || eventOutcomeStatus(event))}`)} /><div className="eventRow__main"><div className="eventRow__title">{event.tool || 'event'} <span className={`badge badge--${statusTone(event.outcome || eventOutcomeStatus(event))}`}>{event.outcome || eventOutcomeStatus(event)}</span></div><div className="eventRow__meta">{event.agent_name || 'unknown'} · {event.domain || 'local'} · risk {event.risk_score || 0}</div></div><div className="eventRow__score">{event.id}</div></button>)) : <div className="emptyState emptyState--compact"><strong>No false positive candidates surfaced</strong><span className="muted">Once operator feedback exists, this section can be upgraded from proxy to confirmed false positives.</span></div>}</div></div>
+              <div className="impactListCard"><div className="subheading">False-positive proxy candidates</div><p className="muted">Low-risk or localhost hits used as a proxy. Not confirmed false positives.</p><div className="eventRail">{selectedRow.falsePositiveCandidates.length ? selectedRow.falsePositiveCandidates.map((event: any) => (<button key={event.id} type="button" className="eventRow" onClick={() => onOpenDecision(event.id)}><div className={classNames('eventRow__dot', `is-${statusTone(event.outcome || eventOutcomeStatus(event))}`)} /><div className="eventRow__main"><div className="eventRow__title">{event.tool || 'event'} <span className={`badge badge--${statusTone(event.outcome || eventOutcomeStatus(event))}`}>{event.outcome || eventOutcomeStatus(event)}</span></div><div className="eventRow__meta">{event.agent_name || 'unknown'} · {event.domain || 'local'} · risk {event.risk_score || 0}</div></div><div className="eventRow__score">{event.id}</div></button>)) : <div className="emptyState emptyState--compact"><strong>No false positive candidates surfaced</strong><span className="muted">Once operator feedback exists, this section can be upgraded from proxy to confirmed false positives.</span></div>}</div></div>
             </>
           ) : <div className="emptyState"><strong>No rule selected</strong><span className="muted">Choose a rule from the heatmap to inspect its blast radius.</span></div>}
         </div>

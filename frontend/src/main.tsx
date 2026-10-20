@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles/app.css';
+import './styles/consistency.css';
 import { CoverageGapsPage } from './components/dashboard/CoverageGapsPage';
 import { ImpactPage as ImpactPageView } from './components/dashboard/ImpactPage';
 import { DecisionPage as DecisionPageView } from './components/dashboard/DecisionPage';
@@ -9,8 +10,9 @@ import { RulesPage as RulesPageView } from './components/dashboard/RulesPage';
 import { WebShieldPage } from './components/dashboard/WebShieldPage';
 import { AuthorityProvenancePage } from './components/dashboard/AuthorityProvenancePage';
 import { PredictiveAuthorityPage } from './components/dashboard/PredictiveAuthorityPage';
+import { ThreatIntelIndicator, ThreatIntelligencePage } from './components/dashboard/ThreatIntelligencePage';
 import { ADVANCED_FIELDS, BUDGET_RULES_BUCKET, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, POLICY_BUCKETS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
-import { detailIdFromLocation, eventIdFromSearch, pageFromLocation, predictiveDeepLink, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch } from './lib/routing';
+import { detailIdFromLocation, eventIdFromSearch, pageFromLocation, predictiveDeepLink, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch, threatIntelligencePath, threatItemIdFromLocation } from './lib/routing';
 import { averageLatencyFromPoints, classNames, fmtNum, fmtTs, fromDateTimeLocalValue, latencyValueFromPoint, toDateTimeLocalValue } from './lib/format';
 import { coerceRuleInput, customRuleEntries, dedupePolicyDoc, ensurePolicyDoc, getBucketRules, getRuleOperator, getRuleValue, isBudgetRulesBucket, mergePolicyWithoutDuplicates, pickFirstNonEmptyBucket, ruleFingerprint, ruleHasStructuralPredicates, rulePredicatesMatchEvent, safeParsePolicy, semanticRuleFingerprint, setRuleOperatorValue, setRuleSimpleValue, summarizeBudgetRule, summarizeRule, summarizeRuleConditions, withBucketRules } from './lib/policy';
 import { clearAuthToken, loadAuthTokenState, persistAuthTokenState } from './lib/authToken';
@@ -431,10 +433,14 @@ function Shell() {
   const [page, setPage] = useState<string>(pageFromLocation(location.pathname));
   const [detailId, setDetailId] = useState<number | null>(detailIdFromLocation(location.pathname));
   const [predictiveEventId, setPredictiveEventId] = useState<number | null>(eventIdFromSearch(location.search));
+  const [threatItemId, setThreatItemId] = useState<string | null>(threatItemIdFromLocation(location.pathname));
+  const [tiStatus, setTiStatus] = useState<any>(null);
   const [overview, setOverview] = useState<DashboardPayload | null>(null);
   const [detail, setDetail] = useState<EventDetail | null>(null);
   const [policy, setPolicy] = useState<PolicyDoc>(ensurePolicyDoc({}));
   const [policyText, setPolicyText] = useState<string>('');
+  const pageRef = useRef(page);
+  const policyDirtyRef = useRef(false);
   const [templates, setTemplates] = useState<any[]>([]);
   const [policyPacks, setPolicyPacks] = useState<any[]>([]);
   const [mcpInventory, setMcpInventory] = useState<any>(null);
@@ -475,9 +481,18 @@ function Shell() {
 
   useEffect(() => {
     const handlePop = () => {
-      setPage(pageFromLocation(location.pathname));
+      const next = pageFromLocation(location.pathname);
+      if (policyDirtyRef.current && pageRef.current === 'rules' && next !== 'rules') {
+        const leave = window.confirm('You have unsaved policy changes. Leave the rules workspace without saving?');
+        if (!leave) {
+          history.pushState({}, '', '/ui/rules');
+          return;
+        }
+      }
+      setPage(next);
       setDetailId(detailIdFromLocation(location.pathname));
       setPredictiveEventId(eventIdFromSearch(location.search));
+      setThreatItemId(threatItemIdFromLocation(location.pathname));
       setRuleFocus(new URLSearchParams(location.search).get('rule') || '');
       setRuleFocusBucket(ruleBucketFromSearch(location.search));
       setRuleFocusToken(ruleFocusTokenFromSearch(location.search));
@@ -641,12 +656,33 @@ function Shell() {
     return () => stream.close();
   }, [token, page, detailId]);
 
+  useEffect(() => {
+    if (!token) return;
+    let stop = false;
+    const load = () => {
+      api<any>('/threat-intelligence/status', {}, token).then((payload) => {
+        if (!stop) setTiStatus(payload);
+      }).catch(() => {});
+    };
+    load();
+    const timer = window.setInterval(load, 60000);
+    return () => {
+      stop = true;
+      window.clearInterval(timer);
+    };
+  }, [token]);
+
   function navigate(next: string, path: string) {
+    if (policyDirtyRef.current && pageRef.current === 'rules' && next !== 'rules') {
+      const leave = window.confirm('You have unsaved policy changes. Leave the rules workspace without saving?');
+      if (!leave) return;
+    }
     history.pushState({}, '', path);
     setPage(next);
     setDetailId(detailIdFromLocation(path));
     const search = '?' + (path.split('?')[1] || '');
     setPredictiveEventId(eventIdFromSearch(search));
+    setThreatItemId(threatItemIdFromLocation(path));
     setRuleFocus(new URLSearchParams(path.split('?')[1] || '').get('rule') || '');
     setRuleFocusBucket(ruleBucketFromSearch(search));
     setRuleFocusToken(ruleFocusTokenFromSearch(search));
@@ -750,6 +786,29 @@ function Shell() {
   const currentScanMode = overview?.config?.scan_mode || 'deep';
   const topbarEventCount = globalAgentFilter ? (scopedOverview?.metrics?.total_events ?? 0) : (overview?.metrics?.total_events ?? 0);
   const topbarP95Ms = globalAgentFilter ? (scopedOverview?.metrics?.p95_decision_latency_ms ?? 0) : (overview?.metrics?.p95_decision_latency_ms ?? 0);
+  const canonicalPolicyText = JSON.stringify(ensurePolicyDoc(policy), null, 2);
+  const policyDirty = policyText.trim().length > 0 && policyText !== canonicalPolicyText;
+  pageRef.current = page;
+  policyDirtyRef.current = policyDirty;
+  const pageEyebrow = page === 'impact' || page === 'rules' || page === 'coverage'
+    ? 'Policy'
+    : page === 'webshield'
+      ? 'Runtime'
+      : page === 'authority' || page === 'predictive' || page === 'decision'
+        ? 'Investigation'
+        : page === 'threat-intelligence'
+          ? 'Intelligence'
+          : 'Operations';
+
+  useEffect(() => {
+    if (!policyDirty) return;
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [policyDirty]);
 
   return (
     <div className="shell">
@@ -775,8 +834,10 @@ function Shell() {
           <button className={classNames('nav__item', page === 'webshield' && 'is-active')} onClick={() => navigate('webshield', '/ui/web-shield')}>Web Shield</button>
           <button className={classNames('nav__item', page === 'authority' && 'is-active')} onClick={() => navigate('authority', '/ui/authority')}>Authority & Provenance</button>
           <button className={classNames('nav__item', page === 'predictive' && 'is-active')} onClick={() => navigate('predictive', '/ui/predictive')}>Predictive</button>
+          <button className={classNames('nav__item', page === 'threat-intelligence' && 'is-active')} onClick={() => navigate('threat-intelligence', '/ui/threat-intelligence')}>Threat Intelligence</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
+        <ThreatIntelIndicator status={tiStatus} />
         <div className="sidebar__section">
           <div className="sidebar__label">Agent scope</div>
           <div
@@ -883,11 +944,11 @@ function Shell() {
       </aside>
 
       <main className="main">
-        <header className={classNames('topbar', 'card', (page === 'authority' || page === 'webshield' || page === 'predictive') && 'topbar--compact')}>
+        <header className="topbar topbar--compact card" data-testid="page-header">
           <div>
-            <div className="eyebrow">Live operations</div>
-            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : page === 'predictive' ? 'Predictive Authority' : 'Trace and flow mission control'}</h1>
-            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where false positives may be hiding.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : page === 'predictive' ? 'What authority this action would create, what becomes reachable, and where Varden interrupts the trajectory.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
+            <div className="eyebrow">{pageEyebrow}</div>
+            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : page === 'predictive' ? 'Predictive Authority' : page === 'threat-intelligence' ? (threatItemId ? 'Threat investigation' : 'Threat Intelligence') : 'Trace and flow mission control'}</h1>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where a false-positive proxy may be hiding.' : page === 'rules' ? 'Edit block, warn, monitor, allow, and budget rules. Changes stay in the builder until you validate and save.' : page === 'decision' ? 'Inspect one decision: the event, the matched rule, and the evidence behind the outcome.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : page === 'predictive' ? 'What authority this action would create, what becomes reachable, and where Varden interrupts the trajectory.' : page === 'threat-intelligence' ? 'External intelligence is untrusted data. Contracts and candidate rules stay inactive until you approve them.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -979,7 +1040,7 @@ function Shell() {
           />
         ) : null}
 
-        {page === 'coverage' && overview ? (
+        {page === 'coverage' ? (
           <CoverageGapsPage
             overview={scopedOverview as DashboardPayload}
             policy={safeParsePolicy(policyText, policy)}
@@ -1010,6 +1071,16 @@ function Shell() {
             initialEventId={predictiveEventId}
             onClearHistorical={() => navigate('predictive', '/ui/predictive')}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
+          />
+        ) : null}
+
+        {page === 'threat-intelligence' ? (
+          <ThreatIntelligencePage
+            token={token}
+            itemId={threatItemId}
+            onOpenItem={(id) => navigate('threat-intelligence', threatIntelligencePath(id))}
+            onOpenList={() => navigate('threat-intelligence', threatIntelligencePath())}
+            onStatus={setTiStatus}
           />
         ) : null}
       </main>
