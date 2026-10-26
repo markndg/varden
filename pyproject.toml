@@ -62,7 +62,7 @@ langchain = [
   "langchain-core>=0.2",
 ]
 providers = [
-  "openai>=1.40,<2",
+  "openai>=1.40,<4",
   "anthropic>=0.39,<1",
 ]
 mcp = [
