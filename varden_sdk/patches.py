@@ -8,7 +8,7 @@ import os
 import subprocess
 from typing import Any, Callable
 
-from varden.runtime.coverage import ENFORCED, PARTIAL, UNCOVERED, get_coverage_registry
+from varden.runtime.coverage import PARTIAL, UNCOVERED, get_coverage_registry
 from varden.runtime.modes import is_enforcing
 
 SHELL_ELEVATED = frozenset(
@@ -64,6 +64,30 @@ def _blocked_error(guard: Any):
     return VardenBlockedError
 
 
+def _call_path(args: tuple[Any, ...], kwargs: dict[str, Any], index: int, names: tuple[str, ...]) -> Any:
+    """Read a path from positional arguments or the matching keyword.
+
+    ``os.remove(path=...)`` and ``os.rename(src=..., dst=...)`` are real
+    Python calls. Looking only at ``args`` skips mediation and still runs
+    the original function.
+    """
+    if len(args) > index:
+        return args[index]
+    for name in names:
+        if name in kwargs:
+            return kwargs[name]
+    return None
+
+
+def _os_open_writes(flags: Any) -> bool:
+    try:
+        value = int(flags)
+    except (TypeError, ValueError):
+        return True
+    write_bits = os.O_WRONLY | os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_TRUNC
+    return bool(value & write_bits)
+
+
 def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
     try:
         import urllib.request as urllib_request
@@ -84,33 +108,108 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
 
     @functools.wraps(original)
     def wrapper(url, *args, **kwargs):
-        from varden_sdk.sdk import current_guard
+        from varden_sdk.sdk import _authorize_http, current_guard
 
         current = current_guard() or guard
         url_s = url if isinstance(url, str) else getattr(url, "full_url", None) or str(url)
         if hasattr(current, "_is_control_plane_url") and current._is_control_plane_url(url_s):
             return original(url, *args, **kwargs)
         payload = {"url": url_s, "args": list(args), "kwargs": {k: str(type(v)) for k, v in kwargs.items()}}
-        result = current.guarded_action(
-            type="http_request",
+        from varden.destination_binding import (
+            DestinationBindingError,
+            pinned_connection,
+            resolve_binding,
+            urllib_proxy_url,
+        )
+
+        proxy = urllib_proxy_url(str(url_s))
+        binding = resolve_binding(str(url_s), socket_bound=proxy is None, proxy=proxy)
+        canonical, _result, binding = _authorize_http(
+            current,
             tool="urllib",
             url=str(url_s),
             method="GET",
             args=payload,
             payload=payload,
             metadata={"runtime": {"surface": "http", "boundary": True}},
+            binding=binding,
         )
-        if result and result.blocked and _enforcing(current):
-            raise _blocked_error(current)(f"urllib request to {url_s} blocked", result.decision)
-        return original(url, *args, **kwargs)
+        target = canonical if isinstance(url, str) else url
+        if not isinstance(url, str) and hasattr(url, "full_url") and canonical != url_s:
+            try:
+                url.full_url = canonical
+            except Exception:
+                target = canonical
+        try:
+            with pinned_connection(binding):
+                return original(target, *args, **kwargs)
+        except DestinationBindingError as exc:
+            from varden_sdk.sdk import VardenBlockedError
+
+            raise VardenBlockedError(
+                f"destination binding failed: {exc.code}",
+                {"action": "block", "reason": f"destination_binding_{exc.code}", "effective_action": "block"},
+            ) from exc
 
     urllib_request.urlopen = wrapper
     sdk_mod._WRAPPERS[key] = wrapper
+    redirect_key = "urllib.request.HTTPRedirectHandler.redirect_request"
+    if redirect_key not in originals:
+        originals[redirect_key] = urllib_request.HTTPRedirectHandler.redirect_request
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            from varden_sdk.sdk import _authorize_http, current_guard
+
+            current = current_guard() or guard
+            payload = {"url": str(newurl), "redirect_from": getattr(req, "full_url", None)}
+            from varden.destination_binding import resolve_binding, urllib_proxy_url
+
+            proxy = urllib_proxy_url(str(newurl))
+            binding = resolve_binding(str(newurl), socket_bound=proxy is None, proxy=proxy)
+            canonical, _result, binding = _authorize_http(
+                current,
+                tool="urllib",
+                url=str(newurl),
+                method="GET",
+                args=payload,
+                payload=payload,
+                metadata={"runtime": {"surface": "http", "boundary": True, "redirect": True}},
+                binding=binding,
+            )
+            # The redirect connection happens after this method returns, still
+            # inside the caller's pin. Hold this hop until urlopen returns.
+            from varden.destination_binding import note_redirect_binding
+
+            note_redirect_binding(binding)
+            return originals[redirect_key](self, req, fp, code, msg, headers, canonical)
+
+        urllib_request.HTTPRedirectHandler.redirect_request = redirect_request
     try:
+        def _check_urllib() -> bool:
+            from varden.destination_binding import transport_binding_installed
+
+            transport_ok = transport_binding_installed()
+            url_ok = urllib_request.urlopen is wrapper
+            surface = get_coverage_registry().get("http.urllib")
+            if surface is not None:
+                surface.evidence = {
+                    **(surface.evidence or {}),
+                    "url_policy": bool(url_ok),
+                    "socket_binding": bool(transport_ok),
+                    "binding_scope": "operation" if transport_ok else "unavailable",
+                }
+            return bool(url_ok and transport_ok)
+
         get_coverage_registry().install_interceptor(
             "http.urllib",
-            checker=lambda: urllib_request.urlopen is wrapper,
+            checker=_check_urllib,
             interceptor="urllib.request.urlopen",
+            limitations=[
+                "urllib.request.urlopen only; lower-level handlers may differ.",
+                "A direct connection dials only the addresses authorized for that urlopen. Redirect hops push their own authorization in the same context.",
+                "Environment proxies are not destination-bound for the target host.",
+                "socket.getaddrinfo is not rewritten for other callers.",
+            ],
         )
     except RuntimeError:
         get_coverage_registry().mark(
@@ -124,11 +223,92 @@ def patch_urllib(guard: Any, originals: dict[str, Any]) -> None:
 
 
 def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
+    import asyncio
     import contextvars
+    import itertools
+    import threading
 
     from varden.runtime import filesystem as fs_mod
 
-    _fs_depth: contextvars.ContextVar[int] = contextvars.ContextVar("varden_fs_depth", default=0)
+    # Path-scoped continuation of a call that has already been authorized.
+    # The token is live only until the original syscall returns, and only for
+    # the task or thread that started it. A copied context in another task or
+    # thread does not inherit the bypass. The set is installed only around the
+    # original syscall, never around policy evaluation.
+    _fs_passthrough_ids: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+        "varden_fs_passthrough_id", default=None
+    )
+    _fs_passthrough_live: dict[int, tuple[tuple[str, int], frozenset[str]]] = {}
+    _fs_passthrough_seq = itertools.count()
+
+    def _fs_owner() -> tuple[str, int]:
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        if task is not None:
+            return ("task", id(task))
+        return ("thread", threading.get_ident())
+
+    def _fs_identity(path: Any) -> str | None:
+        if path is None or isinstance(path, int):
+            return None
+        try:
+            text = os.fsdecode(os.fspath(path))
+        except (TypeError, ValueError):
+            return None
+        if not text:
+            return None
+        return os.path.normcase(os.path.abspath(text))
+
+    def _fs_paths_authorized(paths: list[Any]) -> bool:
+        token_id = _fs_passthrough_ids.get()
+        if token_id is None:
+            return False
+        record = _fs_passthrough_live.get(token_id)
+        if record is None or record[0] != _fs_owner():
+            return False
+        allowed = record[1]
+        seen = False
+        for path in paths:
+            if path is None:
+                continue
+            ident = _fs_identity(path)
+            if ident is None or ident not in allowed:
+                return False
+            seen = True
+        return seen
+
+    def _fs_call_original(paths: list[Any], call: Callable[[], Any]) -> Any:
+        idents = frozenset(ident for ident in (_fs_identity(path) for path in paths) if ident)
+        token_id = next(_fs_passthrough_seq)
+        _fs_passthrough_live[token_id] = (_fs_owner(), idents)
+        token = _fs_passthrough_ids.set(token_id)
+        try:
+            return call()
+        finally:
+            _fs_passthrough_ids.reset(token)
+            _fs_passthrough_live.pop(token_id, None)
+
+    def _materialize(path: Any, dir_fd: Any) -> Any:
+        return fs_mod.descriptor_relative_path(path, dir_fd)
+
+    def _refuse_unresolved_dir_fd(current: Any, tool: str, materialized: Any) -> None:
+        if materialized is not fs_mod.DIR_FD_UNRESOLVED:
+            return
+        if _enforcing(current):
+            raise _blocked_error(current)(
+                f"filesystem {tool} blocked: directory descriptor could not be resolved",
+                {"action": "block", "reason": "filesystem_dir_fd_unresolved"},
+            )
+
+    def _nofollow_flags(flags: Any, info: dict[str, Any]) -> Any:
+        if not hasattr(os, "O_NOFOLLOW") or info.get("symlink_involved"):
+            return flags
+        try:
+            return int(flags) | os.O_NOFOLLOW
+        except (TypeError, ValueError):
+            return flags
 
     def _should_enforce(path: Any, mode: str, info: dict[str, Any]) -> bool:
         # Secrets/system always; supply-chain workspace mutations always.
@@ -138,6 +318,15 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         if mutation in {"WRITE_CI", "WRITE_CONFIG", "WRITE_CODE"}:
             return True
         return False
+
+    def _ambiguous_resolution_blocks(current: Any, path: Any, mode: str, info: dict[str, Any]) -> bool:
+        if not (fs_mod.resolution_blocks_under_fail_closed(info) and _enforcing(current) and _fail_closed(current)):
+            return False
+        return bool(
+            _should_enforce(path, mode, info)
+            or info.get("symlink_involved")
+            or info.get("classification") in {"secrets", "system", "unknown"}
+        )
 
     def _guard_filesystem(
         current: Any,
@@ -150,17 +339,11 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         metadata_extra: dict[str, Any] | None = None,
     ) -> None:
         """Raise when policy blocks or when fail-closed resolution is ambiguous."""
-        if fs_mod.resolution_blocks_under_fail_closed(info) and _enforcing(current) and _fail_closed(current):
-            # Ambiguous security-sensitive resolution must not silently ALLOW.
-            if _should_enforce(path, mode, info) or info.get("symlink_involved") or info.get("classification") in {
-                "secrets",
-                "system",
-                "unknown",
-            }:
-                raise _blocked_error(current)(
-                    f"filesystem {tool} blocked: path resolution failed ({info.get('resolution')})",
-                    {"action": "block", "reason": f"filesystem_resolution_{info.get('resolution')}"},
-                )
+        if _ambiguous_resolution_blocks(current, path, mode, info):
+            raise _blocked_error(current)(
+                f"filesystem {tool} blocked: path resolution failed ({info.get('resolution')})",
+                {"action": "block", "reason": f"filesystem_resolution_{info.get('resolution')}"},
+            )
 
         if not _should_enforce(path, mode, info):
             return
@@ -197,6 +380,17 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         newly security-sensitive destination after policy evaluation, fail closed
         under enforcing + fail-closed modes.
         """
+        fresh_canon = fs_mod.canonicalize_path(path, workspace=os.getcwd())
+        prior_eff = prior_info.get("real_path")
+        fresh_eff = fresh_canon.get("real_path")
+        mutated = prior_eff != fresh_eff or (
+            bool(fresh_canon.get("symlink_involved")) and not bool(prior_info.get("symlink_involved"))
+        ) or fresh_canon.get("resolution") != prior_info.get("resolution")
+        if not mutated:
+            # The fresh resolution names the same target. Pattern classification
+            # of that target was already computed for this call. Do not reuse it
+            # across a later open.
+            return prior_info
         fresh = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
         prior_eff = prior_info.get("real_path")
         fresh_eff = fresh.get("real_path")
@@ -231,27 +425,35 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
         def open_wrapper(file, *args, **kwargs):
             from varden_sdk.sdk import current_guard
 
-            if _fs_depth.get() > 0:
+            if _fs_paths_authorized([file]):
                 return originals[key](file, *args, **kwargs)
-            token = _fs_depth.set(_fs_depth.get() + 1)
-            try:
-                current = current_guard() or guard
-                path = file if isinstance(file, (str, os.PathLike)) else None
-                if path is not None:
-                    mode = args[0] if args else kwargs.get("mode", "r")
-                    info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
-                    payload = {
-                        "path": str(path),
-                        "mode": mode,
-                        "classification": info,
-                        "effective_path": info.get("real_path"),
-                        "resolution": info.get("resolution"),
-                    }
-                    _guard_filesystem(current, tool="open", path=path, mode=str(mode), info=info, payload=payload)
-                    _recheck_effective_target(current, tool="open", path=path, mode=str(mode), prior_info=info)
-                return originals[key](file, *args, **kwargs)
-            finally:
-                _fs_depth.reset(token)
+            current = current_guard() or guard
+            path = file if isinstance(file, (str, os.PathLike)) else None
+            if path is not None:
+                mode = args[0] if args else kwargs.get("mode", "r")
+                info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=str(mode))
+                payload = {
+                    "path": str(path),
+                    "mode": mode,
+                    "classification": info,
+                    "effective_path": info.get("real_path"),
+                    "resolution": info.get("resolution"),
+                }
+                _guard_filesystem(current, tool="open", path=path, mode=str(mode), info=info, payload=payload)
+                fresh = _recheck_effective_target(current, tool="open", path=path, mode=str(mode), prior_info=info)
+                if (
+                    hasattr(os, "O_NOFOLLOW")
+                    and not fresh.get("symlink_involved")
+                    and kwargs.get("opener") is None
+                ):
+                    nofollow_kwargs = dict(kwargs)
+
+                    def _opener(opener_path, flags):
+                        return os.open(opener_path, int(flags) | os.O_NOFOLLOW)
+
+                    nofollow_kwargs["opener"] = _opener
+                    return _fs_call_original([file], lambda: originals[key](file, *args, **nofollow_kwargs))
+            return _fs_call_original([file], lambda: originals[key](file, *args, **kwargs))
 
         builtins.open = open_wrapper
 
@@ -266,29 +468,25 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
             def path_open(self, *args, **kwargs):
                 from varden_sdk.sdk import current_guard
 
-                if _fs_depth.get() > 0:
+                if _fs_paths_authorized([self]):
                     return originals[key_po](self, *args, **kwargs)
-                token = _fs_depth.set(_fs_depth.get() + 1)
-                try:
-                    current = current_guard() or guard
-                    mode = args[0] if args else kwargs.get("mode", "r")
-                    info = fs_mod.classify_path(self, workspace=os.getcwd(), mode=str(mode))
-                    payload = {
-                        "path": str(self),
-                        "classification": info,
-                        "mode": mode,
-                        "effective_path": info.get("real_path"),
-                        "resolution": info.get("resolution"),
-                    }
-                    _guard_filesystem(
-                        current, tool="pathlib.Path.open", path=self, mode=str(mode), info=info, payload=payload
-                    )
-                    _recheck_effective_target(
-                        current, tool="pathlib.Path.open", path=self, mode=str(mode), prior_info=info
-                    )
-                    return originals[key_po](self, *args, **kwargs)
-                finally:
-                    _fs_depth.reset(token)
+                current = current_guard() or guard
+                mode = args[0] if args else kwargs.get("mode", "r")
+                info = fs_mod.classify_path(self, workspace=os.getcwd(), mode=str(mode))
+                payload = {
+                    "path": str(self),
+                    "classification": info,
+                    "mode": mode,
+                    "effective_path": info.get("real_path"),
+                    "resolution": info.get("resolution"),
+                }
+                _guard_filesystem(
+                    current, tool="pathlib.Path.open", path=self, mode=str(mode), info=info, payload=payload
+                )
+                _recheck_effective_target(
+                    current, tool="pathlib.Path.open", path=self, mode=str(mode), prior_info=info
+                )
+                return _fs_call_original([self], lambda: originals[key_po](self, *args, **kwargs))
 
             Path.open = path_open
     except Exception:
@@ -307,29 +505,44 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
             def wrapper(*args, **kwargs):
                 from varden_sdk.sdk import current_guard
 
-                if _fs_depth.get() > 0:
+                targets = []
+                if tool in {"os.rename", "os.replace"}:
+                    targets = [
+                        _call_path(args, kwargs, 0, ("src", "path")),
+                        _call_path(args, kwargs, 1, ("dst",)),
+                    ]
+                else:
+                    targets = [_call_path(args, kwargs, 0, ("path", "src"))]
+                if _fs_paths_authorized(targets):
                     return original(*args, **kwargs)
-                token = _fs_depth.set(_fs_depth.get() + 1)
                 try:
                     current = current_guard() or guard
-                    src = args[0] if args else None
-                    dst = args[1] if len(args) > 1 else None
+                    if tool in {"os.rename", "os.replace"}:
+                        src = _materialize(_call_path(args, kwargs, 0, ("src", "path")), kwargs.get("src_dir_fd"))
+                        dst = _materialize(_call_path(args, kwargs, 1, ("dst",)), kwargs.get("dst_dir_fd"))
+                    else:
+                        src = _materialize(_call_path(args, kwargs, 0, ("path", "src")), kwargs.get("dir_fd"))
+                        dst = None
+                    _refuse_unresolved_dir_fd(current, tool, src)
+                    if dst is not None:
+                        _refuse_unresolved_dir_fd(current, tool, dst)
+                    if src is fs_mod.DIR_FD_UNRESOLVED or dst is fs_mod.DIR_FD_UNRESOLVED:
+                        return original(*args, **kwargs)
                     src_info = fs_mod.classify_path(src, workspace=os.getcwd(), mode="w") if src is not None else {}
                     # Dual-target: rename/replace destinations are independently sensitive.
                     if tool in {"os.rename", "os.replace"} and dst is not None:
                         dst_info = fs_mod.classify_path(dst, workspace=os.getcwd(), mode="w")
                         enforce_src = _should_enforce(src, "w", src_info)
                         enforce_dst = _should_enforce(dst, "w", dst_info)
-                        # Resolution failure on either side under fail-closed.
-                        for side, info in (("source", src_info), ("destination", dst_info)):
-                            if fs_mod.resolution_blocks_under_fail_closed(info) and _enforcing(current) and _fail_closed(current):
-                                if _should_enforce(src if side == "source" else dst, "w", info) or info.get(
-                                    "symlink_involved"
-                                ):
-                                    raise _blocked_error(current)(
-                                        f"filesystem {tool} blocked: {side} path resolution failed",
-                                        {"action": "block", "reason": f"filesystem_resolution_{info.get('resolution')}"},
-                                    )
+                        for side, info, side_path in (
+                            ("source", src_info, src),
+                            ("destination", dst_info, dst),
+                        ):
+                            if _ambiguous_resolution_blocks(current, side_path, "w", info):
+                                raise _blocked_error(current)(
+                                    f"filesystem {tool} blocked: {side} path resolution failed",
+                                    {"action": "block", "reason": f"filesystem_resolution_{info.get('resolution')}"},
+                                )
                         if enforce_src or enforce_dst:
                             payload = {
                                 "path": str(src),
@@ -374,33 +587,161 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
                         )
                         if src is not None:
                             _recheck_effective_target(current, tool=tool, path=src, mode="w", prior_info=src_info)
-                    return original(*args, **kwargs)
+                    return _fs_call_original(targets, lambda: original(*args, **kwargs))
                 finally:
-                    _fs_depth.reset(token)
+                    pass
 
             return wrapper
 
         setattr(os, fn_name, _make(originals[key_os], name))
 
+    if hasattr(os, "open") and "os.open" not in originals:
+        originals["os.open"] = os.open
+
+        @functools.wraps(originals["os.open"])
+        def os_open_wrapper(*args, **kwargs):
+            from varden_sdk.sdk import current_guard
+
+            path = _call_path(args, kwargs, 0, ("path", "file"))
+            if _fs_paths_authorized([path]):
+                return originals["os.open"](*args, **kwargs)
+            current = current_guard() or guard
+            flags = args[1] if len(args) > 1 else kwargs.get("flags")
+            if path is None or flags is None:
+                return originals["os.open"](*args, **kwargs)
+            materialized = _materialize(path, kwargs.get("dir_fd"))
+            _refuse_unresolved_dir_fd(current, "os.open", materialized)
+            if materialized is fs_mod.DIR_FD_UNRESOLVED:
+                return originals["os.open"](*args, **kwargs)
+            path = materialized
+            mode = "w" if _os_open_writes(flags) else "r"
+            info = fs_mod.classify_path(path, workspace=os.getcwd(), mode=mode)
+            payload = {
+                "path": str(path),
+                "flags": flags,
+                "classification": info,
+                "effective_path": info.get("real_path"),
+                "resolution": info.get("resolution"),
+                "dir_fd": kwargs.get("dir_fd") is not None,
+            }
+            _guard_filesystem(current, tool="os.open", path=path, mode=mode, info=info, payload=payload)
+            fresh = _recheck_effective_target(current, tool="os.open", path=path, mode=mode, prior_info=info)
+            flags = _nofollow_flags(flags, fresh)
+            call_kwargs = {key: value for key, value in kwargs.items() if key != "dir_fd"}
+            if len(args) > 1:
+                call_args = (path, flags, *args[2:])
+            elif args:
+                call_args = (path,)
+                call_kwargs["flags"] = flags
+            else:
+                call_args = ()
+                call_kwargs["path"] = path
+                call_kwargs["flags"] = flags
+            return _fs_call_original([path], lambda: originals["os.open"](*call_args, **call_kwargs))
+
+        os.open = os_open_wrapper
+
+    for name, fn_name in (("os.link", "link"), ("os.symlink", "symlink")):
+        if not hasattr(os, fn_name) or name in originals:
+            continue
+        originals[name] = getattr(os, fn_name)
+
+        def _make_link(original: Callable[..., Any], tool: str):
+            @functools.wraps(original)
+            def wrapper(*args, **kwargs):
+                from varden_sdk.sdk import current_guard
+
+                src = _call_path(args, kwargs, 0, ("src", "path"))
+                dst = _call_path(args, kwargs, 1, ("dst",))
+                if _fs_paths_authorized([src, dst]):
+                    return original(*args, **kwargs)
+                try:
+                    current = current_guard() or guard
+                    if tool == "os.link":
+                        src = _materialize(src, kwargs.get("src_dir_fd"))
+                        dst = _materialize(dst, kwargs.get("dst_dir_fd"))
+                    else:
+                        dst = _materialize(dst, kwargs.get("dir_fd"))
+                    _refuse_unresolved_dir_fd(current, tool, src)
+                    _refuse_unresolved_dir_fd(current, tool, dst)
+                    if src is fs_mod.DIR_FD_UNRESOLVED or dst is fs_mod.DIR_FD_UNRESOLVED:
+                        return original(*args, **kwargs)
+                    src_info = fs_mod.classify_path(src, workspace=os.getcwd(), mode="w") if src is not None else {}
+                    dst_info = fs_mod.classify_path(dst, workspace=os.getcwd(), mode="w") if dst is not None else {}
+                    for side, info, side_path in (
+                        ("source", src_info, src),
+                        ("destination", dst_info, dst),
+                    ):
+                        if side_path is None:
+                            continue
+                        if _ambiguous_resolution_blocks(current, side_path, "w", info):
+                            raise _blocked_error(current)(
+                                f"filesystem {tool} blocked: {side} path resolution failed",
+                                {"action": "block", "reason": f"filesystem_resolution_{info.get('resolution')}"},
+                            )
+                    enforce_src = _should_enforce(src, "w", src_info) if src is not None else False
+                    enforce_dst = _should_enforce(dst, "w", dst_info) if dst is not None else False
+                    if enforce_src or enforce_dst:
+                        primary = src_info if enforce_src else dst_info
+                        payload = {
+                            "path": None if src is None else str(src),
+                            "destination": None if dst is None else str(dst),
+                            "source_classification": src_info,
+                            "destination_classification": dst_info,
+                            "effective_path": src_info.get("real_path"),
+                            "destination_effective_path": dst_info.get("real_path"),
+                        }
+                        result = current.guarded_action(
+                            type="filesystem",
+                            tool=tool,
+                            args=payload,
+                            payload=payload,
+                            metadata={
+                                "runtime": {"surface": "filesystem", "boundary": True},
+                                "filesystem": primary,
+                                "filesystem_source": src_info,
+                                "filesystem_destination": dst_info,
+                                "sensitivity": primary.get("sensitivity"),
+                                "mutation": primary.get("mutation"),
+                                "required_authority": primary.get("required_authority"),
+                            },
+                        )
+                        if result and result.blocked and _enforcing(current):
+                            raise _blocked_error(current)(f"filesystem {tool} blocked", result.decision)
+                    if src is not None:
+                        _recheck_effective_target(current, tool=tool, path=src, mode="w", prior_info=src_info)
+                    if dst is not None:
+                        _recheck_effective_target(current, tool=tool, path=dst, mode="w", prior_info=dst_info)
+                    return _fs_call_original([src, dst], lambda: original(*args, **kwargs))
+                finally:
+                    pass
+
+            return wrapper
+
+        setattr(os, fn_name, _make_link(originals[name], name))
+
     get_coverage_registry().mark(
         "filesystem",
         status=PARTIAL,
-        interceptor="builtins.open+pathlib+os.remove/unlink/rename/replace",
+        interceptor="builtins.open+pathlib+os.open+os.remove/unlink/rename/replace/link/symlink",
         active=True,
         applicable=True,
         enforcement_mode="partial",
         limitations=[
-            "Python filesystem APIs: ENFORCED for secrets/system paths",
-            "Benign workspace/home reads and writes may not hit the control plane",
-            "Canonical target + symlink-aware classification with re-check before use; residual TOCTOU races remain",
-            "Native extensions / external processes: PARTIAL",
-            "OS-global filesystem: NOT GUARANTEED",
+            "Patched calls: builtins.open, pathlib.Path.open, os.open, os.remove, os.unlink, os.rename, os.replace, os.link, os.symlink (positional and keyword).",
+            "Secrets, system paths, and supply-chain workspace mutations are mediated on those calls. Benign workspace and home reads and writes may not hit the control plane.",
+            "Relative dir_fd paths are joined to the directory descriptor's path on macOS (F_GETPATH) and Linux (/proc/self/fd). An unresolvable relative dir_fd is refused while enforcement is on. Absolute paths ignore dir_fd, matching the kernel.",
+            "A final-component symlink that appears after a non-symlink check fails O_NOFOLLOW on the mediated open. Replacing the inode of a regular file between the check and the syscall is still a race.",
+            "Re-check before the syscall narrows TOCTOU. It does not close a race between that re-check and the kernel operation.",
+            "A path-scoped passthrough covers only the original syscall for paths already authorized, and only for the task or thread that entered it. It is not installed during policy evaluation. A different path, or the same path from another task or thread, is enforced.",
+            "Hard links created before interception are not contained: another name for the same inode is not a path Varden can see. Raw file descriptors, os.read/os.write, and native extensions are not mediated.",
+            "OS-global filesystem isolation is NOT GUARANTEED.",
         ],
     )
 
 
 
-def _subprocess_meta(args: Any) -> dict[str, Any]:
+def _subprocess_meta(args: Any, *, shell: bool = False) -> dict[str, Any]:
     argv = args
     if isinstance(args, (str, bytes)):
         argv = [args]
@@ -417,21 +758,46 @@ def _subprocess_meta(args: Any) -> dict[str, Any]:
     for marker in (" -c ", " /c ", " -e ", " -r ", "bash -c", "sh -c", "zsh -c", "python -c", "node -e"):
         if marker in f" {join} " or join.startswith(marker.strip()):
             elevated = True
+    if shell:
+        elevated = True
     return {
         "execution_surface": "subprocess",
         "runtime": {"surface": "subprocess", "boundary": True},
-        "subprocess": {"executable": exe, "argv": [str(x) for x in seq], "elevated_uncertainty": elevated},
+        "subprocess": {
+            "executable": exe,
+            "argv": [str(x) for x in seq],
+            "elevated_uncertainty": elevated,
+            "shell": bool(shell),
+        },
         "authority_hint": "ADMIN" if elevated else "EXECUTE",
     }
+
+
+def _extended_subprocess_payload(popenargs: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Keep enforcement-relevant kwargs visible. Redact environment values."""
+    safe: dict[str, Any] = {}
+    for key, value in kwargs.items():
+        if key == "env":
+            keys = sorted(str(item) for item in value) if isinstance(value, dict) else []
+            safe[key] = {"redacted": True, "keys": keys}
+        elif key in {"shell", "cwd", "executable"} and isinstance(value, (str, bytes, bool, int, type(None))):
+            safe[key] = value
+        else:
+            safe[key] = str(type(value))
+    return {"args": list(popenargs), "kwargs": safe}
 
 
 def patch_subprocess_extended(guard: Any, originals: dict[str, Any]) -> None:
     """Cover call/check_call/check_output/os.system/os.popen beyond Popen/run."""
     for attr in ("call", "check_call", "check_output"):
         key = f"subprocess.{attr}"
-        if key in originals or not hasattr(subprocess, attr):
+        if not hasattr(subprocess, attr):
             continue
-        originals[key] = getattr(subprocess, attr)
+        current_fn = getattr(subprocess, attr)
+        if key in originals and current_fn is not originals[key]:
+            continue
+        if key not in originals:
+            originals[key] = current_fn
 
         def _make(original: Callable[..., Any], tool: str):
             @functools.wraps(original)
@@ -440,8 +806,8 @@ def patch_subprocess_extended(guard: Any, originals: dict[str, Any]) -> None:
 
                 current = current_guard() or guard
                 args0 = popenargs[0] if popenargs else kwargs.get("args")
-                meta = _subprocess_meta(args0)
-                payload = {"args": list(popenargs), "kwargs": {k: str(type(v)) for k, v in kwargs.items()}}
+                meta = _subprocess_meta(args0, shell=bool(kwargs.get("shell")))
+                payload = _extended_subprocess_payload(popenargs, kwargs)
                 result = current.guarded_action(
                     type="tool_call",
                     tool=tool,
@@ -552,6 +918,9 @@ def restore_extended(originals: dict[str, Any]) -> None:
         "os.unlink": ("os", "unlink"),
         "os.rename": ("os", "rename"),
         "os.replace": ("os", "replace"),
+        "os.open": ("os", "open"),
+        "os.link": ("os", "link"),
+        "os.symlink": ("os", "symlink"),
         "subprocess.call": ("subprocess", "call"),
         "subprocess.check_call": ("subprocess", "check_call"),
         "subprocess.check_output": ("subprocess", "check_output"),

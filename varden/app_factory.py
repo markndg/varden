@@ -10,7 +10,6 @@ from collections import Counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, StreamingResponse
@@ -57,15 +56,34 @@ from .runtime.coverage_store import RuntimeCoverageStore
 from .runtime.routes import register_runtime_routes
 from .runtime.session_provenance import SessionProvenanceStore
 from .predictive_authority.routes import register_predictive_authority_routes
+from .threat_intelligence.config import ThreatIntelConfig
+from .threat_intelligence.routes import register_threat_intelligence_routes
+from .threat_intelligence.scheduler import IntelligenceScheduler
+from .threat_intelligence.service import ThreatIntelService
 
 
 class EventStreamBroker:
+    """Fan-out for dashboard server-sent events.
+
+    ``close`` wakes every subscriber with a sentinel so generators return.
+    Shutdown calls this before Uvicorn waits on open connections. The
+    dashboard otherwise holds ``/stream/updates`` forever.
+    """
+
     def __init__(self):
         self._subscribers: set[asyncio.Queue] = set()
+        self._closed = False
         self.last_message: dict[str, Any] | None = None
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     async def subscribe(self):
         queue: asyncio.Queue = asyncio.Queue()
+        if self._closed:
+            queue.put_nowait(None)
+            return queue
         self._subscribers.add(queue)
         return queue
 
@@ -73,10 +91,20 @@ class EventStreamBroker:
         self._subscribers.discard(queue)
 
     def publish(self, message: dict[str, Any]):
+        if self._closed or message is None:
+            return
         self.last_message = message
         for queue in list(self._subscribers):
             try:
                 queue.put_nowait(message)
+            except Exception:
+                pass
+
+    def close(self):
+        self._closed = True
+        for queue in list(self._subscribers):
+            try:
+                queue.put_nowait(None)
             except Exception:
                 pass
 
@@ -171,13 +199,24 @@ def create_app(config: AppConfig) -> FastAPI:
         },
     )
     broker = EventStreamBroker()
+    threat_config = ThreatIntelConfig.from_env(
+        enabled=config.threat_intel_enabled,
+        db_path=config.db_path,
+        policy_file=config.policy_file,
+    )
+    threat_service = ThreatIntelService(threat_config, policy_engine=policy, event_store=event_store)
+    threat_scheduler = IntelligenceScheduler(threat_service)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         background.start()
+        if threat_config.enabled:
+            threat_scheduler.start()
         try:
             yield
         finally:
+            broker.close()
+            threat_scheduler.stop()
             background.stop()
 
     publish_docs = config.env == "dev" or config.enable_api_docs
@@ -190,6 +229,11 @@ def create_app(config: AppConfig) -> FastAPI:
         openapi_url="/openapi.json" if publish_docs else None,
     )
     app.state.event_broker = broker
+
+    def request_shutdown() -> None:
+        broker.close()
+
+    app.request_shutdown = request_shutdown
 
     # Pre-parse body-size enforcement (docs/web-shield-hardening-review.md #8).
     # Must be the outermost user middleware so oversized bodies are rejected
@@ -481,7 +525,7 @@ def create_app(config: AppConfig) -> FastAPI:
 
     def status_from_decision(action: str | None) -> str:
         text = str(action or "").strip().lower()
-        if text in {"block", "blocked"}:
+        if text in {"block", "blocked", "require_approval", "approval_required", "unsupported"}:
             return "blocked"
         # require_approval without a scoped approval token must not execute.
         # Until SDK-scoped approvals exist, treat as blocked at the guard boundary.
@@ -509,16 +553,17 @@ def create_app(config: AppConfig) -> FastAPI:
         return record
 
     def normalize_action(payload: dict[str, Any], tenant_id: str) -> Action:
+        from .action_identity import bind_security_identity
+
         metadata = strip_untrusted_metadata(payload.get("metadata"))
         args = payload.get("args") or {}
-        url = payload.get("url")
-        domain = payload.get("domain") or (urlparse(url).netloc if url else None)
-        return Action(
-            type=payload.get("type", "tool_call"),
+        claimed_type = payload.get("type")
+        action = Action(
+            type=claimed_type if isinstance(claimed_type, str) else "",
             tool=payload.get("tool"),
             method=payload.get("method"),
-            url=url,
-            domain=domain,
+            url=payload.get("url"),
+            domain=payload.get("domain"),
             args=args,
             metadata=metadata,
             agent_name=payload.get("agent_name"),
@@ -528,6 +573,9 @@ def create_app(config: AppConfig) -> FastAPI:
             # Tenant comes from the credential, never from the client payload.
             tenant_id=tenant_id,
         )
+        action._claimed_type = claimed_type
+        bind_security_identity(action)
+        return action
 
     def enrich_action(action: Action, payload: Any) -> Action:
         meta = dict(action.metadata or {})
@@ -741,6 +789,15 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception:
             # Predictive Authority must never bypass or break core enforcement.
             pass
+        identity = (action.metadata or {}).get("identity") if isinstance(action.metadata, dict) else None
+        if isinstance(identity, dict) and identity.get("decision") in {"block", "unsupported"}:
+            if decision.action not in {"block", "unsupported", "require_approval"}:
+                decision = Decision(
+                    action=identity["decision"],
+                    reason=f"action identity {identity.get('rejection') or identity['decision']}",
+                    matched_rule={"type": "action_identity", "code": identity.get("rejection")},
+                    effective_action=identity["decision"],
+                )
         from .token_budget import BUDGET_EXECUTES
 
         if budget_reservation_ids and decision.action not in BUDGET_EXECUTES:
@@ -767,7 +824,7 @@ def create_app(config: AppConfig) -> FastAPI:
             "tenant_id": tenant_id,
         }
         action, decision = evaluate_action(action_payload, {"args": args, "kwargs": kwargs}, tenant_id)
-        if decision.action == "block":
+        if decision.action in {"block", "unsupported"}:
             persist_event(action=action, decision=decision, status="blocked", input_payload={"args": args, "kwargs": kwargs}, replay_key=tool_name, error=f"[Varden BLOCKED] {decision.reason}")
             raise HTTPException(status_code=403, detail=f"[Varden BLOCKED] {decision.reason}")
         result = blaze.execute_local({"args": args, "kwargs": kwargs}) if action.route_target == "local_blaze" else {"status": "cloud_ok"}
@@ -877,6 +934,14 @@ def create_app(config: AppConfig) -> FastAPI:
     def ui_predictive():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
+    @app.get("/ui/threat-intelligence", response_class=HTMLResponse)
+    def ui_threat_intelligence():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/threat-intelligence/{item_id}", response_class=HTMLResponse)
+    def ui_threat_intelligence_item(item_id: str):
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
     @app.get("/webshield/lab", response_class=HTMLResponse)
     def webshield_lab_page():
         return (Path(__file__).parent / "web" / "webshield-lab.html").read_text(encoding="utf-8")
@@ -958,14 +1023,17 @@ def create_app(config: AppConfig) -> FastAPI:
             queue = await broker.subscribe()
             try:
                 yield ': connected\n\n'
-                while True:
+                while not broker.closed:
                     try:
-                        message = await asyncio.wait_for(queue.get(), timeout=20.0)
-                        if message.get("tenant_id") and message.get("tenant_id") != record["tenant_id"]:
-                            continue
-                        yield f"data: {json.dumps(message)}\n\n"
+                        message = await asyncio.wait_for(queue.get(), timeout=5.0)
                     except asyncio.TimeoutError:
                         yield ': keepalive\n\n'
+                        continue
+                    if message is None:
+                        break
+                    if message.get("tenant_id") and message.get("tenant_id") != record["tenant_id"]:
+                        continue
+                    yield f"data: {json.dumps(message)}\n\n"
             finally:
                 broker.unsubscribe(queue)
 
@@ -1194,8 +1262,8 @@ def create_app(config: AppConfig) -> FastAPI:
         elif pending_reservations:
             token_budget_store.release_verified(pending_reservations, reason="pre_execution_denial")
 
-        if decision.action == "block":
-            # Block wins even if audit write failed — never convert to allow.
+        if decision.action in {"block", "unsupported"}:
+            # An identity rejection or policy block wins even if audit write failed.
             raise HTTPException(status_code=403, detail=response)
 
         if audit_failed:
@@ -1595,5 +1663,6 @@ def create_app(config: AppConfig) -> FastAPI:
         db_path=config.db_path,
         signing_secret=config.signing_secret,
     )
+    register_threat_intelligence_routes(app, require=require, service=threat_service)
 
     return app

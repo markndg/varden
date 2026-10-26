@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "varden"
-version = "3.0.0"
-description = "Varden Python SDK for runtime guardrails"
+version = "1.0.3"
+description = "Legacy standalone Varden SDK. The repository-root package is the supported distribution."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }

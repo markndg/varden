@@ -257,7 +257,7 @@ export function computeStableLayout(
     byCol[columnFor(n)].push(n);
   }
 
-  const padX = 70;
+  const padX = 96;
   const usableW = Math.max(200, width - padX * 2);
   const activeCols = COLUMN_ORDER.filter((c) => c === 'enforcement' || byCol[c].length || groups.some((g) => collapsed[g.id] && c === 'capability'));
   const colCount = Math.max(1, activeCols.length);
@@ -265,8 +265,8 @@ export function computeStableLayout(
   const placeColumn = (col: NodeColumn, items: Array<{ id: string; sort: string }>, x: number) => {
     const sorted = items.slice().sort((a, b) => a.sort.localeCompare(b.sort));
     const n = Math.max(1, sorted.length);
-    const top = 56;
-    const bottom = height - 48;
+    const top = 78;
+    const bottom = height - 70;
     sorted.forEach((item, i) => {
       const y = top + ((i + 0.5) / n) * (bottom - top);
       positions[item.id] = { x, y };
@@ -299,7 +299,7 @@ export function computeStableLayout(
 
   // Always reserve gate position on the far right for enforcement presentation.
   if (!positions['__gate__']) {
-    positions['__gate__'] = { x: width - 70, y: height / 2 };
+    positions['__gate__'] = { x: width - 96, y: height / 2 };
   }
 
   // Place collapsed group members near group center (hidden but stable for mode switches).

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "varden"
-version = "1.0.3"
+version = "1.1.0"
 description = "Runtime security, policy enforcement, provenance and predictive authority for AI agents"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -60,6 +60,10 @@ postgres = [
 langchain = [
   "langchain>=0.2",
   "langchain-core>=0.2",
+]
+providers = [
+  "openai>=1.40,<2",
+  "anthropic>=0.39,<1",
 ]
 mcp = [
   "mcp[cli]>=1.2,<3",

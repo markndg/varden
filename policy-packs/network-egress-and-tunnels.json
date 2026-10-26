@@ -15,6 +15,15 @@
         "description": "Blocks access to AWS instance metadata credentials."
       },
       {
+        "title": "Block canonical cloud metadata destinations",
+        "name": "block_metadata_destination",
+        "enabled": true,
+        "priority": 100,
+        "type": "http_request",
+        "field:metadata.destination.category": "metadata",
+        "description": "Blocks destinations that canonicalize to a cloud metadata host or address."
+      },
+      {
         "title": "Block GCP metadata endpoint",
         "name": "block_gcp_instance_metadata",
         "enabled": true,

@@ -1,6 +1,7 @@
 export function pageFromLocation(pathname: string) {
   if (pathname.includes('/ui/coverage-gaps')) return 'coverage';
   if (pathname.includes('/ui/web-shield')) return 'webshield';
+  if (pathname.includes('/ui/threat-intelligence')) return 'threat-intelligence';
   if (pathname.includes('/ui/predictive')) return 'predictive';
   if (pathname.includes('/ui/authority')) return 'authority';
   if (pathname.includes('/ui/impact')) return 'impact';
@@ -37,6 +38,21 @@ export function eventIdFromSearch(search: string): number | null {
 
 export function predictiveDeepLink(eventId: number): string {
   return `/ui/predictive?event_id=${encodeURIComponent(String(eventId))}`;
+}
+
+export function threatItemIdFromLocation(pathname: string): string | null {
+  const match = pathname.match(/\/ui\/threat-intelligence\/([^/?#]+)/);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+export function threatIntelligencePath(itemId?: string): string {
+  if (!itemId) return '/ui/threat-intelligence';
+  return `/ui/threat-intelligence/${encodeURIComponent(itemId)}`;
 }
 
 export function hasPredictiveAnalysis(source: any): boolean {

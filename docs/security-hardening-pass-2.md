@@ -1,6 +1,8 @@
 # Security hardening pass 2
 
-Phase 1 is critical containment for release 1.1.0. It is not a published release.
+Phase 1 and phase 2 are unreleased containment on top of 1.0.3. Neither is a published release.
+
+Phase 1 covered endpoint exposure, audit evidence, session contracts, provenance, and secret redaction. Phase 2 covers decision correctness: one action identity, one HTTP destination, MCP authorization for unclassified methods, SSRF canonicalization, and unknown action types.
 
 ## P0-7 — Endpoint exposure
 
@@ -170,3 +172,105 @@ The manifest records that history was rewritten. It does not claim the old plain
 ### Upgrade
 
 Set `VARDEN_SIGNING_SECRET` before running the migration. Existing bearer tokens, approval tokens and the audit hash algorithm are unchanged. SDK and control plane should both be this version so guard payloads are minimized before they are sent; the server still redacts whatever arrives.
+
+## Phase 2 — Decision correctness
+
+These fixes are on the working tree. They are not tagged and not published.
+
+### P0-2 — Canonical action identity
+
+`PolicyEngine.evaluate` binds one server identity before rules run. The caller's original type, URL, domain, and surface claim stay on `metadata.identity` for audit. Policy, the audit fingerprint, and the HTTP client use the canonical type, host, and URL.
+
+A client `domain`, `metadata.runtime.surface`, `metadata.execution_surface`, or a forged `metadata.identity.issuer` does not choose the decision. The surface is derived from the type and the tool. `http_call` and `https_request` are `http_request`. `shell`, `command`, and `subprocess` are `tool_call` on the subprocess surface. Recognized types are case-insensitive. A filesystem deny matches the filesystem family. An allow does not, so `file_read` and `filesystem` stay distinct.
+
+A URL host and a domain claim that disagree are `block` with `conflicting_destination_identity`. That decision is not replaced by an allow rule.
+
+### P0-4 — URL and domain normalization
+
+`canonicalize_destination` is the only HTTP destination parser used for policy and for the socket. Equivalent forms share one host and one canonical URL:
+
+- scheme and host case
+- one trailing dot
+- IDNA A-labels
+- default ports `:80` and `:443` omitted
+- empty path written as `/`
+- fragment dropped from the canonical URL
+
+The original string is kept as `identity.original_url`, with userinfo removed from the stored copy. Audit sanitization catches parser failures. An unmatched IPv6 bracket does not raise out of `canonicalize_destination`.
+
+These forms are rejected rather than parsed:
+
+- userinfo (`https://user:pass@host/`)
+- a backslash in the URL
+- a percent-encoded host
+- a missing scheme or host
+- an authority the URL parser cannot read, including unmatched IPv6 brackets (`malformed_authority`)
+- a bracketed host that is not one IPv6 address (`malformed_ipv6`)
+- a port outside 1–65535, or an empty or non-numeric port (`malformed_port`)
+- decimal, hex, octal, and short IPv4 literals (`2852039166`, `0x7f000001`, `0177.0.0.1`, `127.1`)
+- IPv4-mapped IPv6 (`::ffff:169.254.169.254`)
+- ASCII controls
+- an invalid IDNA label or noncharacter (`invalid_idna`)
+- a Unicode name whose IDNA mapping is not the same name up to ASCII case, including `ß` → `ss`, ideographic dots, and zero-width characters (`ambiguous_idna`)
+
+A Unicode DNS name that round-trips is encoded to its ASCII A-label before the hostname label check. `bücher.example` and `xn--bcher-kva.example` are the same host. The label check runs on that A-label.
+
+`requests`, `httpx`, and `urllib` connect to the canonical URL after the guard decision. A rejected destination does not connect, including when `fail_mode=open` or the control plane returns an allow. Domain rules use host equality. A `contains` check is not destination trust.
+
+### P0-8 — MCP methods that were not classified
+
+The gateway still forwards an explicit discovery set without a policy decision: `initialize`, `ping`, `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, and the notification names listed in `docs/mcp-gateway.md`. The set is exact and disjoint from `tools/call`, `resources/read`, and `prompts/get`. Forwarding a discovery message does not turn its params into a privileged call. `notifications/tools/call` is not on that list.
+
+Those discovery messages stay available when the control plane is down.
+
+Every other well-formed method is `mcp_call` and must receive a guard decision before the downstream server sees it. `Tools/Call` is `tools/call`. A method with leading or trailing space, or an ASCII control, is rejected and not forwarded. A `tools/call`, `resources/read`, or `prompts/get` with an ambiguous name or URI is not forwarded, including when the policy would allow it. A guard exception is a JSON-RPC error and is not forwarded.
+
+A method that is not in the discovery set can still run when policy allows `mcp_call`. That is a policy decision, not a missing classification. Direct MCP connections that never enter the gateway remain `NOT_ROUTED`. This pass does not mark that path `ENFORCED`.
+
+### P1-5 — SSRF canonicalization
+
+Literal destinations are classified, not globally blocked:
+
+| Category | Examples | Default |
+| --- | --- | --- |
+| `metadata` | `169.254.169.254`, `169.254.170.2`, `fd00:ec2::254`, `metadata.google.internal`, `metadata.goog`, `metadata.azure.com` | blocked by the metadata template and the baseline and egress packs |
+| `loopback` | `127.0.0.1`, `::1` | allowed unless a rule says otherwise |
+| `link_local` | other `169.254.0.0/16` and link-local IPv6 | allowed unless a rule says otherwise |
+| `private` | RFC1918 and unique-local | allowed unless a rule says otherwise |
+| `public` / `hostname` | the rest | allowed unless a rule says otherwise |
+
+Redirects are authorized again before the next connection, up to 30 hops. A 301, 302, or 303 becomes GET and drops the body. A cross-host redirect drops `Authorization` on the requests path. httpx already drops it when it builds the next request, except for an HTTP to HTTPS redirect on the same host.
+
+DNS rebinding is not closed. A hostname is marked `dns_rebinding=open`. A literal IP is `not_applicable`. This pass does not resolve DNS and does not pin the connected address. The check and the later `connect()` can still see different answers.
+
+### P1-13 — Unknown action types
+
+Recognized types and their enforcement owners:
+
+| Type | Owner |
+| --- | --- |
+| `http_request` | `sdk:http` |
+| `tool_call` | `sdk:tool` |
+| `llm_call` | `sdk:llm` |
+| `filesystem`, `file_read`, `file_write`, `filesystem_read`, `filesystem_write` | `sdk:filesystem` |
+| `mcp_call` | `mcp_gateway` |
+| `webmcp.*` | `webshield` |
+
+A missing or malformed type is `unsupported`. An unrecognized well-formed type is `unsupported` when no rule matches and the decision would otherwise be the implicit allow, including an explicit `"default": "allow"`. An explicit matching rule still applies, including an explicit allow. A policy `block` stays `block`.
+
+`unsupported` is HTTP 403, audit status `blocked`, and a deny in the SDK. Predictive Authority cannot replace it with `warn` or `allow`. `fail_mode=open` applies only when no decision was delivered. It does not apply to `unsupported`, `block`, or `require_approval`.
+
+A control-plane timeout with `fail_mode=open` is still a transport failure. An ambiguous HTTP destination is not: the SDK records the guard attempt when the control plane answers, and it does not open the socket when enforcement is on, even if that answer is an allow or there is no answer.
+
+### Compatibility
+
+- `guarded_action(type=...)` is unchanged.
+- A custom type that previously ran because nothing matched now needs an explicit matching rule, or it is `unsupported`.
+- A missing `type` is no longer treated as `tool_call`.
+- Userinfo URLs, percent-encoded hosts, ambiguous IP literals, and IPv4-mapped literals are rejected instead of connected.
+- Loopback, private, and generic link-local destinations are not blocked by this pass.
+- The standalone tree `sdks/python/varden_sdk` was already a different SDK and was not updated. The bundled `varden_sdk` package is the one these tests exercise.
+
+### Tests
+
+`tests/security/pass2/test_p2_decision_correctness.py` covers equivalent URLs, forged identity, surface and domain spoofing, aliases, metadata category, DNS-rebinding marking, redirects, MCP method aliases and discovery, unknown types, and `fail_mode=open`.

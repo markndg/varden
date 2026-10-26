@@ -348,13 +348,12 @@ def test_non_deny_decisions_still_execute(action):
     assert counter == ["ran"]
 
 
-def test_fail_open_without_a_decision_still_executes():
+def test_fail_open_without_a_decision_does_not_execute():
+    """A completed HTTP 200 with no decision is not an outage."""
     counter: list = []
     guard = _protect(fail_mode="open")
     _stub(guard, 200, {"detail": "not a decision"})
-    wrapped = guard.guard_tool(_tool(counter), name="delete_database")
-    assert wrapped() == "gone"
-    assert counter == ["ran"]
+    _assert_not_executed(guard, counter)
 
 
 def test_mcp_gateway_non_403_deny_does_not_forward(monkeypatch):

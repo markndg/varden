@@ -32,6 +32,8 @@ UNAUTHENTICATED_ROUTES = {
     ("GET", "/ui/web-shield"),
     ("GET", "/ui/authority"),
     ("GET", "/ui/predictive"),
+    ("GET", "/ui/threat-intelligence"),
+    ("GET", "/ui/threat-intelligence/{item_id}"),
     ("GET", "/webshield/lab"),
     ("GET", "/favicon.ico"),
 }
@@ -130,6 +132,18 @@ def test_authenticated_sdk_startup_still_works(tmp_path):
         json={"action": {"type": "tool_call", "tool": "echo", "args": {}}},
     )
     assert response.status_code == 200
+
+
+def test_threat_intelligence_ui_is_the_public_dashboard_shell(tmp_path):
+    client = _production(tmp_path)
+    shell = client.get("/ui").text
+    for path in ("/ui/threat-intelligence", "/ui/threat-intelligence/item-1"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.text == shell
+        assert "bootstrap_api_key" not in response.text
+    assert client.get("/threat-intelligence/status").status_code == 403
+    assert client.get("/threat-intelligence/items").status_code == 403
 
 
 def test_production_routes_match_the_auth_inventory(tmp_path):
