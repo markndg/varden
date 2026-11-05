@@ -42,3 +42,11 @@ ol { padding-left: 1.1rem; }
 li { margin: 0.35rem 0; }
 .muted { color: var(--muted); }
 a { color: var(--cyan); }
+.steps { list-style: none; display: flex; flex-wrap: wrap; gap: 0.35rem; padding: 0; }
+.steps button { font-size: 0.78rem; }
+.scopes { display: grid; gap: 0.2rem; margin: 0.8rem 0; }
+.graph { width: 100%; background: #171614; border: 1px solid var(--line); }
+.evidence { display: grid; grid-template-columns: 11rem 1fr; gap: 0.25rem 0.8rem; }
+.evidence dt { color: var(--muted); }
+.evidence dd { margin: 0; }
+pre { white-space: pre-wrap; color: var(--muted); }

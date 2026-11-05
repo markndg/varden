@@ -24,9 +24,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - name: Build the buyer UI
+      - name: Frontend scope test and build
         working-directory: demos/security-gauntlet/frontend
-        run: npm install && npm run build
+        run: npm install && npm test && npm run build
       - name: Playwright smoke
         run: |
           python -m playwright install --with-deps chromium

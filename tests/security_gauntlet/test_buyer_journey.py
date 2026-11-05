@@ -72,9 +72,13 @@ def test_buyer_can_run_prompt_injection_and_see_a_real_verdict():
                 raise
             page = browser.new_page()
             page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
-            page.get_by_role("button", name="Run scenario").click()
-            page.get_by_text("VERIFIED_PREVENTED").wait_for(timeout=30_000)
-            assert "OS enforcement in this tree: no" in page.inner_text("body")
+            page.get_by_role("button", name="Execute baseline and protected run").click()
+            page.get_by_text("Overall scenario outcome: VERIFIED_PREVENTED").wait_for(timeout=30_000)
+            body = page.inner_text("body")
+            assert "Baseline execution: OBSERVED_ONLY" in body
+            assert "Protected execution (untrusted_export): VERIFIED_PREVENTED" in body
+            assert "Overall scenario outcome: VERIFIED_PREVENTED" in body
+            assert "OS enforcement in this tree: no" in body
             browser.close()
     finally:
         server.should_exit = True

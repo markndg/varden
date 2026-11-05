@@ -1,4 +1,4 @@
-"""JSON and HTML exports. The HTML is a rendering of the same record."""
+"""JSON and HTML exports. Both render the sealed outcomes, not a second verdict."""
 
 from __future__ import annotations
 
@@ -7,30 +7,44 @@ import json
 from typing import Any
 
 
-def render_html(record: dict[str, Any]) -> str:
-    def cell(value: Any) -> str:
-        return html.escape(json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value))
+def _cell(value: Any) -> str:
+    return html.escape(json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value))
 
+
+def _scope_line(record: dict[str, Any], scope: str, label: str) -> str:
+    item = (record.get("outcomes") or {}).get(scope) or {}
+    verdict = item.get("verdict") or "INCONCLUSIVE"
+    if scope == "protected":
+        claim = str(item.get("claim_leg") or "")
+        if claim and claim in (item.get("legs") or []):
+            label = f"Protected execution ({claim})"
+    return f"<p class=\"verdict\">{_cell(label)}: {_cell(verdict)}</p>"
+
+
+def render_html(record: dict[str, Any]) -> str:
     rows = []
-    for leg in record.get("legs") or []:
+    for leg in [*(record.get("comparison") or []), *(record.get("legs") or [])]:
         rows.append(
             "<tr>"
-            f"<td>{cell(leg.get('name'))}</td>"
-            f"<td>{cell(leg.get('verdict'))}</td>"
-            f"<td>{cell(leg.get('decision'))}</td>"
-            f"<td>{cell(leg.get('control_layer'))}</td>"
-            f"<td>{cell(leg.get('before_sha256'))}</td>"
-            f"<td>{cell(leg.get('after_sha256'))}</td>"
-            f"<td>{cell(leg.get('detail'))}</td>"
+            f"<td>{_cell(leg.get('scope'))}</td>"
+            f"<td>{_cell(leg.get('leg_id'))}</td>"
+            f"<td>{_cell(leg.get('name'))}</td>"
+            f"<td>{_cell(leg.get('verdict'))}</td>"
+            f"<td>{_cell(leg.get('decision'))}</td>"
+            f"<td>{_cell(leg.get('control_layer'))}</td>"
+            f"<td>{_cell(leg.get('before_sha256'))}</td>"
+            f"<td>{_cell(leg.get('after_sha256'))}</td>"
+            f"<td>{_cell(leg.get('detail'))}</td>"
             "</tr>"
         )
-    limits = "".join(f"<li>{cell(item)}</li>" for item in record.get("coverage_limitations") or [])
-    simulated = "".join(f"<li>{cell(item)}</li>" for item in record.get("simulated") or [])
+    limits = "".join(f"<li>{_cell(item)}</li>" for item in record.get("coverage_limitations") or [])
+    simulated = "".join(f"<li>{_cell(item)}</li>" for item in record.get("simulated") or [])
+    basis = _cell(((record.get("outcomes") or {}).get("overall") or {}).get("basis") or "")
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<title>Varden assessment {cell(record.get('run_id'))}</title>
+<title>Varden assessment {_cell(record.get('run_id'))}</title>
 <style>
 body {{ font-family: Georgia, serif; background:#161616; color:#e7e1d6; margin:2rem; }}
 h1 {{ font-weight:500; }}
@@ -40,20 +54,24 @@ td, th {{ border-bottom:1px solid #333; text-align:left; padding:0.4rem; vertica
 </style>
 </head>
 <body>
-<p>Varden {cell(record.get('varden_version'))} · {cell(record.get('commit'))} · {cell(record.get('platform'))}</p>
-<h1>{cell(record.get('title'))}</h1>
-<p class="verdict">{cell(record.get('verdict'))} · {cell(record.get('enforcement_mode'))}</p>
-<p>{cell(record.get('business_impact'))}</p>
-<p>Objective: {cell(record.get('objective'))}</p>
+<p>Varden {_cell(record.get('varden_version'))} · {_cell(record.get('commit'))} · {_cell(record.get('platform'))}</p>
+<p>Enforcement mechanism: {_cell(record.get('enforcement_mode'))}</p>
+<h1>{_cell(record.get('title'))}</h1>
+{_scope_line(record, "baseline", "Baseline execution")}
+{_scope_line(record, "protected", "Protected execution")}
+{_scope_line(record, "overall", "Overall scenario outcome")}
+<p>{basis}</p>
+<p>{_cell(record.get('business_impact'))}</p>
+<p>Objective: {_cell(record.get('objective'))}</p>
 <table>
-<thead><tr><th>Step</th><th>Verdict</th><th>Decision</th><th>Layer</th><th>Before</th><th>After</th><th>Detail</th></tr></thead>
+<thead><tr><th>Scope</th><th>Leg</th><th>Step</th><th>Verdict</th><th>Decision</th><th>Layer</th><th>Before</th><th>After</th><th>Detail</th></tr></thead>
 <tbody>{''.join(rows)}</tbody>
 </table>
 <h2>Limitations</h2>
 <ul>{limits}</ul>
 <h2>Simulated</h2>
 <ul>{simulated}</ul>
-<p>{cell(record.get('operator_change') or '')}</p>
+<p>{_cell(record.get('operator_change') or '')}</p>
 </body>
 </html>
 """

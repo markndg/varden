@@ -37,17 +37,25 @@ The server creates a disposable SQLite database and policy file per run and dele
 
 ## Five-minute buyer script
 
-1. Say what is in this checkout: Varden 1.1.0 policy, provenance, and Predictive Authority. Operating-system mandatory enforcement is not in this tree.
-2. Run **Prompt injection**. The summary is allowed. The export tool is blocked and the local sink hash does not change. The baseline write, with no Varden call, does change a file. The sink is local and synthetic.
-3. Run **Predictive Authority**. Point at the external-post step with the control enabled, and at the same step with it left off. A hazardous path is reachability evidence, not a claim that the agent would have continued.
-4. Run **Mandatory enforcement**. The guarded write stops. The unguarded `open().write()` completes. The OS row is `UNSUPPORTED`.
-5. Open the HTML assessment from **Auditable evidence**. The export does not raise the verdict above the run that produced it.
-6. Run **Coverage gap** last. The file changes. The verdict is not prevention. Say what an operator would have to deploy before that write is inside a boundary.
+Start on Predictive Authority. Each scenario is one real execution of the baseline and the protected workflow. Walk the seven steps on the page. The three lines — baseline, protected claim, overall — are the same text as the JSON and HTML exports.
+
+1. Legitimate task. The agent is asked to investigate issue 42 from repository context.
+2. Hazardous path. Select a node. The nodes are the live authority graph after `/sdk/guard`. A path is reachability, not a completed action.
+3. Baseline. Predictive Authority is off. The local sink is written.
+4. Control. The protected half of the same run sets enforce mode and `VARDEN_PA_DEPLOYMENT=single_worker`.
+5. Protected execution. The first `require_approval` is the intervention. The external-post file is not written when that decision is preventing.
+6. Observed difference. Read the baseline line and the protected line separately. Do not quote only one of them.
+7. Evidence. Open the guard reason, the event id, and the before/after hashes. Then open the HTML assessment.
+
+If time remains, run prompt injection and point at the allowed summary as a different protected step from the prevented export. Run mandatory enforcement and leave the overall line at `UNSUPPORTED` unless a contained Seatbelt probe was actually executed. Run the coverage gap last. The file changes.
+
+Operating-system enforcement is not in this checkout. To probe the unmerged supervisor on macOS, set `VARDEN_INTEGRITY_ROOT` to a checkout of `feature/monitoring-integrity` and run mandatory enforcement again. Linux and Windows stay unverified. A same-user write outside the profile is not prevention.
 
 ## Tests
 
 ```bash
 python -m pytest -q tests/security_gauntlet
+cd demos/security-gauntlet/frontend && npm test && npm run build
 ```
 
-Playwright smoke runs only when the UI has been built and Playwright is installed. Otherwise that test skips.
+Playwright smoke runs when the UI has been built and Playwright Chromium is installed. CI installs Chromium. A missing browser skips the test locally.

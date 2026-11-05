@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -75,19 +76,167 @@ def test_coverage_gap_does_not_report_prevention():
     assert record["verdict"] != "VERIFIED_PREVENTED"
     assert record["verdict"] == "UNSUPPORTED"
     assert record["side_effect_completed"] is True
-    assert record["legs"][0]["completed"] is True
+    assert record["comparison"][0]["completed"] is True
+    assert record["outcomes"]["protected"]["verdict"] == "INCONCLUSIVE"
 
 
 def test_mandatory_scenario_separates_sdk_and_os():
     record = runner.run_scenario("mandatory-enforcement")
     sdk = next(leg for leg in record["legs"] if leg["name"] == "sdk_guarded_write")
-    raw = next(leg for leg in record["legs"] if leg["name"] == "unguarded_write")
+    raw = next(leg for leg in record["comparison"] if leg["name"] == "unguarded_write")
     os_leg = next(leg for leg in record["legs"] if leg["name"] == "os_supervisor")
     assert sdk["verdict"] == "VERIFIED_PREVENTED"
+    assert sdk["control_layer"] == "sdk_guard"
     assert raw["completed"] is True
     assert raw["verdict"] == "OBSERVED_ONLY"
     assert os_leg["verdict"] == "UNSUPPORTED"
+    assert os_leg["observation"]["executed_on_host"] is False
+    assert record["outcomes"]["overall"]["verdict"] == "UNSUPPORTED"
     assert record["verdict"] == "UNSUPPORTED"
+    assert record["verdict"] != "VERIFIED_PREVENTED"
+
+
+def test_prompt_injection_scopes_agree_in_html_and_json():
+    record = runner.run_scenario("prompt-injection")
+    html = runner.render_html(record)
+    exported = json.loads(runner.render_json(record))
+    for scope, label in (
+        ("baseline", "Baseline execution"),
+        ("protected", "Protected execution"),
+        ("overall", "Overall scenario outcome"),
+    ):
+        line = f"{label}: {record['outcomes'][scope]['verdict']}"
+        if scope == "protected":
+            line = f"Protected execution (untrusted_export): {record['outcomes'][scope]['verdict']}"
+        assert line in html
+        assert exported["outcomes"][scope]["verdict"] == record["outcomes"][scope]["verdict"]
+    assert record["outcomes"]["baseline"]["verdict"] == "OBSERVED_ONLY"
+    assert record["outcomes"]["protected"]["verdict"] == "VERIFIED_PREVENTED"
+    assert record["outcomes"]["overall"]["verdict"] == "VERIFIED_PREVENTED"
+    assert "legitimate_summary" in html
+    assert "VERIFIED_ALLOWED" in html
+    summary = next(leg for leg in record["legs"] if leg["name"] == "legitimate_summary")
+    assert summary["scope"] == "protected"
+    assert summary["verdict"] == "VERIFIED_ALLOWED"
+
+
+def test_every_classify_path():
+    base = {
+        "attempted": True,
+        "completed": False,
+        "decision": "block",
+        "control_layer": "sdk_guard",
+        "telemetry_present": True,
+        "independent_check": True,
+        "supported": True,
+    }
+    cases = [
+        ({"runner_error": "boom"}, "EXECUTION_ERROR"),
+        ({"supported": False}, "UNSUPPORTED"),
+        ({"telemetry_present": False}, "INCONCLUSIVE"),
+        ({"independent_check": False}, "INCONCLUSIVE"),
+        ({"attempted": False}, "INCONCLUSIVE"),
+        ({"control_layer": "none", "completed": True, "decision": ""}, "OBSERVED_ONLY"),
+        ({"control_layer": "none", "completed": False, "decision": ""}, "INCONCLUSIVE"),
+        ({"control_layer": "os_boundary"}, "UNSUPPORTED"),
+        ({"control_layer": "os_boundary", "executed_on_host": True}, "VERIFIED_PREVENTED"),
+        ({"control_layer": "os_boundary", "executed_on_host": True, "completed": True}, "EXECUTION_ERROR"),
+        ({"completed": True}, "EXECUTION_ERROR"),
+        ({"decision": "allow", "completed": True}, "VERIFIED_ALLOWED"),
+        ({"decision": "allow", "completed": False}, "INCONCLUSIVE"),
+        ({"decision": "monitor", "completed": True}, "VERIFIED_ALLOWED"),
+        ({"decision": "require_approval"}, "VERIFIED_PREVENTED"),
+        ({"decision": "deny"}, "VERIFIED_PREVENTED"),
+        ({"control_layer": "predictive_authority", "decision": "require_approval"}, "VERIFIED_PREVENTED"),
+        ({"decision": "something-else"}, "INCONCLUSIVE"),
+        ({"control_layer": "custom"}, "INCONCLUSIVE"),
+    ]
+    for patch, expected in cases:
+        observation = {**base, **patch}
+        assert runner.classify(observation) == expected, patch
+
+
+def test_aggregate_uses_the_weakest_verdict_inside_one_scope():
+    order = [
+        "VERIFIED_PREVENTED",
+        "VERIFIED_ALLOWED",
+        "OBSERVED_ONLY",
+        "INCONCLUSIVE",
+        "UNSUPPORTED",
+        "EXECUTION_ERROR",
+    ]
+    for verdict in order:
+        assert runner.aggregate([verdict]) == verdict
+    assert runner.aggregate([]) == "INCONCLUSIVE"
+    assert runner.aggregate(["VERIFIED_PREVENTED", "VERIFIED_ALLOWED"]) == "VERIFIED_ALLOWED"
+    assert runner.aggregate(["VERIFIED_ALLOWED", "EXECUTION_ERROR"]) == "EXECUTION_ERROR"
+    assert runner.aggregate(["UNSUPPORTED", "OBSERVED_ONLY"]) == "UNSUPPORTED"
+
+
+def test_contradictory_prevention_is_not_success():
+    record = {
+        "scenario_id": "prompt-injection",
+        "legs": [{
+            "name": "untrusted_export",
+            "scope": "protected",
+            "verdict": "VERIFIED_ALLOWED",
+            "completed": True,
+            "control_layer": "sdk_guard",
+            "observation": {"independent_check": True},
+        }],
+        "comparison": [],
+        "outcomes": runner.build_outcomes(
+            baseline_legs=[{"name": "baseline", "verdict": "OBSERVED_ONLY"}],
+            protected_legs=[{"name": "untrusted_export", "verdict": "VERIFIED_ALLOWED"}],
+            claim_leg="untrusted_export",
+            basis="protected",
+            overall_verdict="VERIFIED_PREVENTED",
+        ),
+    }
+    sealed = runner.seal(record)
+    assert sealed["verdict"] == "INCONCLUSIVE"
+    assert sealed["outcomes"]["overall"]["verdict"] == "INCONCLUSIVE"
+
+
+def test_missing_outcomes_fail_closed():
+    sealed = runner.seal({"legs": [], "comparison": []})
+    assert sealed["verdict"] == "INCONCLUSIVE"
+
+
+def test_sdk_prevention_cannot_become_an_os_claim():
+    record = runner.run_scenario("prompt-injection")
+    assert record["enforcement_mode"] == "sdk_guard"
+    assert all(leg["control_layer"] != "os_boundary" for leg in record["legs"])
+    forged = json.loads(runner.render_json(record))
+    forged["outcomes"]["overall"]["verdict"] = "VERIFIED_PREVENTED"
+    forged["legs"] = [{
+        "name": "os_supervisor",
+        "verdict": "VERIFIED_PREVENTED",
+        "completed": False,
+        "control_layer": "os_boundary",
+        "before_sha256": None,
+        "after_sha256": None,
+        "observation": {"independent_check": True, "executed_on_host": False},
+    }]
+    forged["outcomes"]["protected"]["legs"] = ["os_supervisor"]
+    forged["outcomes"]["overall"]["claim_leg"] = "os_supervisor"
+    sealed = runner.seal(forged)
+    assert sealed["verdict"] == "UNSUPPORTED"
+
+
+def test_predictive_graph_comes_from_the_engine_and_is_not_the_baseline():
+    record = runner.run_scenario("predictive-authority")
+    graph = record["predictive"]["graph"]
+    assert graph["present"] is True
+    assert graph["trace_id"] == "gauntlet-pa-on"
+    assert record["outcomes"]["baseline"]["verdict"] == "VERIFIED_ALLOWED"
+    assert record["outcomes"]["protected"]["claim_leg"].endswith("external_post")
+    assert record["outcomes"]["baseline"]["verdict"] != record["outcomes"]["protected"]["verdict"] or record["outcomes"]["protected"]["verdict"] != "VERIFIED_PREVENTED"
+    html = runner.render_html(record)
+    claim = record["outcomes"]["protected"]["claim_leg"]
+    assert f"Baseline execution: {record['outcomes']['baseline']['verdict']}" in html
+    assert f"Protected execution ({claim}): {record['outcomes']['protected']['verdict']}" in html
+    assert record["predictive"]["intervention"]["decision"] in {"block", "require_approval", "allow", "monitor"}
 
 
 def test_evidence_export_matches_the_run_and_does_not_upgrade_it():

@@ -47,12 +47,25 @@ Branch `feature/monitoring-integrity` at `8fcf94a`. The security gauntlet does n
 | Windows restricted token and job object | `platforms.py` on that branch | Not executed. A job object is not a filesystem sandbox. | **Unverified.** |
 | Other Unix | no enforcing adapter | n/a | **Unsupported.** |
 
+## After the readiness pass
+
+Branch `feature/security-gauntlet-readiness`, based on `feature/security-gauntlet` `66e38c6`. The monitoring-integrity commit is still not merged. The gauntlet can launch that checkout's Seatbelt adapter only when `VARDEN_INTEGRITY_ROOT` points at it. Without that variable the OS leg is `UNSUPPORTED` and no sandbox command is started.
+
+| Host | What this suite will claim |
+|---|---|
+| macOS, integrity root unset | SDK and Predictive Authority only. OS leg `UNSUPPORTED`. |
+| macOS, integrity root set to `feature/monitoring-integrity`, contained hash unchanged | Contained process `VERIFIED_PREVENTED` for `macos_seatbelt_experimental`. Overall stays `UNSUPPORTED` when a same-user write outside the profile completes. |
+| Linux | OS leg `UNSUPPORTED`. Bubblewrap is unverified. The suite does not pretend a probe ran. |
+| Windows | OS leg `UNSUPPORTED`. The restricted token is unverified. The suite does not pretend a probe ran. |
+
+On Darwin 27.2 arm64, with the integrity worktree at `8fcf94a`, one contained `open` under `sandbox-exec -f` left the protected file hash unchanged (`dc70b8c6ac967c4c883f6ad2355596510a0bd5df4fdf5e91ca3a0edfff240f98`) and returned exit code 1. The same user then wrote a file outside that process. That outside write completed. This is not a release of the supervisor.
+
 ## What the gauntlet is allowed to claim
 
 | Scenario | Control that may produce a verdict | OS enforcement |
 |---|---|---|
-| Prompt injection | Released `/sdk/guard` policy, then an independent check that a local sink file did not change | Not claimed |
-| Predictive Authority | Released engine, enabled explicitly for the run | Not claimed. A hazardous path is reachability, not a confirmed future act |
-| Mandatory enforcement | SDK leg can be prevented. An unguarded write is expected to succeed on this branch | Reported `UNSUPPORTED` |
-| Evidence export | The record of a real run | Cannot upgrade the run's verdict |
+| Prompt injection | Released `/sdk/guard` policy, then an independent check that a local sink file did not change. The allowed summary and the prevented export stay separate from the baseline. | Not claimed |
+| Predictive Authority | Released engine, enabled explicitly for the run. The graph on the page is the live registry after those guard calls. | Not claimed. A hazardous path is reachability, not a confirmed future act |
+| Mandatory enforcement | SDK leg can be prevented. An unguarded write is expected to succeed. A Seatbelt result is recorded only after `VARDEN_INTEGRITY_ROOT` runs the other checkout's adapter and the protected hash is unchanged. | Overall stays `UNSUPPORTED` unless that contained probe is the claim and no outside write completed. A same-user outside write keeps the overall result from being universal prevention. |
+| Evidence export | The record of a real run, including the three scoped verdicts | Cannot upgrade the run's verdict |
 | Coverage gap | Direct write outside the SDK | Must not report prevention |
