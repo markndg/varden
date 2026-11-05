@@ -220,6 +220,8 @@ See:
 - [Runtime boundary](docs/runtime-boundary.md)
 - [Runtime coverage](docs/runtime-coverage.md)
 - [Runtime modes](docs/runtime-modes.md)
+- [Monitoring integrity](docs/monitoring-integrity.md)
+- [Monitoring integrity boundary](docs/monitoring-integrity-boundary.md)
 - [Filesystem containment](docs/runtime-filesystem-containment.md)
 - [Runtime limitations](docs/runtime-limitations.md)
 
@@ -1546,6 +1548,8 @@ Start here:
 - [Runtime posture](docs/runtime-posture.md)
 - [Runtime coverage](docs/runtime-coverage.md)
 - [Runtime modes](docs/runtime-modes.md)
+- [Monitoring integrity](docs/monitoring-integrity.md)
+- [Monitoring integrity boundary](docs/monitoring-integrity-boundary.md)
 - [Runtime limitations](docs/runtime-limitations.md)
 - [Filesystem containment](docs/runtime-filesystem-containment.md)
 - [MCP gateway](docs/mcp-gateway.md)

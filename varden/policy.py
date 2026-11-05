@@ -62,6 +62,7 @@ KNOWN_ACTION_TYPES = frozenset({
 POLICY_TOP_LEVEL_KEYS = frozenset(MODES) | frozenset({
     "budget_rules", "default", "defaults", "version", "name", "description",
     "pack_name", "metadata", "id", "updated_at", "allow_vacuous_policy",
+    "monitoring_integrity",
 })
 
 
@@ -171,6 +172,9 @@ class PolicyEngine:
         from .rules.registry import validate_budget_rules
 
         errors.extend(validate_budget_rules(policy))
+        from .monitoring_integrity.service import validate_section
+
+        errors.extend(validate_section(policy.get("monitoring_integrity")))
         if for_publish:
             errors.extend(self._validate_publish_integrity(policy))
         return {"valid": len(errors) == 0, "errors": errors, "warnings": warnings}

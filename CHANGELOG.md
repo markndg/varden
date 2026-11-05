@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Monitoring integrity
+
+- Added a platform boundary adapter for `varden run --protected`. macOS remains experimental Seatbelt, probe-gated, and scoped to the launched tree. Linux bubblewrap and Windows restricted-token adapters fail closed off their own operating system and are unverified. Filesystem verification does not mark network or MCP verified. `continue_restricted` expiry drops VERIFIED without claiming the process was killed. Attestations are HMAC'd with a supervisor-held key and stop being VERIFIED when the process identity ends or the record expires. Linux user separation remains unverified on this host. See docs/monitoring-integrity-boundary.md.
+- Added Monitoring Integrity Protection for sealed monitoring assets. It is off unless `monitoring_integrity.enabled` is set in the existing policy document. On patched filesystem, subprocess, HTTP, and environment calls it can block a protected mutation before the side effect. Those hooks are not an OS boundary. A supervisor-launched Seatbelt profile is the tested Darwin boundary; Linux user separation is documented and was not executed on Darwin. See docs/monitoring-integrity-boundary.md.
+
 ### Threat Intelligence
 
 - Added an advisory Threat Intelligence subsystem. It is disabled unless `VARDEN_TI_ENABLED=true` and is not on the firewall decision path.

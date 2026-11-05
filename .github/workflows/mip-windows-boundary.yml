@@ -1,0 +1,17 @@
+name: MIP Windows boundary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-adapter:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Platform honesty tests
+        run: python -m pytest -q tests/monitoring_integrity/test_platforms.py
+      - name: Note
+        run: echo "This job does not yet claim a Windows filesystem boundary. Protected launch stays fail-closed until a Windows probe denies the protected write."

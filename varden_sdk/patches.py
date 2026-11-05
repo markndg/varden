@@ -312,6 +312,22 @@ def patch_filesystem(guard: Any, originals: dict[str, Any]) -> None:
 
     def _should_enforce(path: Any, mode: str, info: dict[str, Any]) -> bool:
         # Secrets/system always; supply-chain workspace mutations always.
+        # Protected monitoring assets are mediated even when the path would
+        # otherwise be an ordinary workspace write.
+        try:
+            from varden.monitoring_integrity.io_guard import internal_io_active
+            from varden.monitoring_integrity.service import path_requires_mediation
+
+            if not internal_io_active() and path_requires_mediation(path):
+                return True
+        except Exception:
+            try:
+                from varden.monitoring_integrity.service import enabled as mip_enabled
+
+                if mip_enabled():
+                    return True
+            except Exception:
+                pass
         if info.get("classification") in {"secrets", "system"}:
             return True
         mutation = str(info.get("mutation") or "")

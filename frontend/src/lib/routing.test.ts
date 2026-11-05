@@ -23,6 +23,10 @@ describe('predictive deep-link routing', () => {
     expect(hasPredictiveAnalysis({ action: { metadata: {} } })).toBe(false);
   });
 
+  it('routes the monitoring integrity page', () => {
+    expect(pageFromLocation('/ui/integrity')).toBe('integrity');
+  });
+
   it('routes threat intelligence list and investigation pages', () => {
     expect(pageFromLocation('/ui/threat-intelligence')).toBe('threat-intelligence');
     expect(threatItemIdFromLocation('/ui/threat-intelligence')).toBe(null);

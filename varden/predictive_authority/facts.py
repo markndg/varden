@@ -52,6 +52,7 @@ class ActionFacts:
     sanitisation_trusted: bool = False
     sanitisation_fake: bool = False
     untrusted_capability_claims: list[str] = field(default_factory=list)
+    mip_annotations: list = field(default_factory=list)
 
 
 _AWS_CRED_PATH = re.compile(r"(?i)(\.aws|/aws/|credentials|\.env)")
@@ -335,6 +336,12 @@ def extract_facts(action: Action) -> ActionFacts:
     facts.summary = sanitize_identifier(facts.summary)
     facts.action_label = facts.summary
     facts.action_node_id = f"action:{facts.summary}"[:200]
+    try:
+        from varden.monitoring_integrity.facts_bridge import annotate_action_facts
+
+        annotate_action_facts(action, facts)
+    except Exception:
+        facts.mip_annotations = []
     return facts
 
 
@@ -664,3 +671,10 @@ def apply_facts_to_state(state: AuthorityState, facts: ActionFacts) -> None:
                 trusted=False,
                 source="untrusted_claim",
             )
+    if getattr(facts, "mip_annotations", None):
+        try:
+            from varden.monitoring_integrity.facts_bridge import apply_monitoring_facts
+
+            apply_monitoring_facts(state, facts)
+        except Exception:
+            pass
