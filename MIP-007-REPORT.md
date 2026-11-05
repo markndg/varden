@@ -41,12 +41,16 @@ Host: Linux `6.8.0-100-generic` aarch64, Colima, operator uid 501 (`mark`). Bubb
 
 | Attempt from `varden-agent` | Result |
 |---|---|
-| List `/var/lib/varden/authority` | Non-zero exit, permission denied |
+| List `/var/lib/varden/authority` | Non-zero exit |
 | Read `authority.key` after a real launch | Non-zero exit |
+| Replace `authority.key` | Non-zero exit |
 | Write `forged.json` into the authority directory | Non-zero exit, file absent |
+| Rename the authority directory into the workspace | Non-zero exit |
 | `ln` the protected file into the workspace | Non-zero exit, link absent |
+| Create a symlink to the protected file, then read or write through it | The symlink was created in the agent workspace. The read and the write both exited non-zero. The protected sha256 did not change |
 | `sudo -n -u varden-supervisor -- true` | Non-zero exit |
-| `varden run --protected --authority isolated` writing the protected file | Launched, `authority_model` `isolated`, `verified_by_probe` true, command exit 0, note began with an OS error, protected sha256 unchanged, no `authority.key` descriptor in `/proc/self/fd` |
+| Supervised write of the protected file | Launched, `authority_model` `isolated`, `verified_by_probe` true, note began with `PermissionError` or `OSError`, protected sha256 unchanged, no `authority.key` descriptor in `/proc/self/fd` |
+| Child of that supervised process writing the same file | Launched, `verified_by_probe` true, child note began with `PermissionError` or `OSError`, protected sha256 unchanged |
 
 Developer-mode Linux regressions on the same host, with namespaces permitted: `test_mip005.py`, `test_platforms.py`, and `test_supervisor.py`, 16 passed.
 

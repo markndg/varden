@@ -147,6 +147,45 @@ def test_linux_agent_identity_cannot_touch_supervisor_state():
     assert forged_present.returncode != 0
     impersonate = as_agent(["sudo", "-n", "-u", SUPERVISOR_USER, "--", "true"])
     assert impersonate.returncode != 0
+    replaced = as_agent(["python3", "-c", "open('/var/lib/varden/authority/authority.key','w').write('x')"])
+    assert replaced.returncode != 0
+    moved = as_agent(["mv", str(state), str(work / "stolen")])
+    assert moved.returncode != 0
+    symlink = as_agent(["ln", "-s", str(protected), str(work / "via")])
+    assert symlink.returncode == 0
+    through = as_agent(["python3", "-c", f"open({str(work / 'via')!r}).read()"])
+    assert through.returncode != 0
+    overwrite = as_agent(["python3", "-c", f"open({str(work / 'via')!r}, 'w').write('x')"])
+    assert overwrite.returncode != 0
+    child = work / "child.py"
+    child_text = (
+        "import os, pathlib, sys\n"
+        "target, note = sys.argv[1], sys.argv[2]\n"
+        "pid = os.fork()\n"
+        "if pid == 0:\n"
+        "    try:\n"
+        "        pathlib.Path(target).write_text('child\\n', encoding='utf-8')\n"
+        "        pathlib.Path(note).write_text('child-wrote', encoding='utf-8')\n"
+        "    except OSError as exc:\n"
+        "        pathlib.Path(note).write_text(type(exc).__name__, encoding='utf-8')\n"
+        "    os._exit(0)\n"
+        "os.waitpid(pid, 0)\n"
+    )
+    subprocess.run(["sudo", "-n", "tee", str(child)], input=child_text, text=True, check=True, capture_output=True)
+    subprocess.run(["sudo", "-n", "chown", f"{AGENT_USER}:varden-monitor", str(child)], check=True)
+    child_run = subprocess.run(
+        [sys.executable, "-m", "varden.cli", "run", "--protected", "--authority", "isolated", "--json",
+         "--workspace", str(work), "--protected-path", str(protected), "--",
+         "python3", str(child), str(protected), str(work / "child-note")],
+        capture_output=True, text=True, check=False,
+    )
+    child_payload = json.loads(child_run.stdout)
+    child_after = subprocess.run(["sudo", "-n", "sha256sum", str(protected)], capture_output=True, text=True, check=True).stdout.split()[0]
+    assert child_payload.get("launched") is True, child_run.stderr + child_run.stdout
+    assert child_payload["verified_by_probe"] is True
+    assert child_after == before
+    child_note = subprocess.run(["sudo", "-n", "cat", str(work / "child-note")], capture_output=True, text=True, check=True).stdout
+    assert child_note.startswith("PermissionError") or child_note.startswith("OSError")
 
 
 def pwd_uid(name: str) -> int:
