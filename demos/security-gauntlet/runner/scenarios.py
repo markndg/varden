@@ -444,14 +444,16 @@ def scenario_mandatory() -> dict[str, Any]:
             mode="sdk_guard_plus_host_supervisor" if observed["executed_on_host"] else "sdk_guard_plus_explicit_os_gap",
             limitations=[
                 "SDK prevention is not operating-system enforcement.",
-                "Linux and Windows adapters are in this tree and stay unverified until a probe on that operating system shows an unchanged hash and a non-zero exit.",
+                "Linux and Windows adapters are in this tree and stay unverified until a probe on that operating system leaves the protected hash unchanged after a real attempt.",
                 "macOS Seatbelt, when the contained probe denies the write, covers the launched process only.",
+                "A caught OSError that exits 0 is still a denial when the attempt recorded the error and the protected hash is unchanged. The exit code alone is not proof.",
                 "A same-user process outside the profile is not an OS denial.",
             ],
             simulated=["The configuration file is synthetic and disposable."],
             operator_change=(
                 "The gauntlet uses this repository's supervisor unless VARDEN_INTEGRITY_ROOT points somewhere else. "
-                "A denial counts only when that host's adapter runs, the process exits non-zero, and the protected hash is unchanged. "
+                "A denial counts when that host's adapter runs, the protected hash is unchanged, and the attempt shows an OS error. "
+                "A zero exit from an agent that caught the error is not treated as success. "
                 "Other operating systems stay unverified."
             ),
         )
@@ -463,6 +465,30 @@ def scenario_mandatory() -> dict[str, Any]:
         if isinstance(probe.get("adapters"), dict):
             record["platform_status"]["adapters"] = probe["adapters"]
             record["platform_status"]["this_host_os_enforcement"] = probe.get("this_host_os_enforcement")
+        try:
+            from .production import run_production_boundary
+            production = run_production_boundary()
+        except Exception as exc:
+            production = {"executed": False, "detail": f"{exc.__class__.__name__}: {exc}", "cases": []}
+        record["production_entry"] = {
+            "entry_point": production.get("entry_point") or "varden run --protected",
+            "host": production.get("host"),
+            "platform": production.get("platform"),
+            "cases": [
+                {
+                    "name": case.get("name"),
+                    "capability": case.get("capability"),
+                    "outcome": case.get("outcome"),
+                    "launched": case.get("launched"),
+                    "command_returncode": case.get("command_returncode"),
+                    "before_sha256": case.get("before_sha256"),
+                    "after_sha256": case.get("after_sha256"),
+                    "attempt_note": case.get("attempt_note"),
+                    "mechanism": case.get("mechanism"),
+                }
+                for case in production.get("cases") or []
+            ],
+        }
         return _finish(
             record,
             baseline=outside_legs,

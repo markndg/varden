@@ -231,6 +231,26 @@ def assert_layout(*, workspace: Path, protected: Path, secret: Path) -> None:
                 raise BoundaryLayoutError(f"{label} path {path} is inside writable prefix {root}")
     if protected == secret or _inside(secret, protected) or _inside(protected, secret):
         raise BoundaryLayoutError("the approval secret must not share a directory with the protected asset")
+    assert_single_directory_entry(protected, label="protected file")
+
+
+def assert_single_directory_entry(path: Path, *, label: str) -> None:
+    """Refuse a file that has another hard link.
+
+    The macOS profile and the Linux mount rules name paths. A second directory
+    entry is the same inode, so a writable path can change or reveal that file
+    without matching the protected path. The supervisor does not start the
+    command. This does not stop a same-user process that creates a link after
+    the check.
+    """
+    if not path.is_file():
+        return
+    try:
+        links = path.stat().st_nlink
+    except OSError as exc:
+        raise BoundaryLayoutError(f"{label} could not be inspected; the command was not started") from exc
+    if links != 1:
+        raise BoundaryLayoutError(f"{label} has {links} directory entries; the command was not started")
 
 
 def seatbelt_profile(

@@ -75,5 +75,16 @@ On Darwin, with the supervisor resolved from this repository, one contained `ope
 
 `varden run --protected` was executed on Darwin 27.2 arm64. Direct, child, policy, symlink, environment, and supervisor-key attempts left the protected hash unchanged and recorded an attempt note of `denied`. Those agent processes exited 0 because they caught the error. The unchanged hash and the attempt note are the denial evidence. The exit code is not. An unsupervised same-user write completed. A protected path placed inside the workspace did not start. A rewritten attestation MAC was rejected.
 
-Linux bubblewrap and Windows filesystem denial were not executed on this host. They stay **UNSUPPORTED**. See `MIP-005-REPORT.md`.
+Linux bubblewrap and Windows filesystem denial were not executed on the Mac that wrote the MIP-005 section. See the MIP-006 section.
+
+## MIP-006 observed execution
+
+| Host | What was executed | Filesystem | Network | Same-user outside the launch |
+|---|---|---|---|---|
+| macOS 27.2 arm64 | `varden run --protected`, Seatbelt | Denied for the launched tree, including a symlink. A pre-existing hard link is refused before launch. | TCP connect to `1.1.1.1:443` and `127.0.0.1:9` was denied | Write completed |
+| Linux 6.8.0-100-generic aarch64, user namespaces permitted | `varden run --protected`, bubblewrap | Denied for the launched tree. Hard link refused before launch. With AppArmor unprivileged user namespaces blocked, the command did not start | Connect to `1.1.1.1:443` succeeded. Not isolated | Write completed |
+| Windows | Not executed | **UNSUPPORTED** | **UNSUPPORTED** | Not tested |
+
+The static `platform_matrix()` cells stay `unverified` for Linux and Windows. A source checkout does not become a live verdict. The rows above are this session's execution record.
+
 

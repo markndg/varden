@@ -5,6 +5,7 @@ from __future__ import annotations
 import socket
 import sys
 import threading
+import platform
 from pathlib import Path
 
 import pytest
@@ -80,6 +81,79 @@ def test_buyer_can_run_prompt_injection_and_see_a_real_verdict():
             assert "Overall scenario outcome: VERIFIED_PREVENTED" in body
             assert "verified enforcement is per run" in body
             assert "Supervisor in this checkout: no" in body
+            browser.close()
+    finally:
+        server.should_exit = True
+        thread.join(timeout=5)
+
+
+@pytest.mark.skipif(not (DIST / "index.html").is_file(), reason="gauntlet UI has not been built")
+def test_mandatory_page_lists_the_production_entry_from_the_record():
+    from playwright.sync_api import sync_playwright
+    import uvicorn
+
+    from demos.security_gauntlet_loader import load_runner
+    from fastapi import FastAPI
+    from fastapi.responses import HTMLResponse
+    from fastapi.staticfiles import StaticFiles
+
+    runner = load_runner()
+    runs: dict[str, dict] = {}
+    app = FastAPI()
+
+    @app.get("/api/capabilities")
+    def capabilities():
+        return {"checkout": runner.git_commit(), "version": runner.varden_version(), "os_enforcement_in_this_tree": False, "supervisor_in_tree": True}
+
+    @app.get("/api/scenarios")
+    def scenarios():
+        return {"scenarios": [{"id": "mandatory-enforcement", "title": "Mandatory enforcement"}]}
+
+    @app.post("/api/scenarios/{scenario_id}/run")
+    def run(scenario_id: str):
+        record = runner.run_scenario(scenario_id)
+        runs[record["run_id"]] = record
+        return record
+
+    @app.get("/api/runs/{run_id}/report.html", response_class=HTMLResponse)
+    def report(run_id: str):
+        return HTMLResponse(runner.render_html(runs[run_id]))
+
+    @app.get("/api/runs/{run_id}/evidence.json")
+    def evidence(run_id: str):
+        return runs[run_id]
+
+    app.mount("/", StaticFiles(directory=str(DIST), html=True), name="ui")
+    port = _free_port()
+    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        with sync_playwright() as playwright:
+            try:
+                browser = playwright.chromium.launch(headless=True)
+            except Exception as exc:
+                if "Executable doesn't exist" in str(exc):
+                    pytest.skip("Playwright Chromium is not installed. CI runs playwright install before this test.")
+                raise
+            page = browser.new_page()
+            page.goto(f"http://127.0.0.1:{port}/", wait_until="networkidle")
+            with page.expect_response("**/api/scenarios/mandatory-enforcement/run") as caught:
+                page.get_by_role("button", name="Execute baseline and protected run").click()
+            payload = caught.value.json()
+            page.get_by_role("button", name="7. Evidence").click()
+            page.get_by_text("Production entry").wait_for(timeout=30_000)
+            body = page.inner_text("body")
+            for case in payload["production_entry"]["cases"]:
+                assert f"{case['name']}: {case['outcome']}" in body
+            overall = payload["outcomes"]["overall"]["verdict"]
+            assert f"Overall scenario outcome: {overall}" in body
+            if platform.system() == "Darwin":
+                assert overall == "UNSUPPORTED"
+                by_name = {case["name"]: case for case in payload["production_entry"]["cases"]}
+                assert by_name["direct_write"]["outcome"] == "OS_DENIED"
+                assert by_name["hardlink_write"]["outcome"] == "FAIL_CLOSED"
+                assert "Unsupervised same-user process: OBSERVED_ONLY" in body
             browser.close()
     finally:
         server.should_exit = True

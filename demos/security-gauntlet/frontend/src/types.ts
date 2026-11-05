@@ -119,6 +119,10 @@ export interface ScenarioRecord {
     os_supervised?: { verdict: Verdict; leg: string; mechanism?: string };
     unsupervised_same_user?: { verdict: Verdict; leg: string };
   };
+  production_entry?: {
+    entry_point?: string;
+    cases?: { name: string; outcome: string; capability?: string }[];
+  };
 }
 
 export interface ScenarioCard {

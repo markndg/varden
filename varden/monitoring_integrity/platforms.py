@@ -67,6 +67,7 @@ class DarwinSeatbelt:
             cwd=str(cwd),
             env=env if env is not None else contained_environment(),
             start_new_session=True,
+            close_fds=True,
         )
 
     def run_captured(self, prepared: PreparedBoundary, argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
@@ -118,15 +119,15 @@ class LinuxBubblewrap:
             prefix=prefix,
             experimental=True,
             limitations=(
-                "Linux bubblewrap is implemented and unverified. A successful probe on a Linux host is required before any claim.",
-                "User namespaces may be disabled. A failed probe does not launch the command.",
-                "A protected path inside the writable workspace is refused. That check is not a substitute for a Linux execution.",
-                "This adapter does not claim network, MCP, or same-user host isolation.",
+                "Linux bubblewrap denies a protected write with a read-only mount when the user namespace and mounts are created. That result was observed on one Linux host. The mechanism name is not a universal verdict.",
+                "If bubblewrap cannot create the user namespace, the pre-launch probe does not record a denial and the command is not started.",
+                "A protected path inside the writable workspace is refused before launch. A protected file with another hard link is also refused. Neither check is a substitute for a Linux execution.",
+                "Network is not isolated. A connect to a public address was observed to succeed inside the mount namespace.",
             ),
         )
 
     def spawn(self, prepared: PreparedBoundary, argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> subprocess.Popen:
-        return subprocess.Popen([*prepared.prefix, *argv], cwd=str(cwd), env=env, start_new_session=True)
+        return subprocess.Popen([*prepared.prefix, *argv], cwd=str(cwd), env=env, start_new_session=True, close_fds=True)
 
     def run_captured(self, prepared: PreparedBoundary, argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
         return subprocess.run([*prepared.prefix, *argv], cwd=str(cwd), capture_output=True, text=True, check=False)
@@ -143,11 +144,19 @@ class WindowsRestrictedJob:
     mechanism = MECHANISM_WINDOWS
 
     def prepare(self, *, workspace: Path, protected: Path, state_dir: Path, directory: Path, gateway_ports: tuple[int, ...]) -> PreparedBoundary:
-        del workspace, protected, state_dir, directory, gateway_ports
+        del directory, gateway_ports
         if sys.platform != "win32":
             return PreparedBoundary(ok=False, reason="Windows boundary is not this host; the command was not started", mechanism=self.mechanism)
         if not _windows_primitives_available():
             return PreparedBoundary(ok=False, reason="Win32 token or job APIs are not available; the command was not started", mechanism=self.mechanism)
+        try:
+            assert_layout(workspace=workspace, protected=protected, secret=state_dir)
+        except BoundaryLayoutError as exc:
+            return PreparedBoundary(
+                ok=False,
+                reason=f"Windows layout refused before launch: {exc}",
+                mechanism=self.mechanism,
+            )
         return PreparedBoundary(
             ok=True,
             mechanism=self.mechanism,

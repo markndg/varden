@@ -118,11 +118,12 @@ def interpret_contained(probe: dict[str, Any]) -> dict[str, Any]:
     completed = bool(probe.get("contained_completed"))
     hashes_unchanged = bool(before) and before == after
     denied_exit = isinstance(returncode, int) and returncode != 0
+    denial_observed = bool(probe.get("denial_observed")) and isinstance(returncode, int)
     if not executed:
         return {"attempted": False, "completed": False, "decision": "", "telemetry": False, "supported": False, "executed_on_host": False}
     if completed or not hashes_unchanged:
         return {"attempted": True, "completed": True, "decision": "block", "telemetry": True, "supported": True, "executed_on_host": True}
-    if denied_exit:
+    if denied_exit or denial_observed:
         return {"attempted": True, "completed": False, "decision": "block", "telemetry": True, "supported": True, "executed_on_host": True}
     return {"attempted": True, "completed": False, "decision": "", "telemetry": True, "supported": True, "executed_on_host": True}
 
@@ -263,12 +264,15 @@ finally:
     payload["supervisor_source"] = found.get("source")
     host_caps = enforcement_capabilities()
     mechanism = str(payload.get("mechanism") or "")
+    denied = (
+        isinstance(payload.get("returncode"), int)
+        and payload.get("returncode") != 0
+    ) or (payload.get("returncode") == 0 and bool(payload.get("denial_observed")))
     proved = (
         bool(payload.get("executed_on_host"))
         and bool(payload.get("supported"))
         and not payload.get("contained_completed")
-        and isinstance(payload.get("returncode"), int)
-        and payload.get("returncode") != 0
+        and denied
         and payload.get("before_sha256")
         and payload.get("before_sha256") == payload.get("after_sha256")
     )

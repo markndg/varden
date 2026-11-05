@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import platform
 import shutil
 import statistics
@@ -146,6 +147,20 @@ def run_production_boundary() -> dict[str, Any]:
             cases.append(_case(layout, "symlink_write", "filesystem", [sys.executable, "writer.py", str(link), str(work / "symlink_write.note")]))
         except OSError as exc:
             cases.append({"name": "symlink_write", "capability": "filesystem", "outcome": "INCONCLUSIVE", "detail": str(exc)})
+        finally:
+            if link.is_symlink() or link.exists():
+                link.unlink()
+        hard = work / "via-hardlink"
+        try:
+            os.link(target, hard)
+            hard_case = _case(layout, "hardlink_write", "filesystem", [sys.executable, "writer.py", str(hard), str(work / "hardlink_write.note")])
+            hard_case["detail"] = "A second directory entry existed before launch. The command must not start, and the protected bytes must stay unchanged."
+            cases.append(hard_case)
+        except OSError as exc:
+            cases.append({"name": "hardlink_write", "capability": "filesystem", "outcome": "INCONCLUSIVE", "detail": str(exc)})
+        finally:
+            if hard.exists():
+                hard.unlink()
         env_script = work / "envwrite.py"
         env_script.write_text(
             "import os, pathlib\n"
@@ -176,6 +191,52 @@ def run_production_boundary() -> dict[str, Any]:
             encoding="utf-8",
         )
         cases.append(_case(layout, "read_supervisor_key", "supervisor_state", [sys.executable, "readkey.py", str(layout["state"]), str(work / "read_supervisor_key.note")]))
+        net_script = work / "netcheck.py"
+        net_script.write_text(
+            "import socket, pathlib, sys\n"
+            "note = pathlib.Path(sys.argv[1])\n"
+            "bits = []\n"
+            "for host, port in (('1.1.1.1', 443), ('127.0.0.1', 9)):\n"
+            "    sock = socket.socket()\n"
+            "    sock.settimeout(2)\n"
+            "    try:\n"
+            "        sock.connect((host, port))\n"
+            "        bits.append(host + ':open')\n"
+            "    except OSError as exc:\n"
+            "        bits.append(host + ':' + type(exc).__name__)\n"
+            "    finally:\n"
+            "        sock.close()\n"
+            "note.write_text(' '.join(bits), encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        net_before = _digest(target)
+        net_launch = _launch(layout, [sys.executable, "netcheck.py", str(work / "network.note")])
+        net_after = _digest(target)
+        net_text = (work / "network.note").read_text(encoding="utf-8") if (work / "network.note").is_file() else ""
+        net_denied = "1.1.1.1:PermissionError" in net_text and "127.0.0.1:PermissionError" in net_text
+        net_open = ":open" in net_text
+        if not net_launch["result"].get("launched"):
+            net_outcome = "FAIL_CLOSED" if net_launch["result"].get("state") == "FAILED" else "UNSUPPORTED"
+        elif net_before != net_after:
+            net_outcome = "NOT_PREVENTED"
+        elif net_open:
+            net_outcome = "NOT_PREVENTED"
+        elif net_denied:
+            net_outcome = "OS_DENIED"
+        else:
+            net_outcome = "INCONCLUSIVE"
+        cases.append({
+            "name": "network_connect",
+            "capability": "network",
+            "outcome": net_outcome,
+            "launched": bool(net_launch["result"].get("launched")),
+            "command_returncode": net_launch["result"].get("returncode"),
+            "mechanism": net_launch["result"].get("mechanism"),
+            "before_sha256": net_before,
+            "after_sha256": net_after,
+            "attempt_note": net_text,
+            "detail": "Network is a separate capability from filesystem denial.",
+        })
         outside_before = _digest(target)
         try:
             target.write_text('{"written":"same-user"}\n', encoding="utf-8")

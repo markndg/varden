@@ -170,6 +170,16 @@ function Evidence({ record, claim }: { record: ScenarioRecord; claim: Leg | unde
         {' · '}
         <a href={`/api/runs/${record.run_id}/report.html`}>HTML assessment</a>
       </p>
+      {record.production_entry?.cases?.length ? (
+        <>
+          <h2>Production entry</h2>
+          <ul>
+            {record.production_entry.cases.map((item) => (
+              <li key={item.name} className="mono">{item.name}: {item.outcome}</li>
+            ))}
+          </ul>
+        </>
+      ) : null}
       <h2>Coverage</h2>
       <ul>{record.coverage_limitations.map((item) => <li key={item}>{item}</li>)}</ul>
       {record.operator_change ? <p><strong>What changes enforcement. </strong>{record.operator_change}</p> : null}

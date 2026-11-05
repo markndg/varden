@@ -111,8 +111,17 @@ def build_outcomes(
 
 
 def _denied_exit(leg: dict[str, Any]) -> bool:
-    returncode = (leg.get("probe") or {}).get("returncode")
-    return isinstance(returncode, int) and returncode != 0
+    """A non-zero exit is one denial signal. A recorded OS denial with exit 0 is another.
+
+    An unchanged hash alone is not enough: the process may have exited 0 without
+    attempting the write. ``denial_observed`` is set only when the attempt
+    recorded an OS error and the caller checked the protected bytes separately.
+    """
+    probe = leg.get("probe") or {}
+    returncode = probe.get("returncode")
+    if isinstance(returncode, int) and returncode != 0:
+        return True
+    return returncode == 0 and bool(probe.get("denial_observed"))
 
 
 def _downgrade(outcomes: dict[str, Any], verdict: str, basis: str) -> None:
@@ -152,7 +161,7 @@ def seal(record: dict[str, Any]) -> dict[str, Any]:
         ):
             _downgrade(outcomes, "INCONCLUSIVE", "OS prevention did not show an unchanged protected hash")
         elif claim.get("control_layer") == "os_boundary" and not _denied_exit(claim):
-            _downgrade(outcomes, "INCONCLUSIVE", "OS prevention lacked a non-zero process exit")
+            _downgrade(outcomes, "INCONCLUSIVE", "OS prevention lacked a denial observation")
         elif not overall.get("excludes_baseline"):
             _downgrade(outcomes, "INCONCLUSIVE", "baseline was folded into the protected prevention claim")
     # A mandatory-enforcement headline cannot be prevention when the only

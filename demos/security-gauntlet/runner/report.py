@@ -26,6 +26,19 @@ def _assurance_lines(record: dict[str, Any]) -> str:
     return "".join(lines)
 
 
+def _production_lines(record: dict[str, Any]) -> str:
+    entry = record.get("production_entry") if isinstance(record.get("production_entry"), dict) else {}
+    cases = entry.get("cases") if isinstance(entry, dict) else None
+    if not isinstance(cases, list) or not cases:
+        return ""
+    items = "".join(
+        f"<li>{_cell(case.get('name'))}: {_cell(case.get('outcome'))}</li>"
+        for case in cases
+        if isinstance(case, dict)
+    )
+    return f"<h2>Production entry</h2><ul>{items}</ul>"
+
+
 def _scope_line(record: dict[str, Any], scope: str, label: str) -> str:
     item = (record.get("outcomes") or {}).get(scope) or {}
     verdict = item.get("verdict") or "INCONCLUSIVE"
@@ -76,6 +89,7 @@ td, th {{ border-bottom:1px solid #333; text-align:left; padding:0.4rem; vertica
 {_scope_line(record, "protected", "Protected execution")}
 {_scope_line(record, "overall", "Overall scenario outcome")}
 {_assurance_lines(record)}
+{_production_lines(record)}
 <p>{basis}</p>
 <p>{_cell(record.get('business_impact'))}</p>
 <p>Objective: {_cell(record.get('objective'))}</p>

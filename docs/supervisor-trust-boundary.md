@@ -22,7 +22,13 @@ The supervised agent therefore cannot, through that profile:
 - read `authority.key` under the supervisor state directory
 - rewrite the sealed attestation and have `verify` accept it, because the MAC no longer matches and the agent cannot read the key
 
-An unsupervised process running as the same user can. The state directory is mode `0700` and owned by that user. Mode bits do not create a second principal. That process can read the signing key, recompute a MAC, and write the protected file. Those actions are outside the claim.
+An unsupervised process running as the same user can. The state directory is mode `0700` and owned by that user. Mode bits do not create a second principal. That process can read the signing key, recompute a MAC, and write the protected file. Those actions are outside the claim. HMAC evidence is not independently tamper-proof against a process that can read `authority.key`.
+
+The profile and the Linux mounts name paths. A second hard link is the same inode. On macOS, a hard link placed in the workspace before launch let a Seatbelt process change the protected file and read a hardlinked key. `link` from inside the profile to the protected file was denied. The supervisor now refuses to start when the protected file, or the key at the moment of launch, has more than one directory entry. A same-user process that creates the link after that check is still outside the claim.
+
+## Linux
+
+Bubblewrap was executed on Linux `6.8.0-100-generic` aarch64 (Colima). With user namespaces permitted, `varden run --protected` denied protected writes, symlink writes, child writes, environment writes, and reads of the supervisor key. The protected hash did not change. A pre-existing hard link refused the launch. A public TCP connect to `1.1.1.1:443` succeeded, so network isolation is not a result of the filesystem mount. When AppArmor's `kernel.apparmor_restrict_unprivileged_userns` was `1`, bubblewrap could not map uids and the command was not started.
 
 ## When containment cannot be established
 
@@ -37,4 +43,4 @@ The result is a failed launch, not a verified denial of a command that never sta
 
 ## What is not claimed
 
-Host-wide protection, protection of unsupervised same-user processes, Linux bubblewrap, and Windows filesystem denial are not claims of this boundary. `DISABLE_MAX_PRIVILEGE` and a Windows job object are not a filesystem boundary. A non-zero exit code is not, by itself, an OS denial.
+Host-wide protection and protection of unsupervised same-user processes are not claims of this boundary. Windows filesystem denial was not executed. `DISABLE_MAX_PRIVILEGE` and a Windows job object are not a filesystem boundary. A non-zero exit code is not, by itself, an OS denial. An agent that catches the denial and exits 0 is still a denial when the attempt recorded the error and the protected hash is unchanged.

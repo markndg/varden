@@ -110,6 +110,20 @@ def test_mandatory_scenario_separates_sdk_os_and_same_user(monkeypatch):
         assert os_leg["completed"] is False
         assert record["assurance"]["unsupervised_same_user"]["verdict"] == "OBSERVED_ONLY"
         assert record["outcomes"]["overall"]["verdict"] == "UNSUPPORTED"
+        produced = {item["name"]: item for item in record["production_entry"]["cases"]}
+        direct = produced["direct_write"]
+        assert direct["outcome"] == "OS_DENIED"
+        assert direct["command_returncode"] == 0
+        assert direct["before_sha256"] == direct["after_sha256"]
+        assert produced["hardlink_write"]["outcome"] == "FAIL_CLOSED"
+        assert produced["hardlink_write"]["launched"] is False
+        assert produced["hardlink_write"]["before_sha256"] == produced["hardlink_write"]["after_sha256"]
+        assert "Production entry" in html
+        assert "direct_write: OS_DENIED" in html
+        exported = json.loads(runner.render_json(record))
+        exported_direct = next(item for item in exported["production_entry"]["cases"] if item["name"] == "direct_write")
+        assert exported_direct["outcome"] == "OS_DENIED"
+        assert exported_direct["before_sha256"] == exported_direct["after_sha256"]
         adapters = record["platform_status"]["adapters"]
         assert adapters[record["system"]]["verified"] is True
         for name, cap in adapters.items():
@@ -198,6 +212,17 @@ def test_failed_or_unproven_containment_is_not_prevention():
         "returncode": 0,
     })
     assert quiet_exit["decision"] == ""
+    caught = runner.interpret_contained({
+        "executed_on_host": True,
+        "supported": True,
+        "contained_completed": False,
+        "before_sha256": "abc",
+        "after_sha256": "abc",
+        "returncode": 0,
+        "denial_observed": True,
+    })
+    assert caught["decision"] == "block"
+    assert caught["completed"] is False
     missing = runner.interpret_contained({"executed_on_host": False, "supported": False})
     assert missing["supported"] is False
 

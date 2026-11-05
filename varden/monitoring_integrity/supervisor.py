@@ -36,6 +36,8 @@ from .boundary import (
     SCOPE_SEATBELT,
     TIER_VERIFIED,
     BoundaryClaim,
+    BoundaryLayoutError,
+    assert_single_directory_entry,
     contained_environment,
     interceptor_claim,
 )
@@ -223,6 +225,17 @@ class Supervisor:
             return _failure(
                 STATE_FAILED,
                 reason + "; the command was not started",
+                execution_id=execution_id,
+                launched=False,
+                mechanism=prepared.mechanism,
+            )
+        try:
+            assert_single_directory_entry(protected, label="protected file")
+            assert_single_directory_entry(key_path, label="supervisor key")
+        except BoundaryLayoutError as exc:
+            return _failure(
+                STATE_FAILED,
+                f"{exc}; the command was not started",
                 execution_id=execution_id,
                 launched=False,
                 mechanism=prepared.mechanism,
@@ -611,7 +624,7 @@ _WRITE_PROBE = (
     "    pathlib.Path(protected).open('a').write('probe')\n"
     "    pathlib.Path(result).write_text('wrote')\n"
     "except OSError as exc:\n"
-    "    pathlib.Path(result).write_text(type(exc).__name__)\n"
+    "    pathlib.Path(result).write_text(type(exc).__name__ + ':' + str(getattr(exc, 'errno', None)))\n"
 )
 _SECRET_PROBE = (
     "import pathlib, sys\n"
@@ -620,7 +633,7 @@ _SECRET_PROBE = (
     "    data = pathlib.Path(key_path).read_bytes()\n"
     "    pathlib.Path(result).write_text('read:' + str(len(data)))\n"
     "except OSError as exc:\n"
-    "    pathlib.Path(result).write_text(type(exc).__name__)\n"
+    "    pathlib.Path(result).write_text(type(exc).__name__ + ':' + str(getattr(exc, 'errno', None)))\n"
 )
 
 
