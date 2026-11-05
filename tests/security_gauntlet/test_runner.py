@@ -80,20 +80,126 @@ def test_coverage_gap_does_not_report_prevention():
     assert record["outcomes"]["protected"]["verdict"] == "INCONCLUSIVE"
 
 
-def test_mandatory_scenario_separates_sdk_and_os():
+def test_mandatory_scenario_separates_sdk_os_and_same_user(monkeypatch):
+    monkeypatch.delenv("VARDEN_INTEGRITY_ROOT", raising=False)
     record = runner.run_scenario("mandatory-enforcement")
     sdk = next(leg for leg in record["legs"] if leg["name"] == "sdk_guarded_write")
     raw = next(leg for leg in record["comparison"] if leg["name"] == "unguarded_write")
     os_leg = next(leg for leg in record["legs"] if leg["name"] == "os_supervisor")
+    html = runner.render_html(record)
+    exported = json.loads(runner.render_json(record))
     assert sdk["verdict"] == "VERIFIED_PREVENTED"
     assert sdk["control_layer"] == "sdk_guard"
     assert raw["completed"] is True
     assert raw["verdict"] == "OBSERVED_ONLY"
-    assert os_leg["verdict"] == "UNSUPPORTED"
-    assert os_leg["observation"]["executed_on_host"] is False
-    assert record["outcomes"]["overall"]["verdict"] == "UNSUPPORTED"
-    assert record["verdict"] == "UNSUPPORTED"
+    assert record["assurance"]["sdk"]["verdict"] == sdk["verdict"]
+    assert record["assurance"]["os_supervised"]["verdict"] == os_leg["verdict"]
+    assert exported["assurance"] == record["assurance"]
+    for label, key in (
+        ("SDK-mediated protection", "sdk"),
+        ("OS-supervised process", "os_supervised"),
+        ("Unsupervised same-user process", "unsupervised_same_user"),
+    ):
+        line = f"{label}: {record['assurance'][key]['verdict']}"
+        assert line in html
     assert record["verdict"] != "VERIFIED_PREVENTED"
+    if os_leg["verdict"] == "VERIFIED_PREVENTED":
+        assert os_leg["before_sha256"] == os_leg["after_sha256"]
+        assert os_leg["before_sha256"]
+        assert os_leg["probe"]["returncode"] not in (0, None)
+        assert os_leg["completed"] is False
+        assert record["assurance"]["unsupervised_same_user"]["verdict"] == "OBSERVED_ONLY"
+        assert record["outcomes"]["overall"]["verdict"] == "UNSUPPORTED"
+        adapters = record["platform_status"]["adapters"]
+        assert adapters[record["system"]]["verified"] is True
+        for name, cap in adapters.items():
+            if name != record["system"]:
+                assert cap["verified"] is False
+    else:
+        assert os_leg["verdict"] in {"UNSUPPORTED", "INCONCLUSIVE", "EXECUTION_ERROR"}
+        assert os_leg["observation"]["executed_on_host"] is False or os_leg["verdict"] == "EXECUTION_ERROR"
+
+
+def test_supervisor_resolves_from_this_repository(monkeypatch):
+    monkeypatch.delenv("VARDEN_INTEGRITY_ROOT", raising=False)
+    found = runner.resolve_supervisor()
+    assert found["available"] is True
+    assert found["source"] == "repository"
+    assert (found["root"] / "varden" / "monitoring_integrity" / "platforms.py").is_file()
+
+
+def test_invalid_override_does_not_fall_back_to_the_repository(monkeypatch, tmp_path):
+    monkeypatch.setenv("VARDEN_INTEGRITY_ROOT", str(tmp_path))
+    found = runner.resolve_supervisor()
+    assert found["available"] is False
+    assert found["source"] == "VARDEN_INTEGRITY_ROOT"
+    probe = runner.run_os_probe()
+    assert probe["executed_on_host"] is False
+    assert probe["supported"] is False
+    assert "was not substituted" in probe["detail"]
+
+
+def test_explicit_override_is_used_when_it_contains_the_supervisor(monkeypatch):
+    monkeypatch.delenv("VARDEN_INTEGRITY_ROOT", raising=False)
+    repo = runner.resolve_supervisor()["root"]
+    monkeypatch.setenv("VARDEN_INTEGRITY_ROOT", str(repo))
+    found = runner.resolve_supervisor()
+    assert found["available"] is True
+    assert found["source"] == "VARDEN_INTEGRITY_ROOT"
+    assert found["root"] == repo
+
+
+def test_other_platforms_stay_unverified_until_that_host_runs():
+    caps = runner.enforcement_capabilities(system="Darwin", sandbox_exec=True, bwrap=True, windows=False)
+    assert caps["Darwin"]["verified"] is False
+    assert caps["Linux"]["verified"] is False
+    assert caps["Windows"]["verified"] is False
+    assert caps["Darwin"]["runnable_on_this_host"] is True
+    assert caps["Linux"]["runnable_on_this_host"] is False
+    assert caps["Windows"]["runnable_on_this_host"] is False
+
+
+def test_failed_or_unproven_containment_is_not_prevention():
+    prevented = runner.interpret_contained({
+        "executed_on_host": True,
+        "supported": True,
+        "contained_completed": False,
+        "before_sha256": "abc",
+        "after_sha256": "abc",
+        "returncode": 1,
+    })
+    assert prevented["decision"] == "block"
+    assert prevented["completed"] is False
+    changed = runner.interpret_contained({
+        "executed_on_host": True,
+        "supported": True,
+        "contained_completed": True,
+        "before_sha256": "abc",
+        "after_sha256": "def",
+        "returncode": 1,
+    })
+    assert changed["completed"] is True
+    assert runner.classify({
+        "attempted": True,
+        "completed": True,
+        "decision": "block",
+        "control_layer": "os_boundary",
+        "telemetry_present": True,
+        "independent_check": True,
+        "supported": True,
+        "executed_on_host": True,
+    }) == "EXECUTION_ERROR"
+    quiet_exit = runner.interpret_contained({
+        "executed_on_host": True,
+        "supported": True,
+        "contained_completed": False,
+        "before_sha256": "abc",
+        "after_sha256": "abc",
+        "returncode": 0,
+    })
+    assert quiet_exit["decision"] == ""
+    missing = runner.interpret_contained({"executed_on_host": False, "supported": False})
+    assert missing["supported"] is False
 
 
 def test_prompt_injection_scopes_agree_in_html_and_json():

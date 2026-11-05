@@ -1,9 +1,9 @@
-"""Platform capability detection and an optional Seatbelt probe.
+"""Resolve the in-tree supervisor and probe one contained write.
 
-The probe runs only when VARDEN_INTEGRITY_ROOT points at a checkout of
-feature/monitoring-integrity. This branch does not vendor that code. A missing
-root, a failed import, or a host that is not Darwin is UNSUPPORTED. A write
-that succeeds inside the profile is not reported as prevention.
+``VARDEN_INTEGRITY_ROOT`` overrides the repository. An override that does not
+contain the supervisor is not replaced with this checkout. A platform is
+verified only when this process ran that platform's adapter and the contained
+write failed with a non-zero exit and an unchanged hash.
 """
 
 from __future__ import annotations
@@ -18,42 +18,121 @@ from pathlib import Path
 from typing import Any
 
 
-def platform_status() -> dict[str, Any]:
-    system = platform.system()
-    root = integrity_root()
+def _has_supervisor(path: Path) -> bool:
+    return (path / "varden" / "monitoring_integrity" / "platforms.py").is_file()
+
+
+def repository_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def resolve_supervisor() -> dict[str, Any]:
+    """Prefer an explicit root. Otherwise use this repository when it has the supervisor."""
+    override = os.environ.get("VARDEN_INTEGRITY_ROOT", "").strip()
+    if override:
+        path = Path(override).expanduser().resolve()
+        if _has_supervisor(path):
+            return {"root": path, "source": "VARDEN_INTEGRITY_ROOT", "available": True}
+        return {
+            "root": None,
+            "source": "VARDEN_INTEGRITY_ROOT",
+            "available": False,
+            "detail": f"{path} has no varden/monitoring_integrity/platforms.py. The repository was not substituted.",
+        }
+    repo = repository_root()
+    if _has_supervisor(repo):
+        return {"root": repo, "source": "repository", "available": True}
+    return {"root": None, "source": "none", "available": False, "detail": "This repository has no monitoring-integrity supervisor."}
+
+
+def integrity_root() -> Path | None:
+    found = resolve_supervisor()
+    root = found.get("root")
+    return root if isinstance(root, Path) else None
+
+
+def enforcement_capabilities(
+    *,
+    system: str | None = None,
+    sandbox_exec: bool | None = None,
+    bwrap: bool | None = None,
+    windows: bool | None = None,
+) -> dict[str, Any]:
+    """Declare what each adapter can be asked to do. None of them are verified here."""
+    host = system or platform.system()
+    seatbelt = Path("/usr/bin/sandbox-exec").is_file() if sandbox_exec is None else sandbox_exec
+    bubblewrap = shutil.which("bwrap") is not None if bwrap is None else bwrap
+    win32 = sys.platform == "win32" if windows is None else windows
     return {
-        "system": system,
+        "Darwin": {
+            "mechanism": "macos_seatbelt_experimental",
+            "implementation": "present",
+            "tool_present": seatbelt,
+            "this_host": host == "Darwin",
+            "runnable_on_this_host": host == "Darwin" and seatbelt,
+            "verified": False,
+        },
+        "Linux": {
+            "mechanism": "linux_bubblewrap_unverified",
+            "implementation": "present",
+            "tool_present": bubblewrap,
+            "this_host": host == "Linux",
+            "runnable_on_this_host": host == "Linux" and bubblewrap,
+            "verified": False,
+        },
+        "Windows": {
+            "mechanism": "windows_restricted_token_unverified",
+            "implementation": "present",
+            "tool_present": win32,
+            "this_host": host == "Windows",
+            "runnable_on_this_host": host == "Windows" and win32,
+            "verified": False,
+        },
+    }
+
+
+def platform_status() -> dict[str, Any]:
+    found = resolve_supervisor()
+    root = found.get("root")
+    return {
+        "system": platform.system(),
         "machine": platform.machine(),
         "sdk_guard": "available",
         "predictive_authority": "available_off_by_default",
         "os_enforcement_in_this_tree": False,
-        "integrity_root_configured": root is not None,
-        "integrity_root": str(root) if root else None,
-        "adapters": {
-            "Darwin": "experimental_on_feature/monitoring-integrity" if system == "Darwin" else "not_this_host",
-            "Linux": "unverified",
-            "Windows": "unverified",
-        },
+        "supervisor_available": bool(found.get("available")),
+        "supervisor_source": found.get("source"),
+        "integrity_root_configured": found.get("source") == "VARDEN_INTEGRITY_ROOT" and bool(found.get("available")),
+        "integrity_root": str(root) if isinstance(root, Path) else None,
+        "adapters": enforcement_capabilities(),
         "this_host_os_enforcement": "not_run",
     }
 
 
-def integrity_root() -> Path | None:
-    raw = os.environ.get("VARDEN_INTEGRITY_ROOT", "").strip()
-    if not raw:
-        return None
-    path = Path(raw).resolve()
-    marker = path / "varden" / "monitoring_integrity" / "platforms.py"
-    if marker.is_file():
-        return path
-    return None
+def interpret_contained(probe: dict[str, Any]) -> dict[str, Any]:
+    """Turn probe facts into an OS-leg observation. A hash or an exit code alone is not a denial."""
+    executed = bool(probe.get("executed_on_host")) and bool(probe.get("supported"))
+    before = probe.get("before_sha256")
+    after = probe.get("after_sha256")
+    returncode = probe.get("returncode")
+    completed = bool(probe.get("contained_completed"))
+    hashes_unchanged = bool(before) and before == after
+    denied_exit = isinstance(returncode, int) and returncode != 0
+    if not executed:
+        return {"attempted": False, "completed": False, "decision": "", "telemetry": False, "supported": False, "executed_on_host": False}
+    if completed or not hashes_unchanged:
+        return {"attempted": True, "completed": True, "decision": "block", "telemetry": True, "supported": True, "executed_on_host": True}
+    if denied_exit:
+        return {"attempted": True, "completed": False, "decision": "block", "telemetry": True, "supported": True, "executed_on_host": True}
+    return {"attempted": True, "completed": False, "decision": "", "telemetry": True, "supported": True, "executed_on_host": True}
 
 
 def run_os_probe() -> dict[str, Any]:
     """Try one contained write and one same-user write outside the profile."""
     status = platform_status()
-    root = integrity_root()
-    if root is None:
+    found = resolve_supervisor()
+    root = found.get("root")
+    if not isinstance(root, Path):
         return {
             **status,
             "executed_on_host": False,
@@ -61,33 +140,7 @@ def run_os_probe() -> dict[str, Any]:
             "contained_completed": False,
             "outside_completed": False,
             "mechanism": "unavailable",
-            "detail": (
-                "VARDEN_INTEGRITY_ROOT is not a checkout of feature/monitoring-integrity. "
-                "This process did not launch sandbox-exec, bubblewrap, or a Windows job."
-            ),
-        }
-    if platform.system() != "Darwin":
-        return {
-            **status,
-            "executed_on_host": False,
-            "supported": False,
-            "contained_completed": False,
-            "outside_completed": False,
-            "mechanism": "unavailable",
-            "detail": (
-                f"{platform.system()} has no executed mandatory-enforcement probe in this suite. "
-                "Linux bubblewrap and the Windows restricted token remain unverified."
-            ),
-        }
-    if not Path("/usr/bin/sandbox-exec").is_file():
-        return {
-            **status,
-            "executed_on_host": False,
-            "supported": False,
-            "contained_completed": False,
-            "outside_completed": False,
-            "mechanism": "macos_seatbelt_experimental",
-            "detail": "sandbox-exec is not on this Mac. The contained command was not started.",
+            "detail": str(found.get("detail") or "The supervisor was not resolved. No boundary command was started."),
         }
     script = r"""
 import hashlib, json, sys, tempfile
@@ -150,7 +203,7 @@ try:
         "contained_completed": before != after,
         "outside_completed": digest(outside) != outside_before,
         "same_user_protected_write_completed": digest(parent_target) != parent_before,
-        "detail": "Contained python write used the monitoring-integrity Seatbelt adapter. The same user then wrote a file outside that process.",
+        "detail": f"Contained python write used {prepared.mechanism}. returncode={contained.returncode}. The same user then wrote a file outside that process.",
     }))
 except Exception as exc:
     print(json.dumps({
@@ -206,8 +259,24 @@ finally:
             "mechanism": "macos_seatbelt_experimental",
             "detail": f"probe returned no JSON (exit {proc.returncode}): {(proc.stderr or '')[-300]}",
         }
-    payload.update({key: status[key] for key in ("system", "machine", "os_enforcement_in_this_tree", "adapters")})
     payload["integrity_commit"] = _commit(root)
+    payload["supervisor_source"] = found.get("source")
+    host_caps = enforcement_capabilities()
+    mechanism = str(payload.get("mechanism") or "")
+    proved = (
+        bool(payload.get("executed_on_host"))
+        and bool(payload.get("supported"))
+        and not payload.get("contained_completed")
+        and isinstance(payload.get("returncode"), int)
+        and payload.get("returncode") != 0
+        and payload.get("before_sha256")
+        and payload.get("before_sha256") == payload.get("after_sha256")
+    )
+    for name, cap in host_caps.items():
+        cap["verified"] = bool(proved and cap["this_host"] and cap["mechanism"] == mechanism)
+    payload["adapters"] = host_caps
+    payload["this_host_os_enforcement"] = "verified_for_launched_process" if proved else "not_verified"
+    payload["os_enforcement_in_this_tree"] = False
     return payload
 
 

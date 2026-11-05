@@ -114,6 +114,11 @@ export interface ScenarioRecord {
   coverage_limitations: string[];
   simulated: string[];
   side_effect_completed?: boolean;
+  assurance?: {
+    sdk?: { verdict: Verdict; leg: string };
+    os_supervised?: { verdict: Verdict; leg: string; mechanism?: string };
+    unsupervised_same_user?: { verdict: Verdict; leg: string };
+  };
 }
 
 export interface ScenarioCard {
@@ -130,4 +135,19 @@ export function scopeLines(record: Pick<ScenarioRecord, 'outcomes'>): { baseline
     protected: `${protectedLabel}: ${record.outcomes.protected.verdict}`,
     overall: `Overall scenario outcome: ${record.outcomes.overall.verdict}`,
   };
+}
+
+const ASSURANCE_LABELS = {
+  sdk: 'SDK-mediated protection',
+  os_supervised: 'OS-supervised process',
+  unsupervised_same_user: 'Unsupervised same-user process',
+} as const;
+
+export function assuranceLines(assurance: ScenarioRecord['assurance']): string[] {
+  if (!assurance) {
+    return [];
+  }
+  return (Object.keys(ASSURANCE_LABELS) as (keyof typeof ASSURANCE_LABELS)[])
+    .filter((key) => assurance[key]?.verdict)
+    .map((key) => `${ASSURANCE_LABELS[key]}: ${assurance[key]?.verdict}`);
 }

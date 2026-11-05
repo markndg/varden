@@ -110,6 +110,11 @@ def build_outcomes(
     }
 
 
+def _denied_exit(leg: dict[str, Any]) -> bool:
+    returncode = (leg.get("probe") or {}).get("returncode")
+    return isinstance(returncode, int) and returncode != 0
+
+
 def _downgrade(outcomes: dict[str, Any], verdict: str, basis: str) -> None:
     outcomes["overall"]["verdict"] = verdict
     outcomes["overall"]["basis"] = basis
@@ -146,6 +151,8 @@ def seal(record: dict[str, Any]) -> dict[str, Any]:
             not claim.get("before_sha256") or claim.get("before_sha256") != claim.get("after_sha256")
         ):
             _downgrade(outcomes, "INCONCLUSIVE", "OS prevention did not show an unchanged protected hash")
+        elif claim.get("control_layer") == "os_boundary" and not _denied_exit(claim):
+            _downgrade(outcomes, "INCONCLUSIVE", "OS prevention lacked a non-zero process exit")
         elif not overall.get("excludes_baseline"):
             _downgrade(outcomes, "INCONCLUSIVE", "baseline was folded into the protected prevention claim")
     # A mandatory-enforcement headline cannot be prevention when the only
@@ -156,7 +163,9 @@ def seal(record: dict[str, Any]) -> dict[str, Any]:
             leg for leg in legs
             if leg.get("control_layer") == "os_boundary" and leg.get("verdict") == "VERIFIED_PREVENTED"
         ]
-        if outside and not os_prevented:
+        if outside:
+            _downgrade(outcomes, "UNSUPPORTED", "A same-user or unguarded write completed. Contained OS denial does not cover that process.")
+        elif not os_prevented:
             _downgrade(outcomes, "UNSUPPORTED", "SDK interception is not mandatory OS enforcement")
     record["verdict"] = outcomes["overall"]["verdict"]
     return record

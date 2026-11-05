@@ -11,6 +11,21 @@ def _cell(value: Any) -> str:
     return html.escape(json.dumps(value, sort_keys=True) if isinstance(value, (dict, list)) else str(value))
 
 
+def _assurance_lines(record: dict[str, Any]) -> str:
+    assurance = record.get("assurance") if isinstance(record.get("assurance"), dict) else {}
+    labels = (
+        ("sdk", "SDK-mediated protection"),
+        ("os_supervised", "OS-supervised process"),
+        ("unsupervised_same_user", "Unsupervised same-user process"),
+    )
+    lines = []
+    for key, label in labels:
+        item = assurance.get(key)
+        if isinstance(item, dict) and item.get("verdict"):
+            lines.append(f"<p class=\"verdict\">{_cell(label)}: {_cell(item.get('verdict'))}</p>")
+    return "".join(lines)
+
+
 def _scope_line(record: dict[str, Any], scope: str, label: str) -> str:
     item = (record.get("outcomes") or {}).get(scope) or {}
     verdict = item.get("verdict") or "INCONCLUSIVE"
@@ -60,6 +75,7 @@ td, th {{ border-bottom:1px solid #333; text-align:left; padding:0.4rem; vertica
 {_scope_line(record, "baseline", "Baseline execution")}
 {_scope_line(record, "protected", "Protected execution")}
 {_scope_line(record, "overall", "Overall scenario outcome")}
+{_assurance_lines(record)}
 <p>{basis}</p>
 <p>{_cell(record.get('business_impact'))}</p>
 <p>Objective: {_cell(record.get('objective'))}</p>

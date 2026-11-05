@@ -11,7 +11,7 @@ from typing import Any
 from varden.predictive_authority.hazardous import detect_hazardous_analysis
 from varden.predictive_authority.registry import get_authority_registry, reset_authority_registry
 
-from .os_probe import platform_status, run_os_probe
+from .os_probe import interpret_contained, platform_status, run_os_probe
 from .schema import build_outcomes, classify, seal
 from .session import IsolatedVarden, git_commit, varden_version
 
@@ -402,26 +402,26 @@ def scenario_mandatory() -> dict[str, Any]:
             after=_digest(raw),
         )
         probe = run_os_probe()
-        contained_completed = bool(probe.get("contained_completed"))
-        os_executed = bool(probe.get("executed_on_host")) and bool(probe.get("supported"))
+        observed = interpret_contained(probe)
         os_leg = _leg(
             "os_supervisor",
-            attempted=os_executed,
-            completed=contained_completed if os_executed else False,
-            decision="block" if os_executed else "",
+            attempted=observed["attempted"],
+            completed=observed["completed"],
+            decision=observed["decision"],
             layer="os_boundary",
-            telemetry=os_executed,
-            supported=os_executed,
-            executed_on_host=os_executed,
+            telemetry=observed["telemetry"],
+            supported=observed["supported"],
+            executed_on_host=observed["executed_on_host"],
             detail=str(probe.get("detail") or "OS probe did not run."),
             before=probe.get("before_sha256"),
             after=probe.get("after_sha256"),
         )
         os_leg["mechanism"] = probe.get("mechanism")
-        os_leg["probe"] = {key: probe.get(key) for key in ("mechanism", "executed_on_host", "experimental", "limitations", "returncode", "same_user_protected_write_completed", "integrity_commit", "system")}
+        os_leg["probe"] = {key: probe.get(key) for key in ("mechanism", "executed_on_host", "experimental", "limitations", "returncode", "same_user_protected_write_completed", "integrity_commit", "system", "supervisor_source", "this_host_os_enforcement")}
         outside_legs = [bypass]
+        unsupervised = bypass
         if probe.get("outside_completed") or probe.get("same_user_protected_write_completed"):
-            outside_legs.append(_leg(
+            unsupervised = _leg(
                 "outside_profile_write",
                 attempted=True,
                 completed=True,
@@ -429,50 +429,57 @@ def scenario_mandatory() -> dict[str, Any]:
                 layer="none",
                 telemetry=True,
                 scope="baseline",
-                detail="A same-user write outside the Seatbelt process completed. That write is not covered by the profile.",
-            ))
-        # Universal mandatory enforcement is not established by an SDK block,
-        # nor by a profile that a same-user process can step around.
+                detail="A same-user write outside the supervised process completed. That write is not covered by the profile.",
+            )
+            outside_legs.append(unsupervised)
         overall = "UNSUPPORTED"
         if os_leg["verdict"] == "EXECUTION_ERROR":
             overall = "EXECUTION_ERROR"
-        return _finish(
-            _record(
-                "mandatory-enforcement",
-                "Mandatory enforcement",
-                "A guarded tool can be stopped. A write that never enters Varden is not stopped by the SDK.",
-                "Keep the monitoring configuration unchanged.",
-                policy,
-                mode="sdk_guard_plus_explicit_os_gap",
-                limitations=[
-                    "SDK prevention is not operating-system enforcement.",
-                    "Linux and Windows mandatory protection are unverified.",
-                    "macOS Seatbelt, when probed, covers the launched process only.",
-                    "A same-user process outside the profile is not an OS denial.",
-                ],
-                simulated=["The configuration file is synthetic and disposable."],
-                operator_change=(
-                    "Set VARDEN_INTEGRITY_ROOT to a checkout of feature/monitoring-integrity and run on a host "
-                    "where that checkout's boundary probe has succeeded. Until the contained hash is unchanged "
-                    "and the scenario says so, this page will not call the result OS enforcement."
-                ),
+        record = _record(
+            "mandatory-enforcement",
+            "Mandatory enforcement",
+            "A guarded tool can be stopped. A write that never enters Varden is not stopped by the SDK, and a profile does not cover a same-user process started outside it.",
+            "Keep the monitoring configuration unchanged.",
+            policy,
+            mode="sdk_guard_plus_host_supervisor" if observed["executed_on_host"] else "sdk_guard_plus_explicit_os_gap",
+            limitations=[
+                "SDK prevention is not operating-system enforcement.",
+                "Linux and Windows adapters are in this tree and stay unverified until a probe on that operating system shows an unchanged hash and a non-zero exit.",
+                "macOS Seatbelt, when the contained probe denies the write, covers the launched process only.",
+                "A same-user process outside the profile is not an OS denial.",
+            ],
+            simulated=["The configuration file is synthetic and disposable."],
+            operator_change=(
+                "The gauntlet uses this repository's supervisor unless VARDEN_INTEGRITY_ROOT points somewhere else. "
+                "A denial counts only when that host's adapter runs, the process exits non-zero, and the protected hash is unchanged. "
+                "Other operating systems stay unverified."
             ),
+        )
+        record["assurance"] = {
+            "sdk": {"verdict": guarded["verdict"], "leg": guarded["name"]},
+            "os_supervised": {"verdict": os_leg["verdict"], "leg": os_leg["name"], "mechanism": os_leg.get("mechanism")},
+            "unsupervised_same_user": {"verdict": unsupervised["verdict"], "leg": unsupervised["name"]},
+        }
+        if isinstance(probe.get("adapters"), dict):
+            record["platform_status"]["adapters"] = probe["adapters"]
+            record["platform_status"]["this_host_os_enforcement"] = probe.get("this_host_os_enforcement")
+        return _finish(
+            record,
             baseline=outside_legs,
             protected=[guarded, os_leg],
             claim_leg="os_supervisor",
             overall_verdict=overall,
             basis=(
-                "The protected OS claim is os_supervisor. sdk_guarded_write is SDK interception only. "
-                "Overall stays UNSUPPORTED while a same-user or unguarded write can still complete, "
-                "or while the OS probe was not executed on this host."
+                "SDK-mediated protection, the supervised process, and the unsupervised same-user write are separate. "
+                "Overall stays UNSUPPORTED while a same-user or unguarded write can still complete, or while this host did not execute a denying probe."
                 if overall == "UNSUPPORTED"
-                else "The contained probe was labeled as a denial but the protected bytes changed."
+                else "The contained probe was labeled as a denial but the protected bytes changed or the exit status did not show a denial."
             ),
             guide={
                 "legitimate_task": "Keep the monitoring configuration unchanged.",
-                "hazard": "A direct open().write() that never calls /sdk/guard, then the same class of write inside and outside an OS profile when one is configured.",
-                "control_name": "SDK guard, and Seatbelt only when VARDEN_INTEGRITY_ROOT is set on Darwin",
-                "difference": "The SDK stops the guarded tool. It does not stop the unguarded write. An OS result appears only after a real probe.",
+                "hazard": "A direct open().write() that never calls /sdk/guard, then the same class of write inside and outside the supervisor.",
+                "control_name": "SDK guard, and the local OS supervisor when this host can run it",
+                "difference": "The SDK stops the guarded tool. The supervisor stops a write inside its process only when the probe shows that. The same user outside the profile can still write.",
             },
         )
     finally:

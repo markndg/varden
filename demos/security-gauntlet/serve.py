@@ -30,6 +30,7 @@ def capabilities():
         "checkout": runner.git_commit(),
         "version": runner.varden_version(),
         "os_enforcement_in_this_tree": False,
+        "supervisor_in_tree": bool(runner.platform_status().get("supervisor_available")),
         "platform": runner.platform_status(),
         "matrix_path": "CAPABILITY_MATRIX.md",
         "matrix_present": matrix.is_file(),

@@ -78,7 +78,8 @@ def test_buyer_can_run_prompt_injection_and_see_a_real_verdict():
             assert "Baseline execution: OBSERVED_ONLY" in body
             assert "Protected execution (untrusted_export): VERIFIED_PREVENTED" in body
             assert "Overall scenario outcome: VERIFIED_PREVENTED" in body
-            assert "OS enforcement in this tree: no" in body
+            assert "verified enforcement is per run" in body
+            assert "Supervisor in this checkout: no" in body
             browser.close()
     finally:
         server.should_exit = True

@@ -47,18 +47,19 @@ Branch `feature/monitoring-integrity` at `8fcf94a`. The security gauntlet does n
 | Windows restricted token and job object | `platforms.py` on that branch | Not executed. A job object is not a filesystem sandbox. | **Unverified.** |
 | Other Unix | no enforcing adapter | n/a | **Unsupported.** |
 
-## After the readiness pass
+## After the supervisor landed on this branch
 
-Branch `feature/security-gauntlet-readiness`, based on `feature/security-gauntlet` `66e38c6`. The monitoring-integrity commit is still not merged. The gauntlet can launch that checkout's Seatbelt adapter only when `VARDEN_INTEGRITY_ROOT` points at it. Without that variable the OS leg is `UNSUPPORTED` and no sandbox command is started.
+Commit `bc85306` merges `feature/monitoring-integrity` into `feature/security-gauntlet-readiness`. The gauntlet resolves `varden/monitoring_integrity` from this repository. `VARDEN_INTEGRITY_ROOT` still overrides that location and is not silently replaced when the override is missing the supervisor.
+
+A platform is verified only for a probe that ran on that platform and showed a non-zero exit plus an unchanged protected hash. Linux and Windows stay unverified on a Mac. A same-user write outside the launched process remains outside the denial. The overall mandatory-enforcement result stays `UNSUPPORTED` while that write completes.
 
 | Host | What this suite will claim |
 |---|---|
-| macOS, integrity root unset | SDK and Predictive Authority only. OS leg `UNSUPPORTED`. |
-| macOS, integrity root set to `feature/monitoring-integrity`, contained hash unchanged | Contained process `VERIFIED_PREVENTED` for `macos_seatbelt_experimental`. Overall stays `UNSUPPORTED` when a same-user write outside the profile completes. |
-| Linux | OS leg `UNSUPPORTED`. Bubblewrap is unverified. The suite does not pretend a probe ran. |
-| Windows | OS leg `UNSUPPORTED`. The restricted token is unverified. The suite does not pretend a probe ran. |
+| macOS, supervisor present in this repository | Contained process can be `VERIFIED_PREVENTED` for `macos_seatbelt_experimental` after exit status and hash agree. Overall stays `UNSUPPORTED` when a same-user write outside the profile completes. Linux and Windows are not marked verified. |
+| Linux | The bubblewrap adapter is present and unverified until a Linux probe shows the same exit and hash evidence. Absence of `bwrap` does not start the command. |
+| Windows | The restricted-token adapter is present and unverified until a Windows probe shows the same evidence. |
 
-On Darwin 27.2 arm64, with the integrity worktree at `8fcf94a`, one contained `open` under `sandbox-exec -f` left the protected file hash unchanged (`dc70b8c6ac967c4c883f6ad2355596510a0bd5df4fdf5e91ca3a0edfff240f98`) and returned exit code 1. The same user then wrote a file outside that process. That outside write completed. This is not a release of the supervisor.
+On Darwin, with the supervisor resolved from this repository, one contained `open` under `sandbox-exec -f` exited 1 and left `dc70b8c6ac967c4c883f6ad2355596510a0bd5df4fdf5e91ca3a0edfff240f98` unchanged. The same user wrote a file outside that process. Darwin was the only adapter marked verified for that run.
 
 ## What the gauntlet is allowed to claim
 

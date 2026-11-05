@@ -49,7 +49,7 @@ Start on Predictive Authority. Each scenario is one real execution of the baseli
 
 If time remains, run prompt injection and point at the allowed summary as a different protected step from the prevented export. Run mandatory enforcement and leave the overall line at `UNSUPPORTED` unless a contained Seatbelt probe was actually executed. Run the coverage gap last. The file changes.
 
-Operating-system enforcement is not in this checkout. To probe the unmerged supervisor on macOS, set `VARDEN_INTEGRITY_ROOT` to a checkout of `feature/monitoring-integrity` and run mandatory enforcement again. Linux and Windows stay unverified. A same-user write outside the profile is not prevention.
+The gauntlet uses the supervisor in this repository. Set `VARDEN_INTEGRITY_ROOT` only to point at a different checkout. A contained denial is reported for the launched process when the exit status is non-zero and the protected hash is unchanged. Linux and Windows stay unverified until that probe runs there. A same-user write outside the profile is not prevention, and the overall result stays `UNSUPPORTED` while that write can complete.
 
 ## Tests
 

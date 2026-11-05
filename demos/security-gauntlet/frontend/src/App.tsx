@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AuthorityGraph } from './AuthorityGraph';
-import { scopeLines, type Leg, type ScenarioCard, type ScenarioRecord, type Verdict } from './types';
+import { assuranceLines, scopeLines, type Leg, type ScenarioCard, type ScenarioRecord, type Verdict } from './types';
 
 const STEPS = [
   'Legitimate task',
@@ -40,8 +40,9 @@ export function App() {
       .catch(() => setError('The gauntlet API is not reachable.'));
     fetch('/api/capabilities')
       .then((response) => response.json())
-      .then((body: { checkout?: string; version?: string; os_enforcement_in_this_tree?: boolean }) => {
-        setCheckout(`${body.version || 'unknown'} · ${body.checkout || 'unknown'} · OS enforcement in this tree: ${body.os_enforcement_in_this_tree ? 'yes' : 'no'}`);
+      .then((body: { checkout?: string; version?: string; supervisor_in_tree?: boolean }) => {
+        const present = body.supervisor_in_tree ? 'yes' : 'no';
+        setCheckout(`${body.version || 'unknown'} · ${body.checkout || 'unknown'} · Supervisor in this checkout: ${present} · verified enforcement is per run`);
       })
       .catch(() => undefined);
   }, []);
@@ -103,6 +104,7 @@ export function App() {
               <p className="verdict" data-kind={tone(record.outcomes.protected.verdict)}>{lines.protected}</p>
               <p className="verdict" data-kind={tone(record.outcomes.overall.verdict)}>{lines.overall}</p>
               <p className="muted">{record.outcomes.overall.basis}</p>
+              {assuranceLines(record.assurance).map((line) => <p key={line} className="verdict">{line}</p>)}
             </div>
           ) : null}
           {step === 0 ? <p><strong>Legitimate task. </strong>{record?.guide?.legitimate_task || record?.objective || 'Run the scenario to record the task that was actually sent.'}</p> : null}
