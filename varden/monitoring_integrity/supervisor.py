@@ -160,16 +160,27 @@ class Supervisor:
         gateway_ports: tuple[int, ...] = (),
         wait: bool = True,
         lifecycle: str = LIFECYCLE_CONTINUE,
+        authority: str = "developer",
+        agent_prefix: tuple[str, ...] = (),
+        supervisor_uid: int | None = None,
+        agent_uid: int | None = None,
     ) -> dict[str, Any]:
         if mode not in {"protected", "observe"}:
             return _failure(STATE_FAILED, "mode must be protected or observe")
+        if authority not in {"developer", "isolated"}:
+            return _failure(STATE_FAILED, "authority must be developer or isolated", authority_model=authority)
+        if authority == "isolated" and not agent_prefix:
+            return _failure(STATE_FAILED, "isolated authority has no agent identity; the command was not started", authority_model=authority)
         if not argv:
             return _failure(STATE_FAILED, "no command was provided")
         execution_id = _execution_id()
         directory = self._dir(execution_id)
         protected = Path(protected)
         workspace = Path(workspace)
-        before = protected.read_text(encoding="utf-8") if protected.exists() else None
+        try:
+            before = protected.read_text(encoding="utf-8") if protected.exists() else None
+        except OSError as exc:
+            return _failure(STATE_FAILED, f"supervisor could not read the protected asset: {exc}", authority_model=authority)
         if before is None:
             return _failure(STATE_FAILED, "protected asset is missing", execution_id=execution_id)
         if mode == "observe":
@@ -185,12 +196,22 @@ class Supervisor:
             gateway_ports=gateway_ports,
         )
         if not prepared.ok:
-            return _failure(STATE_FAILED, prepared.reason, execution_id=execution_id, mechanism=prepared.mechanism)
+            return _failure(STATE_FAILED, prepared.reason, execution_id=execution_id, mechanism=prepared.mechanism, authority_model=authority)
+        if agent_prefix:
+            prepared.prefix = tuple(agent_prefix) + tuple(prepared.prefix)
         state = transition(STATE_CONFIGURED, STATE_ESTABLISHING)
         key = secrets.token_bytes(32)
         key_path = directory / "authority.key"
-        key_path.write_bytes(key)
-        os.chmod(key_path, 0o600)
+        if key_path.exists() or key_path.is_symlink():
+            return _failure(STATE_FAILED, "signing key already exists; it was not regenerated and the command was not started", execution_id=execution_id, mechanism=prepared.mechanism, authority_model=authority)
+        try:
+            descriptor = os.open(key_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except OSError as exc:
+            return _failure(STATE_FAILED, f"signing key could not be created: {exc}; the command was not started", execution_id=execution_id, mechanism=prepared.mechanism, authority_model=authority)
+        try:
+            os.write(descriptor, key)
+        finally:
+            os.close(descriptor)
         write_result = workspace / f".varden-mip-probe-{execution_id}.txt"
         secret_result = workspace / f".varden-mip-secret-{execution_id}.txt"
         _run_probe(adapter, prepared, [sys.executable, "-c", _WRITE_PROBE, str(protected), str(write_result)], workspace)
@@ -219,8 +240,11 @@ class Supervisor:
                     started_at=None,
                     reason=reason,
                     lifecycle=lifecycle,
-                    mechanism=prepared.mechanism,
-                ), key),
+                mechanism=prepared.mechanism,
+                authority_model=authority,
+                supervisor_uid=supervisor_uid,
+                agent_uid=agent_uid,
+            ), key),
             )
             return _failure(
                 STATE_FAILED,
@@ -269,6 +293,9 @@ class Supervisor:
                 mechanism=prepared.mechanism,
                 covers=("filesystem", "secret"),
                 termination_confirmed=not tampered,
+                authority_model=authority,
+                supervisor_uid=supervisor_uid,
+                agent_uid=agent_uid,
             ), key)
             self._write(directory, record)
             return {
@@ -281,6 +308,8 @@ class Supervisor:
                 "verified": False,
                 "current_tier": state,
                 "mechanism": prepared.mechanism,
+                "authority_model": authority,
+                "verified_by_probe": not tampered,
                 "protected_unchanged": not tampered,
                 "attestation_path": str(directory / "attestation.json"),
             }
@@ -308,6 +337,9 @@ class Supervisor:
                 lifecycle=lifecycle,
                 mechanism=prepared.mechanism,
                 covers=("filesystem", "secret"),
+                authority_model=authority,
+                supervisor_uid=supervisor_uid,
+                agent_uid=agent_uid,
             ), key)
         self._write(directory, record)
         return {
@@ -320,6 +352,7 @@ class Supervisor:
             "verified": running_verified,
             "current_tier": running_state,
             "mechanism": prepared.mechanism,
+            "authority_model": authority,
             "pid": proc.pid,
             "process": proc,
             "protected_unchanged": True,
@@ -338,6 +371,8 @@ class Supervisor:
             return {"ok": False, "state": STATE_FAILED, "verified": False, "reason": "mac_mismatch"}
         if record.get("origin") != "supervisor":
             return {"ok": False, "state": STATE_FAILED, "verified": False, "reason": "origin_rejected"}
+        if str(record.get("execution_id") or "") != execution_id:
+            return {"ok": False, "state": STATE_FAILED, "verified": False, "reason": "execution_id_mismatch"}
         now = time.time() if now is None else now
         issued = float(record.get("issued_at") or 0)
         expired = now - issued > self.freshness_s or now < issued
@@ -529,9 +564,16 @@ class Supervisor:
         }
 
     def _write(self, directory: Path, record: dict[str, Any]) -> None:
-        path = directory / "attestation.json"
-        path.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
-        os.chmod(path, 0o600)
+        payload = json.dumps(record, sort_keys=True).encode("utf-8")
+        temporary = directory / f".attestation-{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            os.write(descriptor, payload)
+        finally:
+            os.close(descriptor)
+        destination = directory / "attestation.json"
+        os.replace(temporary, destination)
+        os.chmod(destination, 0o600)
 
 
 def _body(
@@ -553,10 +595,16 @@ def _body(
     mechanism: str = MECHANISM,
     covers: tuple[str, ...] = (),
     termination_confirmed: bool = False,
+    authority_model: str = "developer",
+    supervisor_uid: int | None = None,
+    agent_uid: int | None = None,
 ) -> dict[str, Any]:
     return {
         "execution_id": execution_id,
         "origin": "supervisor",
+        "authority_model": authority_model,
+        "supervisor_uid": supervisor_uid,
+        "agent_uid": agent_uid,
         "state": state,
         "established": established,
         "verified": verified and state == STATE_VERIFIED,
@@ -581,12 +629,12 @@ def _body(
         "returncode": returncode,
         "reason": reason,
         "limitations": list(_LIMITATIONS),
-        "network": "localhost_tcp_allowlist_only",
+        "network": "localhost_tcp_allowlist_only" if platform.system() == "Darwin" else "not_claimed",
         "remote_mcp": "NOT_ENFORCEABLE",
     }
 
 
-def _failure(state: str, reason: str, *, execution_id: str | None = None, launched: bool = False, mechanism: str | None = None) -> dict[str, Any]:
+def _failure(state: str, reason: str, *, execution_id: str | None = None, launched: bool = False, mechanism: str | None = None, authority_model: str = "developer") -> dict[str, Any]:
     return {
         "ok": False,
         "launched": launched,
@@ -597,6 +645,7 @@ def _failure(state: str, reason: str, *, execution_id: str | None = None, launch
         "verified": False,
         "current_tier": state,
         "mechanism": mechanism or ("unavailable" if platform.system() != "Darwin" else MECHANISM),
+        "authority_model": authority_model,
         "reason": reason,
         "protected_unchanged": None,
     }
@@ -705,10 +754,27 @@ def run_argv(argv: list[str] | None = None) -> int:
     parser.add_argument("--status", default=None, help="Verify an existing execution id and print its current state")
     parser.add_argument("--capabilities", action="store_true", help="Print platform assurance. This is not a live verification.")
     parser.add_argument("--lifecycle", default=LIFECYCLE_CONTINUE, choices=[LIFECYCLE_CONTINUE, LIFECYCLE_TERMINATE])
+    parser.add_argument("--authority", default="developer", choices=["developer", "isolated"])
     parser.add_argument("--json", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
-    state_dir = Path(args.state_dir) if args.state_dir else Path.home() / ".varden" / "mip-supervisor"
+    if args.authority == "isolated":
+        from .authority import STATE_DIR, agent_launch_prefix, begin_isolated_launch, identities
+        if args.state_dir:
+            print(json.dumps({"ok": False, "launched": False, "state": "FAILED", "authority_model": "isolated", "reason": "isolated authority does not accept an alternate state directory; the command was not started"}))
+            return 1
+        stopped = begin_isolated_launch(["run", *list(argv or [])])
+        if stopped is not None:
+            print(json.dumps(stopped, indent=2, sort_keys=True))
+            return 1
+        state_dir = STATE_DIR
+        supervisor_uid, agent_uid = identities()
+        prefix = agent_launch_prefix()
+    else:
+        state_dir = Path(args.state_dir) if args.state_dir else Path.home() / ".varden" / "mip-supervisor"
+        supervisor_uid = None
+        agent_uid = None
+        prefix = ()
     supervisor = Supervisor(state_dir)
     if args.capabilities:
         from .contract import platform_matrix
@@ -753,6 +819,10 @@ def run_argv(argv: list[str] | None = None) -> int:
         policy_bytes=policy_bytes,
         cwd=Path(args.cwd) if args.cwd else workspace,
         lifecycle=args.lifecycle,
+        authority=args.authority,
+        agent_prefix=prefix,
+        supervisor_uid=supervisor_uid,
+        agent_uid=agent_uid,
     )
     if args.json or not result.get("launched"):
         print(json.dumps({key: value for key, value in result.items() if key != "process"}, indent=2, sort_keys=True, default=str))

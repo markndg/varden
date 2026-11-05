@@ -39,6 +39,14 @@ def _production_lines(record: dict[str, Any]) -> str:
     return f"<h2>Production entry</h2><ul>{items}</ul>"
 
 
+def _authority_line(record: dict[str, Any]) -> str:
+    authority = record.get("authority") if isinstance(record.get("authority"), dict) else {}
+    isolated = authority.get("isolated") if isinstance(authority, dict) else None
+    if not isinstance(isolated, dict) or not isolated.get("status"):
+        return ""
+    return f"<p class=\"verdict\">Isolated supervisor authority: {_cell(isolated.get('status'))}</p>"
+
+
 def _scope_line(record: dict[str, Any], scope: str, label: str) -> str:
     item = (record.get("outcomes") or {}).get(scope) or {}
     verdict = item.get("verdict") or "INCONCLUSIVE"
@@ -90,6 +98,7 @@ td, th {{ border-bottom:1px solid #333; text-align:left; padding:0.4rem; vertica
 {_scope_line(record, "overall", "Overall scenario outcome")}
 {_assurance_lines(record)}
 {_production_lines(record)}
+{_authority_line(record)}
 <p>{basis}</p>
 <p>{_cell(record.get('business_impact'))}</p>
 <p>Objective: {_cell(record.get('objective'))}</p>

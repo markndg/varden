@@ -376,8 +376,13 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument('--status', default=None)
     run.add_argument('--capabilities', action='store_true')
     run.add_argument('--lifecycle', default='continue_restricted')
+    run.add_argument('--authority', default='developer', choices=['developer', 'isolated'])
     run.add_argument('--json', action='store_true')
     run.add_argument('run_command', nargs=argparse.REMAINDER)
+    supervisor_cmd = sub.add_parser('supervisor', help='Monitoring supervisor authority')
+    supervisor_sub = supervisor_cmd.add_subparsers(dest='supervisor_command', required=True)
+    supervisor_sub.add_parser('status', help='Show whether isolated authority is available, configured, or unsupported')
+    supervisor_sub.add_parser('provision', help='Create the Linux supervisor and agent identities. Requires root.')
     monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
     monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
     session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
@@ -437,10 +442,18 @@ def main(argv: list[str] | None = None) -> int:
             forwarded.append('--capabilities')
         if args.lifecycle:
             forwarded.extend(['--lifecycle', args.lifecycle])
+        if getattr(args, 'authority', None):
+            forwarded.extend(['--authority', args.authority])
         if args.json:
             forwarded.append('--json')
         forwarded.extend(args.run_command or [])
         return run_argv(forwarded)
+    if args.command == 'supervisor':
+        from .monitoring_integrity.authority import diagnose, provision
+        if args.supervisor_command == 'provision':
+            return provision()
+        print(json.dumps(diagnose(), indent=2, sort_keys=True))
+        return 0
     if args.command == 'runtime':
         from .runtime.cli import runtime_argv
         return runtime_argv(args)

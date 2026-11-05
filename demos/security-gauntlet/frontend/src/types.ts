@@ -123,6 +123,10 @@ export interface ScenarioRecord {
     entry_point?: string;
     cases?: { name: string; outcome: string; capability?: string }[];
   };
+  authority?: {
+    isolated?: { status?: string };
+    developer?: { status?: string };
+  };
 }
 
 export interface ScenarioCard {

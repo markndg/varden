@@ -489,6 +489,13 @@ def scenario_mandatory() -> dict[str, Any]:
                 for case in production.get("cases") or []
             ],
         }
+        from varden.monitoring_integrity.authority import diagnose
+        authority = diagnose()
+        record["authority"] = {
+            "developer": authority.get("developer"),
+            "isolated": authority.get("isolated"),
+            "system": authority.get("system"),
+        }
         return _finish(
             record,
             baseline=outside_legs,

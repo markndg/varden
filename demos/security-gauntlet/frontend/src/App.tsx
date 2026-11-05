@@ -180,6 +180,9 @@ function Evidence({ record, claim }: { record: ScenarioRecord; claim: Leg | unde
           </ul>
         </>
       ) : null}
+      {record.authority?.isolated?.status ? (
+        <p className="mono">Isolated supervisor authority: {record.authority.isolated.status}</p>
+      ) : null}
       <h2>Coverage</h2>
       <ul>{record.coverage_limitations.map((item) => <li key={item}>{item}</li>)}</ul>
       {record.operator_change ? <p><strong>What changes enforcement. </strong>{record.operator_change}</p> : null}

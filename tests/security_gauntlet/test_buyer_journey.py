@@ -154,6 +154,7 @@ def test_mandatory_page_lists_the_production_entry_from_the_record():
                 assert by_name["direct_write"]["outcome"] == "OS_DENIED"
                 assert by_name["hardlink_write"]["outcome"] == "FAIL_CLOSED"
                 assert "Unsupervised same-user process: OBSERVED_ONLY" in body
+                assert "Isolated supervisor authority: unsupported" in body
             browser.close()
     finally:
         server.should_exit = True

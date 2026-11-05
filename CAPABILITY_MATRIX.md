@@ -82,7 +82,8 @@ Linux bubblewrap and Windows filesystem denial were not executed on the Mac that
 | Host | What was executed | Filesystem | Network | Same-user outside the launch |
 |---|---|---|---|---|
 | macOS 27.2 arm64 | `varden run --protected`, Seatbelt | Denied for the launched tree, including a symlink. A pre-existing hard link is refused before launch. | TCP connect to `1.1.1.1:443` and `127.0.0.1:9` was denied | Write completed |
-| Linux 6.8.0-100-generic aarch64, user namespaces permitted | `varden run --protected`, bubblewrap | Denied for the launched tree. Hard link refused before launch. With AppArmor unprivileged user namespaces blocked, the command did not start | Connect to `1.1.1.1:443` succeeded. Not isolated | Write completed |
+| Linux 6.8.0-100-generic aarch64, user namespaces permitted | `varden run --protected`, bubblewrap, developer mode | Denied for the launched tree. Hard link refused before launch. With AppArmor unprivileged user namespaces blocked, the command did not start | Connect to `1.1.1.1:443` succeeded. Not isolated | Write completed |
+| Linux, same host, `varden run --protected --authority isolated` | Two users, `varden-supervisor` and `varden-agent` | The agent user, including outside the process tree, could not read or replace supervisor state. The protected hash did not change | Not isolated | The agent user is outside the supervisor identity. An administrator is still outside the claim |
 | Windows | Not executed | **UNSUPPORTED** | **UNSUPPORTED** | Not tested |
 
 The static `platform_matrix()` cells stay `unverified` for Linux and Windows. A source checkout does not become a live verdict. The rows above are this session's execution record.

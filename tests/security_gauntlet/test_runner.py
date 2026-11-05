@@ -120,6 +120,7 @@ def test_mandatory_scenario_separates_sdk_os_and_same_user(monkeypatch):
         assert produced["hardlink_write"]["before_sha256"] == produced["hardlink_write"]["after_sha256"]
         assert "Production entry" in html
         assert "direct_write: OS_DENIED" in html
+        assert "Isolated supervisor authority: unsupported" in html
         exported = json.loads(runner.render_json(record))
         exported_direct = next(item for item in exported["production_entry"]["cases"] if item["name"] == "direct_write")
         assert exported_direct["outcome"] == "OS_DENIED"
