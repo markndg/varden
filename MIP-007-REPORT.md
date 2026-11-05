@@ -1,6 +1,7 @@
 # MIP-007 report
 
 Starting commit: `9109842593990cf364685eafe8b1e101bb97de38`  
+Implementation commit: `17a0ec8a38cc4fffacda4cc20387db4f9c3ae381`  
 Branch: `feature/security-gauntlet-readiness`  
 Not merged, tagged, pushed, or released.
 
