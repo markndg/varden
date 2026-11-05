@@ -70,3 +70,10 @@ On Darwin, with the supervisor resolved from this repository, one contained `ope
 | Mandatory enforcement | SDK leg can be prevented. An unguarded write is expected to succeed. A Seatbelt result is recorded only after `VARDEN_INTEGRITY_ROOT` runs the other checkout's adapter and the protected hash is unchanged. | Overall stays `UNSUPPORTED` unless that contained probe is the claim and no outside write completed. A same-user outside write keeps the overall result from being universal prevention. |
 | Evidence export | The record of a real run, including the three scoped verdicts | Cannot upgrade the run's verdict |
 | Coverage gap | Direct write outside the SDK | Must not report prevention |
+
+## MIP-005 production entry
+
+`varden run --protected` was executed on Darwin 27.2 arm64. Direct, child, policy, symlink, environment, and supervisor-key attempts left the protected hash unchanged and recorded an attempt note of `denied`. Those agent processes exited 0 because they caught the error. The unchanged hash and the attempt note are the denial evidence. The exit code is not. An unsupervised same-user write completed. A protected path placed inside the workspace did not start. A rewritten attestation MAC was rejected.
+
+Linux bubblewrap and Windows filesystem denial were not executed on this host. They stay **UNSUPPORTED**. See `MIP-005-REPORT.md`.
+

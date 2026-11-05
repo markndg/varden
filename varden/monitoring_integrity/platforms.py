@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .boundary import BoundaryLayoutError, contained_environment, seatbelt_profile, write_profile
+from .boundary import BoundaryLayoutError, assert_layout, contained_environment, seatbelt_profile, write_profile
 
 MECHANISM_DARWIN = "macos_seatbelt_experimental"
 MECHANISM_LINUX = "linux_bubblewrap_unverified"
@@ -92,6 +92,14 @@ class LinuxBubblewrap:
         bwrap = shutil.which("bwrap")
         if not bwrap:
             return PreparedBoundary(ok=False, reason="bubblewrap is not available; Linux protected execution was not started", mechanism=self.mechanism)
+        try:
+            assert_layout(workspace=workspace, protected=protected, secret=state_dir)
+        except BoundaryLayoutError as exc:
+            return PreparedBoundary(
+                ok=False,
+                reason=f"Linux layout refused before launch: {exc}",
+                mechanism=self.mechanism,
+            )
         prefix = (
             bwrap,
             "--unshare-user",
@@ -112,6 +120,7 @@ class LinuxBubblewrap:
             limitations=(
                 "Linux bubblewrap is implemented and unverified. A successful probe on a Linux host is required before any claim.",
                 "User namespaces may be disabled. A failed probe does not launch the command.",
+                "A protected path inside the writable workspace is refused. That check is not a substitute for a Linux execution.",
                 "This adapter does not claim network, MCP, or same-user host isolation.",
             ),
         )
@@ -145,8 +154,9 @@ class WindowsRestrictedJob:
             experimental=True,
             limitations=(
                 "Windows restricted-token enforcement is unverified until a Windows runner completes the probe.",
+                "DISABLE_MAX_PRIVILEGE and a kill-on-close job are not a filesystem boundary.",
+                "Launch stays fail-closed unless a pre-launch write to the protected file is denied and the file hash is unchanged.",
                 "A job object controls process-tree lifetime. It is not a filesystem or network sandbox.",
-                "Filesystem denial depends on the restricted token probe, not on the job object.",
             ),
         )
 

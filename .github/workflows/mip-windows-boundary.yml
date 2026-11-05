@@ -12,6 +12,6 @@ jobs:
         with:
           python-version: "3.13"
       - name: Platform honesty tests
-        run: python -m pytest -q tests/monitoring_integrity/test_platforms.py
+        run: python -m pytest -q tests/monitoring_integrity/test_platforms.py tests/monitoring_integrity/test_mip005.py
       - name: Note
-        run: echo "This job does not yet claim a Windows filesystem boundary. Protected launch stays fail-closed until a Windows probe denies the protected write."
+        run: echo "A green Windows job is not filesystem verification. OS_DENIED is recorded only when the protected hash is unchanged after a launched attempt."

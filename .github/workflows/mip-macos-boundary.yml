@@ -12,4 +12,4 @@ jobs:
         with:
           python-version: "3.13"
       - name: Supervised Seatbelt tests
-        run: python -m pytest -q tests/monitoring_integrity/test_supervisor.py tests/monitoring_integrity/test_platforms.py
+        run: python -m pytest -q tests/monitoring_integrity/test_supervisor.py tests/monitoring_integrity/test_platforms.py tests/monitoring_integrity/test_mip005.py
