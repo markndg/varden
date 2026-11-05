@@ -1,0 +1,23 @@
+[Unit]
+Description=Varden monitoring-integrity watchdog
+Documentation=file:/usr/share/doc/varden/monitoring-integrity.md
+
+[Service]
+# Run as a user that the agent cannot signal.
+# This unit is a reference. Installing it is a deployment choice, not an SDK guarantee.
+Type=oneshot
+User=varden-watch
+Group=varden-watch
+Restart=no
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/var/lib/varden
+ExecStart=/usr/bin/python3 -m varden.monitoring_integrity.watchdog --manifest /etc/varden/mip-manifest.json --json
+# A non-zero exit means the snapshot was not ok. It does not by itself prove sabotage.
+# See the watchdog kind field: process_failure, connectivity_loss, heartbeat_missed,
+# monitoring_degradation, and confirmed_tampering are different.
+
+[Install]
+WantedBy=multi-user.target

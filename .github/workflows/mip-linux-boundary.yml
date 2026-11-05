@@ -1,0 +1,49 @@
+name: MIP Linux boundary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  posix-boundary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Separate the agent from the protected file
+        run: |
+          set -eu
+          sudo useradd --system --create-home --shell /usr/sbin/nologin varden-agent
+          sudo useradd --system --create-home --shell /usr/sbin/nologin varden-watch
+          sudo install -d -o root -g varden-watch -m 0750 /var/lib/varden/protected
+          sudo install -d -o varden-agent -g varden-agent -m 0750 /var/lib/varden/work
+          echo '{"audit":{"enabled":true}}' | sudo tee /var/lib/varden/protected/monitoring.json >/dev/null
+          sudo chown root:varden-watch /var/lib/varden/protected/monitoring.json
+          sudo chmod 0640 /var/lib/varden/protected/monitoring.json
+          sudo install -d -o root -g varden-watch -m 0750 /etc/varden/authority
+          echo supervisor-only | sudo tee /etc/varden/authority/approval.key >/dev/null
+          sudo chown root:varden-watch /etc/varden/authority/approval.key
+          sudo chmod 0640 /etc/varden/authority/approval.key
+          set +e
+          sudo -u varden-agent python3 -c 'open("/var/lib/varden/protected/monitoring.json","w").write("disabled")'
+          write_rc=$?
+          sudo -u varden-agent python3 -c 'print(open("/etc/varden/authority/approval.key").read())'
+          read_rc=$?
+          sudo -u varden-agent python3 -c 'open("/var/lib/varden/work/notes.txt","w").write("fine")'
+          work_rc=$?
+          set -e
+          test "$write_rc" -ne 0
+          test "$read_rc" -ne 0
+          test "$work_rc" -eq 0
+          grep -q '"enabled":true' /var/lib/varden/protected/monitoring.json
+          echo "linux posix boundary held for varden-agent"
+
+  bubblewrap-adapter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install bubblewrap
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Run the supervised launch tests on Linux
+        run: python -m pytest -q tests/monitoring_integrity/test_supervisor.py tests/monitoring_integrity/test_platforms.py

@@ -741,6 +741,20 @@ def create_app(config: AppConfig) -> FastAPI:
         # One coherent policy snapshot for evaluate + budget + PA on this decision.
         policy_doc = policy.get_policy()
         decision = policy.evaluate(action, policy_doc=policy_doc)
+        mip_token = None
+        try:
+            from .monitoring_integrity.service import apply_to_decision, reset_binding
+
+            decision, mip_token = apply_to_decision(action, decision, policy_doc)
+        except Exception:
+            section = policy_doc.get("monitoring_integrity") if isinstance(policy_doc, dict) else None
+            if isinstance(section, dict) and section.get("enabled") and section.get("mode") in {"guarded", "strict"}:
+                decision = Decision(
+                    action="block",
+                    reason="monitoring integrity evaluation failed closed",
+                    matched_rule={"type": "monitoring_integrity", "invariant": "INV-008"},
+                    effective_action="block",
+                )
         budget_rules = load_budget_rules(policy_doc)
         budget_reservation_ids: list[int] = []
         budget_entries: list[dict[str, Any]] = []
@@ -789,6 +803,14 @@ def create_app(config: AppConfig) -> FastAPI:
         except Exception:
             # Predictive Authority must never bypass or break core enforcement.
             pass
+        finally:
+            if mip_token is not None:
+                try:
+                    from .monitoring_integrity.service import reset_binding
+
+                    reset_binding(mip_token)
+                except Exception:
+                    pass
         identity = (action.metadata or {}).get("identity") if isinstance(action.metadata, dict) else None
         if isinstance(identity, dict) and identity.get("decision") in {"block", "unsupported"}:
             if decision.action not in {"block", "unsupported", "require_approval"}:
@@ -932,6 +954,10 @@ def create_app(config: AppConfig) -> FastAPI:
 
     @app.get("/ui/predictive", response_class=HTMLResponse)
     def ui_predictive():
+        return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
+
+    @app.get("/ui/integrity", response_class=HTMLResponse)
+    def ui_integrity():
         return (Path(__file__).parent / "web" / "dashboard.html").read_text(encoding="utf-8")
 
     @app.get("/ui/threat-intelligence", response_class=HTMLResponse)
@@ -1662,6 +1688,7 @@ def create_app(config: AppConfig) -> FastAPI:
         get_posture=lambda: evaluate_posture().to_dict(),
         db_path=config.db_path,
         signing_secret=config.signing_secret,
+        get_policy=policy.get_policy,
     )
     register_threat_intelligence_routes(app, require=require, service=threat_service)
 

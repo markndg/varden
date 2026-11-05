@@ -19,6 +19,7 @@ def register_runtime_routes(
     get_posture: Callable[[], dict[str, Any]] | None = None,
     db_path: str | None = None,
     signing_secret: str | None = None,
+    get_policy: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     @app.get("/runtime/coverage")
     def runtime_coverage(
@@ -72,6 +73,25 @@ def register_runtime_routes(
             "strict_readiness": (live or {}).get("strict_readiness"),
             "categories": (live or {}).get("categories") or [],
         }
+
+    @app.get("/runtime/integrity")
+    def runtime_integrity(
+        x_api_key: str | None = Header(default=None),
+        authorization: str | None = Header(default=None),
+    ):
+        require(x_api_key, authorization, "viewer", scope="read")
+        from varden.monitoring_integrity.service import posture
+
+        policy_doc = None
+        if get_policy is not None:
+            try:
+                policy_doc = get_policy()
+            except Exception:
+                policy_doc = None
+        body = posture(policy_doc if isinstance(policy_doc, dict) else None)
+        body["control_plane"] = True
+        body["verified_protection"] = False
+        return body
 
     @app.get("/runtime/readiness")
     def runtime_readiness(

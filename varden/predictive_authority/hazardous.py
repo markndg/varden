@@ -178,6 +178,32 @@ def _find_credential_to_cloud_mutation(graph: CapabilityGraph, max_depth: int) -
     )
 
 
+def _find_monitoring_integrity_sabotage(graph: CapabilityGraph, max_depth: int) -> ReachabilityResult:
+    """Reachability into a monitoring-integrity prohibited state.
+
+    Returns empty immediately when the graph has no such state, so ordinary
+    authority analysis is unchanged. Incomplete traversal is preserved.
+    """
+    prohibited = [
+        node.node_id
+        for node in graph.nodes()
+        if (node.metadata or {}).get("mip_prohibited") or node.node_id.startswith("mip:prohibited:")
+    ]
+    if not prohibited:
+        return ReachabilityResult(reachable=False, max_depth=max_depth)
+    sources = [
+        node.node_id
+        for node in graph.nodes()
+        if node.node_type in {"agent", "tool", "process", "action"} or node.node_id.startswith("agent:")
+    ]
+    return _hazardous_reachability(
+        graph,
+        sources,
+        max_depth=max_depth,
+        predicate=lambda node_id: node_id in set(prohibited),
+    )
+
+
 DEFAULT_PATTERNS: list[HazardousPattern] = [
     HazardousPattern(
         name="untrusted_to_sensitive_to_external",
@@ -203,6 +229,11 @@ DEFAULT_PATTERNS: list[HazardousPattern] = [
         name="credential_to_cloud_mutation",
         description="credential acquisition -> high-authority cloud mutation",
         find=_find_credential_to_cloud_mutation,
+    ),
+    HazardousPattern(
+        name="monitoring_integrity_sabotage",
+        description="authorised steps that reach a prohibited monitoring state",
+        find=_find_monitoring_integrity_sabotage,
     ),
 ]
 

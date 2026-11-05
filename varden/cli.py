@@ -276,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
     runtime_explain.add_argument('event_id')
     runtime_self = runtime_sub.add_parser('self-test', help='Safely probe active interceptors')
     runtime_self.add_argument('--json', action='store_true', help='Machine-readable JSON output')
+    from .monitoring_integrity.cli import add_integrity_parser
+    add_integrity_parser(runtime_sub)
 
     approvals = sub.add_parser('approvals', help='Scoped approval grants')
     approvals_sub = approvals.add_subparsers(dest='approvals_command')
@@ -363,6 +365,19 @@ def main(argv: list[str] | None = None) -> int:
     from .keys_cli import add_keys_parser
     add_keys_parser(sub)
 
+    run = sub.add_parser('run', help='Launch a command under a supervisor-owned monitoring boundary')
+    run.add_argument('--protected', action='store_true')
+    run.add_argument('--observe', action='store_true')
+    run.add_argument('--policy', default=None)
+    run.add_argument('--workspace', default=None)
+    run.add_argument('--protected-path', default=None)
+    run.add_argument('--cwd', default=None)
+    run.add_argument('--state-dir', default=None)
+    run.add_argument('--status', default=None)
+    run.add_argument('--capabilities', action='store_true')
+    run.add_argument('--lifecycle', default='continue_restricted')
+    run.add_argument('--json', action='store_true')
+    run.add_argument('run_command', nargs=argparse.REMAINDER)
     monitor = sub.add_parser('monitor', help='Run host commands through Varden Monitor (guard → exec → log)')
     monitor.add_argument('monitor_args', nargs=argparse.REMAINDER, help="run -- CMD | .  (dot = passive session)")
     session = sub.add_parser('session', help='Start a shell or command with PATH shims (railway, kubectl, …)')
@@ -399,6 +414,33 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'posture':
         from .runtime.cli import posture_argv
         return posture_argv(args)
+    if args.command == 'run':
+        from .monitoring_integrity.supervisor import run_argv
+        forwarded = []
+        if args.protected:
+            forwarded.append('--protected')
+        if args.observe:
+            forwarded.append('--observe')
+        if args.policy:
+            forwarded.extend(['--policy', args.policy])
+        if args.workspace:
+            forwarded.extend(['--workspace', args.workspace])
+        if args.protected_path:
+            forwarded.extend(['--protected-path', args.protected_path])
+        if args.cwd:
+            forwarded.extend(['--cwd', args.cwd])
+        if args.state_dir:
+            forwarded.extend(['--state-dir', args.state_dir])
+        if args.status:
+            forwarded.extend(['--status', args.status])
+        if args.capabilities:
+            forwarded.append('--capabilities')
+        if args.lifecycle:
+            forwarded.extend(['--lifecycle', args.lifecycle])
+        if args.json:
+            forwarded.append('--json')
+        forwarded.extend(args.run_command or [])
+        return run_argv(forwarded)
     if args.command == 'runtime':
         from .runtime.cli import runtime_argv
         return runtime_argv(args)

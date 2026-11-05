@@ -32,6 +32,7 @@ UNAUTHENTICATED_ROUTES = {
     ("GET", "/ui/web-shield"),
     ("GET", "/ui/authority"),
     ("GET", "/ui/predictive"),
+    ("GET", "/ui/integrity"),
     ("GET", "/ui/threat-intelligence"),
     ("GET", "/ui/threat-intelligence/{item_id}"),
     ("GET", "/webshield/lab"),

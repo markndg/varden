@@ -415,7 +415,11 @@ def runtime_argv(args: argparse.Namespace) -> int:
         return 0
     if cmd == "self-test":
         return run_self_test(as_json=as_json)
-    print("usage: varden runtime [status|readiness|explain|self-test]", file=sys.stderr)
+    if cmd == "integrity":
+        from varden.monitoring_integrity.cli import integrity_argv
+
+        return integrity_argv(args)
+    print("usage: varden runtime [status|readiness|explain|self-test|integrity]", file=sys.stderr)
     return 2
 
 
