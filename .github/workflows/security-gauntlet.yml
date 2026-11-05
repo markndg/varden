@@ -1,0 +1,33 @@
+name: Security gauntlet
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "demos/security-gauntlet/**"
+      - "demos/security_gauntlet_loader.py"
+      - "tests/security_gauntlet/**"
+      - "CAPABILITY_MATRIX.md"
+
+jobs:
+  runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the package
+        run: python -m pip install -e ".[dev]"
+      - name: Run gauntlet tests
+        run: python -m pytest -q tests/security_gauntlet/test_runner.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build the buyer UI
+        working-directory: demos/security-gauntlet/frontend
+        run: npm install && npm run build
+      - name: Playwright smoke
+        run: |
+          python -m playwright install --with-deps chromium
+          python -m pytest -q tests/security_gauntlet/test_buyer_journey.py
