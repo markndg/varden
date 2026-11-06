@@ -1,0 +1,17 @@
+name: MIP macOS boundary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  seatbelt:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the package and test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Supervised Seatbelt tests
+        run: python -m pytest -q tests/monitoring_integrity/test_supervisor.py tests/monitoring_integrity/test_platforms.py tests/monitoring_integrity/test_mip005.py

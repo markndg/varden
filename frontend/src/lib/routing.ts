@@ -1,5 +1,6 @@
 export function pageFromLocation(pathname: string) {
   if (pathname.includes('/ui/coverage-gaps')) return 'coverage';
+  if (pathname.includes('/ui/integrity')) return 'integrity';
   if (pathname.includes('/ui/web-shield')) return 'webshield';
   if (pathname.includes('/ui/threat-intelligence')) return 'threat-intelligence';
   if (pathname.includes('/ui/predictive')) return 'predictive';

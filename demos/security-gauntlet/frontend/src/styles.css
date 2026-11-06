@@ -1,0 +1,52 @@
+:root {
+  color-scheme: dark;
+  --bg: #141413;
+  --panel: #1d1c1a;
+  --line: #34322e;
+  --text: #ece7df;
+  --muted: #a39b90;
+  --amber: #e0a15a;
+  --cyan: #7ec8c3;
+  --red: #e07a72;
+  --ok: #c8d2b4;
+  font-family: "Iowan Old Style", Palatino, Georgia, serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); }
+button, code, .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
+button {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+  padding: 0.55rem 0.8rem;
+  cursor: pointer;
+}
+button[aria-pressed="true"] { border-color: var(--amber); color: var(--amber); }
+button:disabled { opacity: 0.5; cursor: wait; }
+main { max-width: 1180px; margin: 0 auto; padding: 1.5rem; }
+header p { color: var(--muted); max-width: 46rem; }
+.layout { display: grid; grid-template-columns: 16rem 1fr; gap: 1rem; }
+@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
+.nav, .panel { background: var(--panel); border: 1px solid var(--line); padding: 0.8rem; }
+.nav { display: flex; flex-direction: column; gap: 0.4rem; }
+h1 { font-weight: 500; font-size: 1.7rem; margin-bottom: 0.3rem; }
+h2 { font-weight: 500; font-size: 1.15rem; }
+.verdict { font-size: 1.05rem; letter-spacing: 0.04em; }
+.verdict[data-kind="VERIFIED_PREVENTED"], .verdict[data-kind="VERIFIED_ALLOWED"] { color: var(--ok); }
+.verdict[data-kind="OBSERVED_ONLY"], .verdict[data-kind="INCONCLUSIVE"] { color: var(--amber); }
+.verdict[data-kind="UNSUPPORTED"], .verdict[data-kind="EXECUTION_ERROR"] { color: var(--red); }
+.split { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+@media (max-width: 800px) { .split { grid-template-columns: 1fr; } }
+ol { padding-left: 1.1rem; }
+li { margin: 0.35rem 0; }
+.muted { color: var(--muted); }
+a { color: var(--cyan); }
+.steps { list-style: none; display: flex; flex-wrap: wrap; gap: 0.35rem; padding: 0; }
+.steps button { font-size: 0.78rem; }
+.scopes { display: grid; gap: 0.2rem; margin: 0.8rem 0; }
+.graph { width: 100%; background: #171614; border: 1px solid var(--line); }
+.evidence { display: grid; grid-template-columns: 11rem 1fr; gap: 0.25rem 0.8rem; }
+.evidence dt { color: var(--muted); }
+.evidence dd { margin: 0; }
+pre { white-space: pre-wrap; color: var(--muted); }

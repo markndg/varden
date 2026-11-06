@@ -1,0 +1,19 @@
+[Unit]
+Description=Varden agent workload under the monitoring-integrity boundary
+Documentation=file:/usr/share/doc/varden/monitoring-integrity-boundary.md
+
+[Service]
+# The agent user must not own protected monitoring files and must not be able to signal varden-watch.
+User=varden-agent
+Group=varden-agent
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/varden/work
+ReadOnlyPaths=/var/lib/varden/protected
+InaccessiblePaths=/etc/varden/authority
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

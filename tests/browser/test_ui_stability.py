@@ -271,6 +271,7 @@ ROUTES = [
     ("/ui/web-shield", "Web Shield"),
     ("/ui/authority", "Authority & Provenance"),
     ("/ui/predictive", "Predictive Authority"),
+    ("/ui/integrity", "Monitoring integrity"),
     ("/ui/threat-intelligence", "Threat Intelligence"),
 ]
 

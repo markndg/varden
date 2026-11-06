@@ -44,6 +44,7 @@ varden_alerts.jsonl
 
 # Node / frontend
 frontend/node_modules/
+demos/security-gauntlet/frontend/node_modules/
 sdks/js/web-shield/node_modules/
 frontend/dist/
 

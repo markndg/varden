@@ -498,6 +498,29 @@ class VardenGuard:
             'trace_id': trace_id,
             'tenant_id': self.tenant,
         }
+        try:
+            from varden.monitoring_integrity.service import precheck_action
+
+            mip_decision = precheck_action(action)
+        except Exception:
+            mip_decision = None
+            try:
+                from varden.monitoring_integrity.service import enabled as mip_enabled
+
+                if mip_enabled():
+                    raise VardenBlockedError(
+                        "monitoring integrity precheck failed",
+                        {"action": "block", "reason": "mip_precheck_failed", "effective_action": "block"},
+                    )
+            except VardenBlockedError:
+                raise
+            except Exception:
+                mip_decision = None
+        if mip_decision is not None and mip_decision.prevents:
+            raise VardenBlockedError(
+                f"monitoring integrity blocked ({mip_decision.invariant_id})",
+                mip_decision.to_dict(),
+            )
         guard_payload = {'action': action, 'payload': _json_safe(payload if payload is not None else args or {})}
         try:
             result = self.client.guard(guard_payload)

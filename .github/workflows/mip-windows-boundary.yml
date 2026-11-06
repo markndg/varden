@@ -1,0 +1,19 @@
+name: MIP Windows boundary
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-adapter:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the package and test dependencies
+        run: python -m pip install -e ".[test]"
+      - name: Platform honesty tests
+        run: python -m pytest -q tests/monitoring_integrity/test_platforms.py tests/monitoring_integrity/test_mip005.py
+      - name: Note
+        run: echo "A green Windows job is not filesystem verification. OS_DENIED is recorded only when the protected hash is unchanged after a launched attempt."

@@ -10,6 +10,7 @@ import { RulesPage as RulesPageView } from './components/dashboard/RulesPage';
 import { WebShieldPage } from './components/dashboard/WebShieldPage';
 import { AuthorityProvenancePage } from './components/dashboard/AuthorityProvenancePage';
 import { PredictiveAuthorityPage } from './components/dashboard/PredictiveAuthorityPage';
+import { IntegrityPage } from './components/dashboard/IntegrityPage';
 import { ThreatIntelIndicator, ThreatIntelligencePage } from './components/dashboard/ThreatIntelligencePage';
 import { ADVANCED_FIELDS, BUDGET_RULES_BUCKET, CLASSIFIER_KEYS, DashboardPayload, EventDetail, EventRow, OPERATOR_OPTIONS, POLICY_BUCKETS, PolicyDoc, RULE_BUCKETS, TraceOption, TraceSummary } from './lib/types';
 import { detailIdFromLocation, eventIdFromSearch, pageFromLocation, predictiveDeepLink, ruleBucketFromSearch, ruleFocusTokenFromSearch, ruleReturnToFromSearch, threatIntelligencePath, threatItemIdFromLocation } from './lib/routing';
@@ -794,7 +795,7 @@ function Shell() {
     ? 'Policy'
     : page === 'webshield'
       ? 'Runtime'
-      : page === 'authority' || page === 'predictive' || page === 'decision'
+      : page === 'authority' || page === 'predictive' || page === 'decision' || page === 'integrity'
         ? 'Investigation'
         : page === 'threat-intelligence'
           ? 'Intelligence'
@@ -834,6 +835,7 @@ function Shell() {
           <button className={classNames('nav__item', page === 'webshield' && 'is-active')} onClick={() => navigate('webshield', '/ui/web-shield')}>Web Shield</button>
           <button className={classNames('nav__item', page === 'authority' && 'is-active')} onClick={() => navigate('authority', '/ui/authority')}>Authority & Provenance</button>
           <button className={classNames('nav__item', page === 'predictive' && 'is-active')} onClick={() => navigate('predictive', '/ui/predictive')}>Predictive</button>
+          <button className={classNames('nav__item', page === 'integrity' && 'is-active')} onClick={() => navigate('integrity', '/ui/integrity')}>Monitoring integrity</button>
           <button className={classNames('nav__item', page === 'threat-intelligence' && 'is-active')} onClick={() => navigate('threat-intelligence', '/ui/threat-intelligence')}>Threat Intelligence</button>
           {detailId ? <button className={classNames('nav__item', page === 'decision' && 'is-active')} onClick={() => navigate('decision', `/ui/decision/${detailId}`)}>Decision View</button> : null}
         </nav>
@@ -947,8 +949,8 @@ function Shell() {
         <header className="topbar topbar--compact card" data-testid="page-header">
           <div>
             <div className="eyebrow">{pageEyebrow}</div>
-            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : page === 'predictive' ? 'Predictive Authority' : page === 'threat-intelligence' ? (threatItemId ? 'Threat investigation' : 'Threat Intelligence') : 'Trace and flow mission control'}</h1>
-            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where a false-positive proxy may be hiding.' : page === 'rules' ? 'Edit block, warn, monitor, allow, and budget rules. Changes stay in the builder until you validate and save.' : page === 'decision' ? 'Inspect one decision: the event, the matched rule, and the evidence behind the outcome.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : page === 'predictive' ? 'What authority this action would create, what becomes reachable, and where Varden interrupts the trajectory.' : page === 'threat-intelligence' ? 'External intelligence is untrusted data. Contracts and candidate rules stay inactive until you approve them.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
+            <h1>{page === 'impact' ? 'Rule impact intelligence' : page === 'rules' ? 'Policy workspace' : page === 'decision' ? 'Decision drilldown' : page === 'coverage' ? 'Policy coverage gaps' : page === 'webshield' ? 'Web Shield' : page === 'authority' ? 'Authority & Provenance' : page === 'predictive' ? 'Predictive Authority' : page === 'integrity' ? 'Monitoring integrity' : page === 'threat-intelligence' ? (threatItemId ? 'Threat investigation' : 'Threat Intelligence') : 'Trace and flow mission control'}</h1>
+            <p className="muted">{page === 'impact' ? 'See which rules are carrying the heaviest load across live traffic and drill into who they affect, where they fire, and where a false-positive proxy may be hiding.' : page === 'rules' ? 'Edit block, warn, monitor, allow, and budget rules. Changes stay in the builder until you validate and save.' : page === 'decision' ? 'Inspect one decision: the event, the matched rule, and the evidence behind the outcome.' : page === 'coverage' ? 'Observed behaviour with little or no active policy coverage. Surface blind spots, inspect why they are uncovered, and draft the next rule faster.' : page === 'webshield' ? 'Govern WebMCP registrations, invocations, and tool results as untrusted browser input.' : page === 'authority' ? 'Whether the causal chain was authorised to exercise the capability the agent attempted.' : page === 'predictive' ? 'What authority this action would create, what becomes reachable, and where Varden interrupts the trajectory.' : page === 'integrity' ? 'Which monitoring assets are sealed, which sabotage paths are enforceable, and where the evidence stops.' : page === 'threat-intelligence' ? 'External intelligence is untrusted data. Contracts and candidate rules stay inactive until you approve them.' : 'See what the agent attempted, why Varden scored it the way it did, and how policy changed the outcome.'}</p>
           </div>
           <div className="topbar__actions">
             <div className="statusPill">Posture: <strong>{overview?.posture || 'loading'}</strong></div>
@@ -1072,6 +1074,10 @@ function Shell() {
             onClearHistorical={() => navigate('predictive', '/ui/predictive')}
             onOpenDecision={(id) => navigate('decision', `/ui/decision/${id}`)}
           />
+        ) : null}
+
+        {page === 'integrity' ? (
+          <IntegrityPage helpers={{ api, token }} />
         ) : null}
 
         {page === 'threat-intelligence' ? (
