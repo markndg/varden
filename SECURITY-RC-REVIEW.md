@@ -1,6 +1,7 @@
 # Security release-candidate review
 
 Starting commit: `ab87cda57be91a45ce4ccaeea023cd3b0ada7f6b`  
+Remediation commit: `bf4561d01cddeff2568f5181b3039a525e2bcc3d`  
 Base: `origin/main` `63d3703f82e916f8b579bb9ff0f9b60c3273eebf`  
 Branch: `feature/security-gauntlet-readiness`  
 Not merged, tagged, pushed, or released.
