@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 import time
 import uuid
 from pathlib import Path
@@ -130,6 +131,14 @@ def test_process_local_approval_secret_is_not_an_independent_authority():
     assert again is False and replay == "approval_replay"
 
 
+def _seatbelt_host() -> bool:
+    return platform.system() == "Darwin" and Path("/usr/bin/sandbox-exec").is_file()
+
+
+@pytest.mark.skipif(
+    not _seatbelt_host(),
+    reason="macOS Seatbelt via /usr/bin/sandbox-exec is not available on this host. This skip is not a security verification.",
+)
 def test_seatbelt_gauntlet_blocks_native_shell_and_child_writes():
     root = Path.home() / f".varden-mip-gauntlet-{uuid.uuid4().hex}"
     try:

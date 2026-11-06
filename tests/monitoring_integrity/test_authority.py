@@ -8,6 +8,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from varden.monitoring_integrity.authority import AGENT_USER, SUPERVISOR_USER, diagnose
 from varden.monitoring_integrity.supervisor import Supervisor, _body, _seal, run_argv
 
@@ -76,7 +78,7 @@ def test_isolated_request_does_not_downgrade(tmp_path):
 
 def test_linux_agent_identity_cannot_touch_supervisor_state():
     if platform.system() != "Linux":
-        return
+        pytest.skip("Linux isolated-authority identities are not this operating system. This skip is not a security verification.")
     report = diagnose()
     if report["isolated"]["status"] != "configured":
         assert report["isolated"]["status"] in {"available", "failed", "unsupported"}
