@@ -45,5 +45,7 @@ jobs:
           python-version: "3.13"
       - name: Install bubblewrap
         run: sudo apt-get update && sudo apt-get install -y bubblewrap
+      - name: Install the package and test dependencies
+        run: python -m pip install -e ".[test]"
       - name: Run the supervised launch tests on Linux
         run: python -m pytest -q tests/monitoring_integrity/test_supervisor.py tests/monitoring_integrity/test_platforms.py tests/monitoring_integrity/test_mip005.py
