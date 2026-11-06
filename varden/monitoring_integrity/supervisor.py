@@ -212,13 +212,9 @@ class Supervisor:
             os.write(descriptor, key)
         finally:
             os.close(descriptor)
-        write_result = workspace / f".varden-mip-probe-{execution_id}.txt"
-        secret_result = workspace / f".varden-mip-secret-{execution_id}.txt"
-        _run_probe(adapter, prepared, [sys.executable, "-c", _WRITE_PROBE, str(protected), str(write_result)], workspace)
+        write_text = _run_probe(adapter, prepared, [sys.executable, "-c", _WRITE_PROBE, str(protected)], workspace)
         after_probe = protected.read_text(encoding="utf-8")
-        write_text = _read_probe(write_result)
-        _run_probe(adapter, prepared, [sys.executable, "-c", _SECRET_PROBE, str(key_path), str(secret_result)], workspace)
-        secret_text = _read_probe(secret_result)
+        secret_text = _run_probe(adapter, prepared, [sys.executable, "-c", _SECRET_PROBE, str(key_path)], workspace)
         probe_denied = after_probe == before and _is_denial(write_text)
         secret_denied = key_path.is_file() and _is_denial(secret_text)
         if not probe_denied or not secret_denied:
@@ -449,14 +445,15 @@ class Supervisor:
         covers = tuple(current.get("covers") or ())
         if not current.get("verified") or "filesystem" not in covers:
             return interceptor_claim()
+        mechanism = str(current.get("mechanism") or MECHANISM)
         return BoundaryClaim(
             tier=TIER_VERIFIED,
-            mechanism=str(current.get("mechanism") or MECHANISM),
+            mechanism=mechanism,
             covers=covers,
             verified=True,
             origin="probe",
-            scope=SCOPE_SEATBELT,
-            os_isolation=True,
+            scope=_claim_scope(mechanism),
+            os_isolation=_claim_os_isolation(mechanism, covers),
         )
 
     def renew(self, execution_id: str) -> dict[str, Any]:
@@ -612,7 +609,7 @@ def _body(
         "lifecycle": lifecycle,
         "covers": list(covers),
         "termination_confirmed": termination_confirmed,
-        "seatbelt_family": MECHANISM_SEATBELT,
+        "seatbelt_family": MECHANISM_SEATBELT if "seatbelt" in mechanism else None,
         "platform": platform.platform(),
         "system": platform.system(),
         "release": platform.release(),
@@ -628,8 +625,8 @@ def _body(
         "issued_at": time.time(),
         "returncode": returncode,
         "reason": reason,
-        "limitations": list(_LIMITATIONS),
-        "network": "localhost_tcp_allowlist_only" if platform.system() == "Darwin" else "not_claimed",
+        "limitations": _limitations_for(mechanism),
+        "network": "localhost_tcp_allowlist_only" if "seatbelt" in mechanism else "not_claimed",
         "remote_mcp": "NOT_ENFORCEABLE",
     }
 
@@ -651,38 +648,72 @@ def _failure(state: str, reason: str, *, execution_id: str | None = None, launch
     }
 
 
-def _run_probe(adapter: Any, prepared: Any, argv: list[str], cwd: Path) -> None:
+def _run_probe(adapter: Any, prepared: Any, argv: list[str], cwd: Path) -> str:
+    """Return the probe process stdout.
+
+    The result is the pipe owned by the supervisor. A file in the workspace is
+    writable by the agent and is not a denial.
+    """
     try:
-        adapter.run_captured(prepared, argv, cwd=cwd)
+        completed = adapter.run_captured(prepared, argv, cwd=cwd)
     except OSError:
-        return
-
-
-def _read_probe(path: Path) -> str:
-    if not path.is_file():
         return ""
-    text = path.read_text(encoding="utf-8", errors="replace")
-    path.unlink(missing_ok=True)
-    return text
+    stdout = getattr(completed, "stdout", None)
+    if not isinstance(stdout, str):
+        return ""
+    return stdout.strip()
+
+
+def _claim_scope(mechanism: str) -> str:
+    if "seatbelt" in mechanism:
+        return SCOPE_SEATBELT
+    return (
+        "The attestation covers the launched process tree for the named mechanism only. "
+        "It is not a Seatbelt profile, not a network boundary, and not proof of a separate user."
+    )
+
+
+def _claim_os_isolation(mechanism: str, covers: tuple[str, ...]) -> bool:
+    if "filesystem" not in covers:
+        return False
+    return "seatbelt" in mechanism or "bubblewrap" in mechanism
+
+
+def _limitations_for(mechanism: str) -> list[str]:
+    if "seatbelt" in mechanism:
+        return list(_LIMITATIONS)
+    if "bubblewrap" in mechanism or mechanism.startswith("linux_"):
+        return [
+            "Linux bubblewrap applies to the launched process tree when the user namespace and mounts are created.",
+            "If the user namespace cannot be created, the probe does not record a denial and the command is not started.",
+            "Network egress is not isolated.",
+            "Developer mode does not separate the agent user from the supervisor user. Isolated authority is a separate mode.",
+            "An HMAC record is authentic only while the signing key is unreadable. It is not durable against the supervisor user or root.",
+        ]
+    return [
+        "No verified OS boundary is claimed for this mechanism.",
+        "Network isolation is not claimed.",
+        "An HMAC record is not durable against whoever can read the signing key.",
+    ]
 
 
 _WRITE_PROBE = (
     "import pathlib, sys\n"
-    "protected, result = sys.argv[1], sys.argv[2]\n"
+    "protected = sys.argv[1]\n"
     "try:\n"
     "    pathlib.Path(protected).open('a').write('probe')\n"
-    "    pathlib.Path(result).write_text('wrote')\n"
+    "    sys.stdout.write('wrote\\n')\n"
     "except OSError as exc:\n"
-    "    pathlib.Path(result).write_text(type(exc).__name__ + ':' + str(getattr(exc, 'errno', None)))\n"
+    "    sys.stdout.write(type(exc).__name__ + ':' + str(getattr(exc, 'errno', None)) + '\\n')\n"
 )
 _SECRET_PROBE = (
     "import pathlib, sys\n"
-    "key_path, result = sys.argv[1], sys.argv[2]\n"
+    "key_path = sys.argv[1]\n"
     "try:\n"
     "    data = pathlib.Path(key_path).read_bytes()\n"
-    "    pathlib.Path(result).write_text('read:' + str(len(data)))\n"
+    "    sys.stdout.write('read:' + str(len(data)) + '\\n')\n"
     "except OSError as exc:\n"
-    "    pathlib.Path(result).write_text(type(exc).__name__ + ':' + str(getattr(exc, 'errno', None)))\n"
+    "    sys.stdout.write(type(exc).__name__ + ':' + str(getattr(exc, 'errno', None)) + '\\n')\n"
 )
 
 
@@ -800,7 +831,16 @@ def run_argv(argv: list[str] | None = None) -> int:
     protected = Path(args.protected_path) if args.protected_path else None
     policy_bytes = None
     if args.policy:
-        policy_bytes = Path(args.policy).read_bytes()
+        policy_path = Path(args.policy)
+        if args.authority == "isolated":
+            from .authority import read_isolated_policy
+            try:
+                policy_bytes = read_isolated_policy(policy_path, workspace=workspace, supervisor_uid=supervisor_uid)
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "launched": False, "state": "FAILED", "authority_model": "isolated", "reason": str(exc)}))
+                return 1
+        else:
+            policy_bytes = policy_path.read_bytes()
         if protected is None:
             document = json.loads(policy_bytes)
             section = document.get("monitoring_integrity") or document

@@ -43,6 +43,62 @@ def _registry():
     return registry
 
 
+def test_probe_outcome_comes_from_the_supervisor_pipe(tmp_path):
+    from varden.monitoring_integrity.supervisor import _is_denial, _run_probe
+
+    class Adapter:
+        def run_captured(self, prepared, argv, cwd):
+            del prepared
+            Path(cwd, "forged-denial.txt").write_text("PermissionError:13", encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 0, stdout="wrote\n", stderr="PermissionError:1")
+
+    text = _run_probe(Adapter(), None, ["probe"], tmp_path)
+    assert text == "wrote"
+    assert _is_denial(text) is False
+    assert (tmp_path / "forged-denial.txt").read_text(encoding="utf-8") == "PermissionError:13"
+    assert _is_denial("PermissionError:1") is True
+
+    class Uncaptured:
+        def run_captured(self, prepared, argv, cwd):
+            del prepared, argv, cwd
+            return 0
+
+    assert _run_probe(Uncaptured(), None, ["probe"], tmp_path) == ""
+    assert _is_denial("") is False
+
+
+def test_linux_record_does_not_claim_seatbelt(tmp_path):
+    from varden.monitoring_integrity.supervisor import _body, _claim_os_isolation, _claim_scope
+
+    body = _body(
+        execution_id="abc123",
+        state="TERMINATED",
+        established=True,
+        verified=False,
+        protected=tmp_path / "monitoring.json",
+        before="a",
+        after="a",
+        policy_bytes=b"{}",
+        argv=["/bin/true"],
+        pid=None,
+        started_at=None,
+        reason=None,
+        mechanism="linux_bubblewrap_unverified",
+    )
+    assert body["seatbelt_family"] is None
+    assert body["network"] == "not_claimed"
+    text = " ".join(body["limitations"])
+    assert "Seatbelt" not in text
+    assert "TCP allowlist" not in text
+    assert "Network egress is not isolated." in body["limitations"]
+    linux_scope = _claim_scope("linux_bubblewrap_unverified")
+    assert "not a Seatbelt profile" in linux_scope
+    assert "applies only to processes the supervisor launched under this profile" not in linux_scope
+    assert _claim_os_isolation("linux_bubblewrap_unverified", ("filesystem",)) is True
+    assert _claim_os_isolation("windows_restricted_token_unverified", ("filesystem",)) is False
+    assert "Seatbelt" in _claim_scope("macos_seatbelt_experimental")
+
+
 def test_protected_launch_refuses_when_the_asset_is_inside_the_workspace():
     root, work, target, state = _layout()
     try:

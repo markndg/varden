@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import platform
 import subprocess
 import sys
@@ -12,6 +13,51 @@ import pytest
 
 from varden.monitoring_integrity.authority import AGENT_USER, SUPERVISOR_USER, diagnose
 from varden.monitoring_integrity.supervisor import Supervisor, _body, _seal, run_argv
+
+
+def test_isolated_policy_rejects_a_symlink_or_an_agent_writable_file(tmp_path):
+    from varden.monitoring_integrity.authority import read_isolated_policy
+
+    workspace = tmp_path / "work"
+    workspace.mkdir()
+    policy = tmp_path / "policy.json"
+    policy.write_text('{"assets": []}\n', encoding="utf-8")
+    os.chmod(policy, 0o666)
+    with pytest.raises(ValueError, match="not private"):
+        read_isolated_policy(policy, workspace=workspace, supervisor_uid=os.getuid())
+    os.chmod(policy, 0o600)
+    assert read_isolated_policy(policy, workspace=workspace, supervisor_uid=os.getuid()) == b'{"assets": []}\n'
+    inside = workspace / "policy.json"
+    inside.write_text("{}\n", encoding="utf-8")
+    os.chmod(inside, 0o600)
+    with pytest.raises(ValueError, match="workspace"):
+        read_isolated_policy(inside, workspace=workspace, supervisor_uid=os.getuid())
+    link = tmp_path / "policy-link.json"
+    link.symlink_to(policy)
+    with pytest.raises(ValueError, match="symlink"):
+        read_isolated_policy(link, workspace=workspace, supervisor_uid=os.getuid())
+
+
+def test_sudoers_operator_rejects_injected_rules():
+    from varden.monitoring_integrity.authority import sudoers_operator
+
+    assert sudoers_operator("mark") == "mark"
+    assert sudoers_operator(None) == "root"
+    with pytest.raises(ValueError):
+        sudoers_operator("mark\nmark ALL=(ALL) NOPASSWD: ALL")
+    with pytest.raises(ValueError):
+        sudoers_operator("varden-agent")
+    with pytest.raises(ValueError):
+        sudoers_operator("varden-supervisor")
+
+
+def test_subordinate_id_ranges_must_not_overlap():
+    from varden.monitoring_integrity.authority import subordinate_range_overlaps
+
+    assert subordinate_range_overlaps("other:200000:65536\n", 200000, 65536) is True
+    assert subordinate_range_overlaps("other:150000:100000\n", 200000, 65536) is True
+    assert subordinate_range_overlaps("other:100000:65536\n", 200000, 65536) is False
+    assert subordinate_range_overlaps("not-a-range\n", 200000, 65536) is False
 
 
 def test_missing_key_is_not_regenerated(tmp_path):

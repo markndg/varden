@@ -35,6 +35,10 @@ From `docs/runtime-limitations.md`, which this branch still contains:
 - `varden session` PATH wrappers are not a complete boundary. The same user can skip the shim.
 - OS sandboxes (namespaces, seccomp, eBPF, macOS sandbox, Windows job objects) are **not claimed** by the released runtime document.
 
+## Historical note
+
+The subsection below was written before `feature/monitoring-integrity` was merged at `bc85306`. The supervisor is in this branch. The MIP sections later in this file are the current record. Do not read the old "unsupported in this checkout" cell as the present claim.
+
 ## Unmerged: monitoring integrity (not in this branch)
 
 Branch `feature/monitoring-integrity` at `8fcf94a`. The security gauntlet does not import or copy that code.

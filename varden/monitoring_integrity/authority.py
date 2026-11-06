@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import platform
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -139,7 +140,11 @@ def provision() -> int:
     os.chmod(AGENT_EXEC, 0o755)
     os.chown(SUPERVISOR_EXEC, 0, 0)
     os.chown(AGENT_EXEC, 0, 0)
-    operator = os.environ.get("SUDO_USER") or "root"
+    try:
+        operator = sudoers_operator(os.environ.get("SUDO_USER"))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     rules = (
         "Defaults:varden-supervisor !requiretty\n"
         "Defaults:varden-agent !requiretty\n"
@@ -265,15 +270,75 @@ def _run(argv: list[str], *, accept_exists: bool = False) -> None:
     raise OSError(text.strip() or f"{argv[0]} failed")
 
 
+def read_isolated_policy(path: Path, *, workspace: Path, supervisor_uid: int) -> bytes:
+    """Read a policy the agent cannot replace.
+
+    The bytes select the protected path when ``--protected-path`` is absent
+    and are sealed into the attestation. A symlink, an agent-writable mode,
+    or a file inside the workspace is rejected.
+    """
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"isolated policy could not be read: {exc}; the command was not started") from exc
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ValueError("isolated policy must be a regular file, not a symlink; the command was not started")
+    if info.st_uid != supervisor_uid or stat.S_IMODE(info.st_mode) & 0o022:
+        raise ValueError("isolated policy is not private to the supervisor user; the command was not started")
+    resolved = path.resolve()
+    workspace_resolved = workspace.resolve()
+    if resolved == workspace_resolved or workspace_resolved in resolved.parents:
+        raise ValueError("isolated policy is inside the agent workspace; the command was not started")
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        st = os.fstat(descriptor)
+        if st.st_uid != supervisor_uid or stat.S_IMODE(st.st_mode) & 0o022 or not stat.S_ISREG(st.st_mode):
+            raise ValueError("isolated policy changed before it was read; the command was not started")
+        if st.st_size > 1024 * 1024:
+            raise ValueError("isolated policy is larger than 1 MiB; the command was not started")
+        return os.read(descriptor, st.st_size)
+    finally:
+        os.close(descriptor)
+
+
+def sudoers_operator(raw: str | None) -> str:
+    """A single account name. Newlines and sudoers syntax are rejected."""
+    operator = raw or "root"
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,31}", operator):
+        raise ValueError("refusing to write a sudoers rule for an unsafe operator name")
+    if operator in {AGENT_USER, SUPERVISOR_USER}:
+        raise ValueError("the operator must not be the agent or the supervisor identity")
+    return operator
+
+
+def subordinate_range_overlaps(existing: str, start: int, count: int) -> bool:
+    for line in existing.splitlines():
+        parts = line.split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            other = int(parts[1])
+            length = int(parts[2])
+        except ValueError:
+            continue
+        if start < other + length and other < start + count:
+            return True
+    return False
+
+
 def _ensure_subordinate_ids(name: str) -> None:
+    start = 200000 if name == SUPERVISOR_USER else 300000
+    count = 65536
     for path in (Path("/etc/subuid"), Path("/etc/subgid")):
         if not path.is_file():
             path.write_text("", encoding="utf-8")
-        lines = path.read_text(encoding="utf-8").splitlines()
+        text = path.read_text(encoding="utf-8")
+        lines = [line for line in text.splitlines() if line.strip()]
         if any(line.startswith(name + ":") for line in lines):
             continue
-        start = 200000 + (100000 if name == AGENT_USER else 0)
-        path.write_text("".join(line + "\n" for line in lines if line.strip()) + f"{name}:{start}:65536\n", encoding="utf-8")
+        if subordinate_range_overlaps(text, start, count):
+            raise OSError(f"{path} already uses {start}:{count}; refusing an overlapping subordinate id range for {name}")
+        path.write_text("".join(line + "\n" for line in lines) + f"{name}:{start}:{count}\n", encoding="utf-8")
 
 
 def _install_interpreter() -> str:

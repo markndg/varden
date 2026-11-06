@@ -62,7 +62,7 @@ Windows isolated authority is not implemented. A restricted token and a job obje
 - the pre-launch write probe changes the protected bytes or does not report a denial
 - the pre-launch probe can read the supervisor key
 
-The result is a failed launch, not a verified denial of a command that never started. Observation mode is a separate explicit opt-in and is not OS enforcement.
+The probe reports on the supervisor's stdout pipe. A file in the agent workspace is not a denial, because that directory is writable by the agent. The result is a failed launch, not a verified denial of a command that never started. Observation mode is a separate explicit opt-in and is not OS enforcement. Linux records do not claim a Seatbelt profile or a TCP allowlist. Network egress on Linux is not isolated.
 
 ## What is not claimed
 
